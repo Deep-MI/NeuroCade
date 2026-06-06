@@ -195,6 +195,9 @@ normalize_provider() {
     ollama|Ollama)
       printf 'ollama\n'
       ;;
+    no-llm|none|"No LLM"|"No LLM setup")
+      printf 'no-llm\n'
+      ;;
     *)
       echo "Invalid LLM provider: $1" >&2
       exit 2

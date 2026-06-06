@@ -389,6 +389,20 @@ export interface AssistantHistoryResponse {
   messages: ChatMessage[];
 }
 
+export interface ProviderSummary {
+  provider: string;
+  provider_family: string;
+  model: string;
+  role: string;
+  is_default: boolean;
+  native_tool_calling: boolean;
+  json_mode: boolean;
+  vision: boolean;
+  streaming: boolean;
+  available: boolean;
+  availability_reason?: string | null;
+}
+
 export interface ArtifactListItem {
   id?: string;
   case_id?: string | null;

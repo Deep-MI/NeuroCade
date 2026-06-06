@@ -10,7 +10,7 @@ import type {
     ToolCallEntry,
     ReasoningEntry,
 } from '../types';
-import { appFetch, clearAssistantHistory, fetchAssistantHistory, parseError, reportClientError } from '../utils/api';
+import { appFetch, clearAssistantHistory, fetchAssistantHistory, fetchProviders, parseError, reportClientError } from '../utils/api';
 
 export type { ChatMessage };
 
@@ -249,6 +249,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     const [isLoading, setIsLoading] = useState(false);
     const [loadingMessage, setLoadingMessage] = useState<string>(STATUS_MESSAGES[1]);
     const [isClearing, setIsClearing] = useState(false);
+    const [assistantDisabledMessage, setAssistantDisabledMessage] = useState<string | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const abortRef = useRef<AbortController | null>(null);
     const historyRequestVersionRef = useRef(0);
@@ -282,6 +283,33 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             cancelled = true;
         };
     }, [workspaceId, caseId, scope]);
+
+    useEffect(() => {
+        let cancelled = false;
+        void fetchProviders()
+            .then((providers) => {
+                if (cancelled) return;
+                const chatProviders = providers.filter((provider) => provider.role === 'chat');
+                const defaultChatProvider = chatProviders.find((provider) => provider.is_default);
+                if (defaultChatProvider?.provider === 'no-llm' || defaultChatProvider?.provider_family === 'none') {
+                    setAssistantDisabledMessage('Assistant is disabled because LLM setup was skipped. You can still upload, view, and process cases.');
+                    return;
+                }
+                if (!defaultChatProvider && chatProviders.length > 0 && chatProviders.every((provider) => !provider.available)) {
+                    setAssistantDisabledMessage('Assistant is disabled because no LLM provider is configured. You can still upload, view, and process cases.');
+                    return;
+                }
+                setAssistantDisabledMessage(null);
+            })
+            .catch((error) => {
+                if (cancelled) return;
+                console.error('Failed to load provider configuration:', error);
+                setAssistantDisabledMessage(null);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         if (isLoading) {
@@ -338,7 +366,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     }, [clearRequestToken, handleClear]);
 
     const handleSend = async () => {
-        if (!input.trim() || isLoading || isClearing) return;
+        if (!input.trim() || isLoading || isClearing || assistantDisabledMessage) return;
 
         const userContent = buildUserContent(input, currentLocation, getMriSnapshots);
         if (userContent.error) {
@@ -598,6 +626,11 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                         <span className="chat-spinner" aria-hidden="true" />
                     </div>
                 )}
+                {assistantDisabledMessage && (
+                    <div className="chat-message info">
+                        {assistantDisabledMessage}
+                    </div>
+                )}
             </div>
 
             <div className="chat-input-container">
@@ -607,7 +640,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') void handleSend(); }}
-                    disabled={isClearing}
+                    disabled={isClearing || Boolean(assistantDisabledMessage)}
                 />
                 {isLoading ? (
                     <button
@@ -621,7 +654,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     <button
                         className="nc-btn nc-btn-active px-4"
                         onClick={() => void handleSend()}
-                        disabled={!input.trim() || isClearing}
+                        disabled={!input.trim() || isClearing || Boolean(assistantDisabledMessage)}
                     >
                         Send
                     </button>

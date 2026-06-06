@@ -1,4 +1,4 @@
-import type { AssistantHistoryResponse, AssistantScope } from '../../types';
+import type { AssistantHistoryResponse, AssistantScope, ProviderSummary } from '../../types';
 
 import { appJson, appOk } from './core';
 
@@ -29,4 +29,8 @@ export async function clearAssistantHistory(
   await appOk(`/assistant/history?${params.toString()}`, 'Failed to clear assistant history', {
     method: 'DELETE',
   });
+}
+
+export async function fetchProviders(): Promise<ProviderSummary[]> {
+  return appJson<ProviderSummary[]>('/providers', 'Failed to fetch provider configuration');
 }

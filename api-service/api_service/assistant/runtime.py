@@ -27,6 +27,8 @@ CONFIG_DIR = ROOT_DIR / "config"
 
 
 def provider_unavailable_message(config: ModelConfig) -> str:
+    if config.provider_family == "none":
+        return "Assistant is disabled because no LLM provider is configured."
     reason = config.availability_reason or f"Provider {config.provider} is not available"
     return f"Model provider '{config.provider}' is not configured: {reason}"
 

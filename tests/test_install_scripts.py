@@ -296,7 +296,7 @@ def test_apptainer_launcher_is_rootless_and_port_driven() -> None:
     assert "containers.sh\" install core" in launcher_text
     assert "docker compose" not in launcher_text
     assert "--fakeroot" not in launcher_text
-    assert "Python runtime dependencies already installed." in launcher_text
+    assert "check_python_runtime.py" in launcher_text
     assert "UV_CACHE_DIR" in launcher_text
     assert "start_service update-checker" in launcher_text
     assert "stop_host_orphan" in lib_text
@@ -660,6 +660,45 @@ write_env {root} local ollama
 
     assert "TRAEFIK_DASHBOARD_ENABLED=false" in env_text
     assert "TRAEFIK_API_INSECURE=false" in env_text
+
+
+def test_env_writer_supports_no_llm_provider_and_clears_existing_endpoint(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "client").mkdir(parents=True)
+    (root / "client" / "package.json").write_text('{"version":"1.2.3"}\n', encoding="utf-8")
+    (root / ".env").write_text(
+        "\n".join(
+            [
+                "LLM_PROVIDER_DEFAULT=openai-compatible",
+                "WORKFLOW_DEFAULT_PROVIDER=openai-compatible",
+                "LLM_BACKEND_URL=https://llm.example.test",
+                "LLM_BACKEND_API_KEY=old-key",
+                "LLM_BACKEND_MODEL=old-model",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    script = f"""
+set -euo pipefail
+source {INSTALL_LIB_DIR / "common.sh"}
+source {INSTALL_LIB_DIR / "env.sh"}
+APP_DISPLAY_NAME=NeuroCade
+FREESURFER_LICENSE_URL=https://surfer.nmr.mgh.harvard.edu/registration.html
+write_env {root} local no-llm
+"""
+
+    subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    env_text = (root / ".env").read_text(encoding="utf-8")
+
+    assert "LLM_PROVIDER_DEFAULT=no-llm" in env_text
+    assert "WORKFLOW_DEFAULT_PROVIDER=no-llm" in env_text
+    assert "LLM_BACKEND_URL=" in env_text
+    assert "LLM_BACKEND_API_KEY=" in env_text
+    assert "LLM_BACKEND_MODEL=no-llm" in env_text
+    assert "old-key" not in env_text
+    assert "old-model" not in env_text
 
 
 def test_client_dependencies_current_checks_electron_and_lockfile_age(tmp_path: Path) -> None:

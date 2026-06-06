@@ -20,6 +20,7 @@ def list_providers(context: AuthContext = Depends(get_context)) -> list[Provider
             provider_family=cfg.provider_family,
             model=cfg.model,
             role=cfg.role.value,
+            is_default=provider_registry.is_default_provider(cfg.role, cfg.provider),
             native_tool_calling=cfg.capabilities.native_tool_calling,
             json_mode=cfg.capabilities.json_mode,
             vision=cfg.capabilities.vision,

@@ -5,6 +5,8 @@ import sys
 import tomllib
 from typing import Any, cast
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend_common import providers as provider_module
@@ -62,6 +64,28 @@ def test_openai_compatible_provider_disables_qwen_thinking_by_default(monkeypatc
     model = registry.build_chat_model(ProviderRole.chat)
 
     assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_no_llm_provider_is_registered_but_unavailable(monkeypatch):
+    monkeypatch.setattr(provider_module.settings, "llm_provider_default", "no-llm")
+    monkeypatch.setattr(provider_module.settings, "workflow_default_provider", "no-llm")
+    registry = provider_module.ProviderRegistry()
+
+    cfg = registry.get(ProviderRole.chat)
+
+    assert cfg.provider == "no-llm"
+    assert cfg.provider_family == "none"
+    assert cfg.available is False
+    assert cfg.availability_reason == "LLM setup was skipped during install"
+    assert registry.default_provider_for_role(ProviderRole.chat) == "no-llm"
+
+
+def test_no_llm_provider_does_not_build_chat_model(monkeypatch):
+    monkeypatch.setattr(provider_module.settings, "llm_provider_default", "no-llm")
+    registry = provider_module.ProviderRegistry()
+
+    with pytest.raises(ValueError, match="LLM setup was skipped during install"):
+        registry.build_chat_model(ProviderRole.chat)
 
 
 def test_settings_construct_sqlalchemy_url():

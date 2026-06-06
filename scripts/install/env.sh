@@ -317,11 +317,20 @@ write_env() {
       llm_provider_default="ollama"
       workflow_provider_default="ollama"
       ;;
+    no-llm)
+      llm_backend_url=""
+      llm_backend_key=""
+      llm_backend_model="no-llm"
+      llm_provider_default="no-llm"
+      workflow_provider_default="no-llm"
+      ;;
   esac
 
-  llm_backend_url="$(env_config_value "$root" LLM_BACKEND_URL "$llm_backend_url")"
-  llm_backend_key="$(env_config_value "$root" LLM_BACKEND_API_KEY "$llm_backend_key")"
-  llm_backend_model="$(env_config_value "$root" LLM_BACKEND_MODEL "$llm_backend_model")"
+  if [[ "$provider" != "no-llm" ]]; then
+    llm_backend_url="$(env_config_value "$root" LLM_BACKEND_URL "$llm_backend_url")"
+    llm_backend_key="$(env_config_value "$root" LLM_BACKEND_API_KEY "$llm_backend_key")"
+    llm_backend_model="$(env_config_value "$root" LLM_BACKEND_MODEL "$llm_backend_model")"
+  fi
 
   echo
   echo "FreeSurfer license note:"

@@ -172,6 +172,7 @@ class ProviderSummary(BaseModel):
     provider_family: str
     model: str
     role: str
+    is_default: bool = False
     native_tool_calling: bool = False
     json_mode: bool = True
     vision: bool = False

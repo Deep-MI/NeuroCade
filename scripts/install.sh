@@ -36,7 +36,7 @@ Options:
   --prerelease                    Clone the latest prerelease tag for fresh one-line installs.
   --dev                           Clone the repository default branch for fresh one-line installs.
   --mode local|internal|demo      Deployment profile. If omitted, prompts interactively.
-  --llm-provider NAME             openai-compatible, anthropic, google, or ollama.
+  --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
   --no-start                      Write configuration but do not start the Apptainer stack.
   --no-prereqs                    Do not install missing prerequisites such as uv, Node.js, Lima, or Apptainer.
   --desktop                       Prepare the local Electron desktop launcher.
@@ -604,7 +604,7 @@ prompt_desktop_shortcut() {
     echo "Skipping Desktop shortcut prompt under WSL."
     return
   fi
-  if confirm "Create a Desktop shortcut icon? Pros: one-click launch from the Desktop, uses the NeuroCade icon, and starts the local backend automatically. Cons: adds an icon/link to your Desktop folder and depends on the Electron launcher files staying in this install location." "y"; then
+  if confirm "Create a Desktop shortcut icon?" "y"; then
     create_desktop_shortcut "$root"
   fi
 }
@@ -787,7 +787,8 @@ main() {
           "openai-compatible|Custom OpenAI-compatible API base URL." \
           "anthropic|Anthropic Claude API." \
           "google|Google Gemini API." \
-          "ollama|Local Ollama server."
+          "ollama|Local Ollama server." \
+          "no-llm|Skip LLM setup; assistant features will be disabled."
       )"
     fi
   fi

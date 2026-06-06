@@ -85,6 +85,18 @@ def _openai_compatible_availability_reason(base_url: str | None) -> str | None:
     return None
 
 
+def _no_llm_config(role: ProviderRole) -> ModelConfig:
+    return ModelConfig(
+        provider="no-llm",
+        provider_family="none",
+        model="no-llm",
+        role=role,
+        capabilities=ProviderCapabilities(native_tool_calling=False, json_mode=False, vision=False, streaming=False),
+        available=False,
+        availability_reason="LLM setup was skipped during install",
+    )
+
+
 class ProviderRegistry:
     def __init__(self) -> None:
         default_openai_capabilities = ProviderCapabilities(
@@ -118,6 +130,7 @@ class ProviderRegistry:
                     available=chat_availability_reason is None,
                     availability_reason=chat_availability_reason,
                 ),
+                _no_llm_config(ProviderRole.chat),
             ],
             ProviderRole.orchestration: [
                 ModelConfig(
@@ -131,6 +144,7 @@ class ProviderRegistry:
                     available=orchestration_availability_reason is None,
                     availability_reason=orchestration_availability_reason,
                 ),
+                _no_llm_config(ProviderRole.orchestration),
             ],
             ProviderRole.embedding: [],
         }
@@ -235,6 +249,14 @@ class ProviderRegistry:
         """Return all registered model configurations."""
         return [config for configs in self._configs.values() for config in configs]
 
+    def default_provider_for_role(self, role: ProviderRole) -> str | None:
+        """Return the configured default provider name for a model role."""
+        return self._default_provider_by_role.get(role)
+
+    def is_default_provider(self, role: ProviderRole, provider: str) -> bool:
+        """Return whether a provider matches the configured default for a role."""
+        return _normalize_provider_name(provider) == _normalize_provider_name(self.default_provider_for_role(role))
+
     def get(self, role: ProviderRole, provider_override: str | None = None, model_override: str | None = None) -> ModelConfig:
         """Resolve the active provider configuration for a role."""
         configs = self._configs[role]
@@ -314,6 +336,9 @@ class ProviderRegistry:
                 base_url=config.base_url,
                 temperature=0,
             )
+
+        if config.provider_family == "none":
+            raise ValueError(config.availability_reason or "Assistant is disabled because no LLM provider is configured")
 
         raise ValueError(f"Unsupported provider family: {config.provider_family}")
 

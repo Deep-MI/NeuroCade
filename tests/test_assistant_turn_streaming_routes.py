@@ -201,6 +201,7 @@ def test_provider_listing_redacts_internal_base_urls(test_client):
     assert response.status_code == 200
     assert response.json()
     assert all("base_url" not in item for item in response.json())
+    assert all("is_default" in item for item in response.json())
 
 
 def test_clear_assistant_history_delete_route(monkeypatch, test_client):
