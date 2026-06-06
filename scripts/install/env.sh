@@ -372,6 +372,7 @@ write_env() {
     env_line_configured "$root" GID "$(id -g)"
     env_line_configured "$root" HOST_DATA_DIR "$host_data_dir"
     env_line TOOL_CATALOG_DIR "$root/llm-data/tool-catalog"
+    env_line_configured "$root" NEUROCADE_CONTAINER_RELEASE_TAG "${NEUROCADE_CONTAINER_RELEASE_TAG:-latest}"
     env_line NEUROCADE_CONTAINER_ROOT "$root/.apptainer/containers"
     env_line NEUROCADE_CONTAINER_INVENTORY "$root/llm-data/tool-catalog/installed_containers.json"
     env_line NEUROCADE_INSTALLED_TOOLS_JSONL "$root/llm-data/tool-catalog/installed_tools.jsonl"

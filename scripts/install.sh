@@ -8,7 +8,7 @@ APP_DISPLAY_NAME="NeuroCade"
 REPO_URL="${NEUROCADE_REPO_URL:-https://github.com/Deep-MI/NeuroCade.git}"
 DEFAULT_INSTALL_DIR="${NEUROCADE_INSTALL_DIR:-$HOME/NeuroCade}"
 DEFAULT_RELEASE_CHANNEL="${NEUROCADE_INSTALL_CHANNEL:-stable}"
-NEUROCADE_RELEASE_CONTAINER_BASE_URL="${NEUROCADE_RELEASE_CONTAINER_BASE_URL:-https://github.com/Deep-MI/NeuroCade/releases}"
+RELEASE_CONTAINER_BASE_URL="https://github.com/Deep-MI/NeuroCade/releases"
 SAMPLE_CASE_ARTIFACT_NAME="${NEUROCADE_SAMPLE_CASE_ARTIFACT_NAME:-neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz}"
 REQUIRED_RUNTIME_ASSET_NAME="${NEUROCADE_REQUIRED_RUNTIME_ASSET_NAME:-bash-image-python-3.12.sif}"
 LOCAL_APPTAINER_DIR_REL=".apptainer/runtime"
@@ -42,7 +42,6 @@ Options:
   --desktop                       Prepare the local Electron desktop launcher.
   --no-desktop                    Skip Electron desktop setup.
   --with-freesurfer               Download and install the full licensed FreeSurfer runtime image.
-  --with-demo-case                Download the release demo/sample case after configuration.
   --dry-run                       Show planned actions without writing files or starting services.
   --doctor                        Check host readiness and show the installer plan.
   --yes                           Accept defaults for omitted prompts.
@@ -175,16 +174,16 @@ neurocade_release_asset_url() {
   local filename="$1"
   local tag="${NEUROCADE_CONTAINER_RELEASE_TAG:-latest}"
   if [[ -z "$tag" || "$tag" == "latest" ]]; then
-    printf '%s/latest/download/%s\n' "${NEUROCADE_RELEASE_CONTAINER_BASE_URL%/}" "$filename"
+    printf '%s/latest/download/%s\n' "${RELEASE_CONTAINER_BASE_URL%/}" "$filename"
   else
-    printf '%s/download/%s/%s\n' "${NEUROCADE_RELEASE_CONTAINER_BASE_URL%/}" "$tag" "$filename"
+    printf '%s/download/%s/%s\n' "${RELEASE_CONTAINER_BASE_URL%/}" "$tag" "$filename"
   fi
 }
 
 neurocade_release_asset_url_for_tag() {
   local tag="$1"
   local filename="$2"
-  printf '%s/download/%s/%s\n' "${NEUROCADE_RELEASE_CONTAINER_BASE_URL%/}" "$tag" "$filename"
+  printf '%s/download/%s/%s\n' "${RELEASE_CONTAINER_BASE_URL%/}" "$tag" "$filename"
 }
 
 bootstrap_from_raw_script() {
@@ -281,7 +280,6 @@ INSTALL_CHANNEL="$DEFAULT_RELEASE_CHANNEL"
 START_STACK=1
 START_SKIP_REASON=""
 INSTALL_PREREQS=1
-WITH_DEMO_CASE=0
 INSTALL_FREESURFER=0
 DESKTOP_MODE=auto
 ASSUME_YES=0
@@ -289,6 +287,8 @@ DRY_RUN=0
 DOCTOR=0
 IMAGE_PREFETCH_PID=""
 IMAGE_PREFETCH_LOG=""
+SAMPLE_CASE_PREFETCH_PID=""
+SAMPLE_CASE_PREFETCH_LOG=""
 
 if [[ "${NEUROCADE_INSTALL_FREESURFER:-}" == "1" ]]; then
   INSTALL_FREESURFER=1
@@ -339,10 +339,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-desktop)
       DESKTOP_MODE=disabled
-      shift
-      ;;
-    --with-demo-case)
-      WITH_DEMO_CASE=1
       shift
       ;;
     --with-freesurfer)
@@ -451,7 +447,58 @@ cleanup_image_prefetch() {
   wait "$IMAGE_PREFETCH_PID" 2>/dev/null || true
   IMAGE_PREFETCH_PID=""
 }
-trap cleanup_image_prefetch EXIT
+
+start_sample_case_prefetch() {
+  local root="$1"
+  SAMPLE_CASE_PREFETCH_LOG="$root/.runtime/logs/sample-case-prefetch.log"
+  mkdir -p "$root/.runtime/logs"
+  echo "Starting demo/sample case download in the background. Log: $SAMPLE_CASE_PREFETCH_LOG"
+  (
+    cd "$root"
+    download_sample_case_release_asset "$root"
+  ) >"$SAMPLE_CASE_PREFETCH_LOG" 2>&1 &
+  SAMPLE_CASE_PREFETCH_PID="$!"
+}
+
+wait_sample_case_prefetch() {
+  [[ -n "$SAMPLE_CASE_PREFETCH_PID" ]] || return 0
+  local started_at="$SECONDS"
+  local spinner='|/-\'
+  local spinner_index=0
+  echo "Waiting for demo/sample case download to finish. Log: $SAMPLE_CASE_PREFETCH_LOG"
+  while kill -0 "$SAMPLE_CASE_PREFETCH_PID" 2>/dev/null; do
+    local elapsed=$((SECONDS - started_at))
+    if is_tty; then
+      printf '\rDemo/sample case download still running %s (%ss). Log: %s' "${spinner:$((spinner_index % ${#spinner})):1}" "$elapsed" "$SAMPLE_CASE_PREFETCH_LOG"
+      spinner_index=$((spinner_index + 1))
+    elif (( elapsed % 15 == 0 )); then
+      echo "Demo/sample case download still running (${elapsed}s). Log: $SAMPLE_CASE_PREFETCH_LOG"
+    fi
+    sleep 1
+  done
+  if is_tty; then
+    printf '\n'
+  fi
+  if wait "$SAMPLE_CASE_PREFETCH_PID"; then
+    echo "Demo/sample case download complete."
+  else
+    echo "Warning: demo/sample case artifact could not be found or downloaded; skipping sample case. Log: $SAMPLE_CASE_PREFETCH_LOG" >&2
+  fi
+  SAMPLE_CASE_PREFETCH_PID=""
+}
+
+cleanup_sample_case_prefetch() {
+  [[ -n "$SAMPLE_CASE_PREFETCH_PID" ]] || return 0
+  kill "$SAMPLE_CASE_PREFETCH_PID" 2>/dev/null || true
+  wait "$SAMPLE_CASE_PREFETCH_PID" 2>/dev/null || true
+  SAMPLE_CASE_PREFETCH_PID=""
+}
+
+cleanup_prefetches() {
+  cleanup_image_prefetch
+  cleanup_sample_case_prefetch
+}
+trap cleanup_prefetches EXIT
 
 should_setup_desktop() {
   local mode="$1"
@@ -615,44 +662,6 @@ download_sample_case_release_asset() {
   echo "Demo/sample case installed at $root/sample_case/FastSurfer_Rhineland_0000."
 }
 
-maybe_setup_demo_case() {
-  local root="$1"
-  if [[ "$WITH_DEMO_CASE" -eq 0 && "$MODE" == "local" ]] && sample_case_prepared "$root"; then
-    echo "Demo/sample case is already prepared at $root/sample_case/FastSurfer_Rhineland_0000."
-    return
-  fi
-  if [[ "$WITH_DEMO_CASE" -eq 0 && "$MODE" == "local" ]]; then
-    if [[ "$ASSUME_YES" -eq 1 || ! is_tty ]]; then
-      echo "Skipping the demo/sample case. Use --with-demo-case to download the release sample case or build it locally."
-    else
-      local demo_default="n"
-      local demo_prompt="Initialize the demo/sample case now? This downloads the release sample case when available."
-      if confirm "$demo_prompt" "$demo_default"; then
-        WITH_DEMO_CASE=1
-      fi
-    fi
-  fi
-  if [[ "$WITH_DEMO_CASE" -eq 1 ]]; then
-    log_section "Downloading demo/sample case"
-    if download_sample_case_release_asset "$root"; then
-      echo "<== Downloading demo/sample case complete"
-    else
-      echo "Release sample case download failed."
-      if freesurfer_license_available "$root"; then
-        echo "Falling back to building the demo/sample case locally."
-        run_step "Processing demo/sample case" env FREESURFER_LICENSE="${FREESURFER_LICENSE:-$(env_file_value "$root" FREESURFER_LICENSE)}" "$root/scripts/process_demo_case.sh"
-      else
-        cat >&2 <<EOF
-The release sample case could not be downloaded, and no FreeSurfer license was found.
-Add a license at neurocade-data/license.txt or provide FREESURFER_LICENSE before
-building the demo case locally.
-EOF
-        return 1
-      fi
-    fi
-  fi
-}
-
 print_completion() {
   local root="$1"
   local app_url
@@ -726,17 +735,18 @@ main() {
   setup_install_logging "$root"
   run_step "Preparing Python runtime" ensure_python_runtime "$root"
   start_image_prefetch "$root"
+  start_sample_case_prefetch "$root"
   run_step "Preparing local Node.js runtime" ensure_node "$root"
   run_step "Preparing Apptainer runtime" ensure_apptainer "$root"
   run_step "Writing configuration" write_env "$root" "$MODE" "$LLM_PROVIDER"
+  run_step "Installing infrastructure images" "$root/scripts/apptainer/images.sh" infra
   wait_image_prefetch
   local install_command=("$root/scripts/containers.sh" install core --source auto)
   if [[ "$INSTALL_FREESURFER" -eq 1 ]]; then
     install_command+=(--with-freesurfer)
   fi
   run_step "Installing core runtime containers" "${install_command[@]}"
-
-  maybe_setup_demo_case "$root"
+  wait_sample_case_prefetch
   if should_setup_desktop "$MODE"; then
     setup_desktop_launcher "$root"
     START_STACK=0

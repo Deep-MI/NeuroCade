@@ -82,7 +82,6 @@ case "${1:-}" in
       printf '%s\\n' 'fi'
       printf '%s\\n' '{'
       printf '%s\\n' '  printf "repo=%s\\n" "$NEUROCADE_REPO_URL"'
-      printf '%s\\n' '  printf "assets=%s\\n" "$NEUROCADE_RELEASE_CONTAINER_BASE_URL"'
       printf '%s\\n' '  printf "channel=%s\\n" "$NEUROCADE_INSTALL_CHANNEL"'
       printf '%s\\n' '} > "$EXEC_ENV_LOG"'
     } > "$target/scripts/install.sh"
@@ -141,7 +140,6 @@ exit 0
     assert exec_log.read_text(encoding="utf-8") == "--mode\nlocal\n"
     assert exec_env_log.read_text(encoding="utf-8") == (
         "repo=https://example.invalid/Deep-MI/NeuroCade.git\n"
-        "assets=https://github.com/Deep-MI/NeuroCade/releases\n"
         "channel=stable\n"
     )
 
@@ -269,6 +267,7 @@ def test_env_example_exposes_installer_managed_settings() -> None:
         "NEUROCADE_VERSION_CHECK_URL=",
         "NEUROCADE_UPDATE_CHECK_INTERVAL_SECONDS=",
         "APPTAINER_BIN=",
+        "NEUROCADE_CONTAINER_RELEASE_TAG=",
         "NEUROCADE_CONTAINER_ROOT=",
         "NEUROCADE_CONTAINER_INVENTORY=",
         "NEUROCADE_INSTALLED_TOOLS_JSONL=",
@@ -345,8 +344,13 @@ def test_electron_launcher_is_local_stack_wrapper() -> None:
     assert "install_lima_macos_local" in install_bundle_text
     assert "NEUROCADE_INSTALL_TELEMETRY_URL" not in install_bundle_text
     assert "git clone \"$REPO_URL\"" not in common_text
-    assert 'env FREESURFER_LICENSE="${FREESURFER_LICENSE:-$(env_file_value "$root" FREESURFER_LICENSE)}" "$root/scripts/process_demo_case.sh"' in install_text
-    assert 'demo_default="n"' in install_text
+    assert "start_sample_case_prefetch" in install_text
+    assert "wait_sample_case_prefetch" in install_text
+    assert "sample-case-prefetch.log" in install_text
+    assert 'run_step "Installing infrastructure images" "$root/scripts/apptainer/images.sh" infra' in install_text
+    assert "process_demo_case.sh" not in install_text
+    assert 'demo_default="n"' not in install_text
+    assert "Falling back to building the demo/sample case locally." not in install_text
     assert "A FreeSurfer license is highly recommended" in install_bundle_text
     assert "install_apptainer_linux" in install_bundle_text
     assert "install_apptainer_macos" in install_bundle_text
@@ -363,6 +367,8 @@ def test_installer_passes_freesurfer_opt_in_to_container_install() -> None:
     assert "--with-freesurfer)" in install_text
     assert "INSTALL_FREESURFER=1" in install_text
     assert 'prefetch_command=("$root/scripts/containers.sh" prefetch core)' in install_text
+    assert 'start_sample_case_prefetch "$root"' in install_text
+    assert 'run_step "Installing infrastructure images" "$root/scripts/apptainer/images.sh" infra' in install_text
     assert '[[ "$INSTALL_FREESURFER" -eq 1 ]] && freesurfer_license_available "$root"' in install_text
     assert 'prefetch_command+=(--with-freesurfer)' in install_text
     assert '"${prefetch_command[@]}"' in install_text
@@ -401,6 +407,8 @@ def _make_minimal_installer_checkout(tmp_path: Path) -> Path:
     (root / "scripts" / "install.sh").chmod(0o755)
     (root / "scripts" / "apptainer" / "up.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     (root / "scripts" / "apptainer" / "up.sh").chmod(0o755)
+    (root / "scripts" / "apptainer" / "images.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    (root / "scripts" / "apptainer" / "images.sh").chmod(0o755)
     (root / "scripts" / "containers.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     (root / "scripts" / "containers.sh").chmod(0o755)
     (install_dir / "common.sh").write_text(
@@ -450,7 +458,7 @@ def _run_sample_case_install(
     channel: str,
     container_release_tag: str,
     available_sample_tags: list[str],
-) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+) -> tuple[subprocess.CompletedProcess[str], list[str], str]:
     root = _make_minimal_installer_checkout(tmp_path)
     archive = _make_sample_case_archive(tmp_path)
     bin_dir = tmp_path / "bin"
@@ -543,7 +551,6 @@ exit 22
             "ollama",
             "--release-channel",
             channel,
-            "--with-demo-case",
             "--no-prereqs",
             "--no-start",
             "--no-desktop",
@@ -555,11 +562,12 @@ exit 22
         text=True,
         check=True,
     )
-    return result, curl_log.read_text(encoding="utf-8").splitlines()
+    sample_log = root / ".runtime" / "logs" / "sample-case-prefetch.log"
+    return result, curl_log.read_text(encoding="utf-8").splitlines(), sample_log.read_text(encoding="utf-8")
 
 
 def test_sample_case_download_uses_chosen_release_when_asset_exists(tmp_path: Path) -> None:
-    result, curl_urls = _run_sample_case_install(
+    result, curl_urls, sample_log = _run_sample_case_install(
         tmp_path,
         channel="prerelease",
         container_release_tag="v2026.6.4-beta.2",
@@ -572,10 +580,11 @@ def test_sample_case_download_uses_chosen_release_when_asset_exists(tmp_path: Pa
         "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.2/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
     ]
     assert "scanning older release assets" not in result.stderr
+    assert "scanning older release assets" not in sample_log
 
 
 def test_sample_case_download_scans_older_beta_assets_for_prerelease(tmp_path: Path) -> None:
-    result, curl_urls = _run_sample_case_install(
+    result, curl_urls, sample_log = _run_sample_case_install(
         tmp_path,
         channel="prerelease",
         container_release_tag="v2026.6.4-beta.2",
@@ -588,12 +597,12 @@ def test_sample_case_download_scans_older_beta_assets_for_prerelease(tmp_path: P
         "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
         "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
     ]
-    assert "Using demo/sample case asset from v2026.6.4-beta.1." in result.stderr
+    assert "Using demo/sample case asset from v2026.6.4-beta.1." in sample_log
     assert all("/v2026.10.1/" not in url for url in sample_urls)
 
 
 def test_sample_case_download_scans_older_stable_assets_for_stable_channel(tmp_path: Path) -> None:
-    result, curl_urls = _run_sample_case_install(
+    result, curl_urls, sample_log = _run_sample_case_install(
         tmp_path,
         channel="stable",
         container_release_tag="v2026.10.1",
@@ -606,8 +615,22 @@ def test_sample_case_download_scans_older_stable_assets_for_stable_channel(tmp_p
         "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
         "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
     ]
-    assert "Using demo/sample case asset from v2026.6.4." in result.stderr
+    assert "Using demo/sample case asset from v2026.6.4." in sample_log
     assert all("-beta." not in url for url in sample_urls)
+
+
+def test_sample_case_download_warns_and_skips_when_no_release_asset_exists(tmp_path: Path) -> None:
+    result, curl_urls, sample_log = _run_sample_case_install(
+        tmp_path,
+        channel="stable",
+        container_release_tag="v2026.10.1",
+        available_sample_tags=[],
+    )
+
+    sample_urls = [url for url in curl_urls if url.endswith("neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz")]
+    assert sample_urls
+    assert "scanning older release assets" in sample_log
+    assert "Warning: demo/sample case artifact could not be found or downloaded; skipping sample case." in result.stderr
 
 
 def test_local_installer_disables_traefik_dashboard_by_default(tmp_path: Path) -> None:

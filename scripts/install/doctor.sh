@@ -158,8 +158,8 @@ run_doctor() {
   echo "  - create $root/neurocade-data/output"
   echo "  - install uv, then create $root/.venv from pyproject.toml"
   echo "  - download Apptainer/Lima/Node only when missing and --no-prereqs is not set"
-  echo "  - skip demo data unless --with-demo-case is used or an interactive user opts in"
-  echo "  - download the release demo/sample case before attempting a local FastSurfer build"
+  echo "  - attempt the release demo/sample case download in the background"
+  echo "  - warn and continue when no release demo/sample case artifact is available"
   if [[ -n "${NEUROCADE_VERSION_CHECK_URL:-}" ]]; then
     echo "  - run update checks for NeuroCade at app startup and every 24 hours while running"
   else
