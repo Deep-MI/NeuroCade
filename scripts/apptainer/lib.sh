@@ -290,22 +290,41 @@ stop_host_orphan() {
   esac
 
   command -v lsof >/dev/null 2>&1 || return 0
-  local pids pid command_line
+  local pids pid command_line remaining
   pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
   for pid in $pids; do
     command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
     [[ -n "$command_line" ]] || continue
-    if [[ "$command_line" =~ $pattern ]] && [[ "$command_line" == *"NeuroCade"* ]]; then
+    if [[ "$command_line" =~ $pattern ]] && { [[ "$command_line" == *"$ROOT_DIR"* ]] || [[ "$command_line" == *"NeuroCade"* ]]; }; then
       echo "Stopping stale $name listener on port $port (pid $pid)"
       kill "$pid" 2>/dev/null || true
     fi
   done
-  sleep 1
+  for _ in {1..20}; do
+    remaining=0
+    for pid in $pids; do
+      command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      [[ -n "$command_line" ]] || continue
+      if [[ "$command_line" =~ $pattern ]] && { [[ "$command_line" == *"$ROOT_DIR"* ]] || [[ "$command_line" == *"NeuroCade"* ]]; }; then
+        remaining=1
+      fi
+    done
+    (( remaining )) || break
+    sleep 0.1
+  done
   for pid in $pids; do
     command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
     [[ -n "$command_line" ]] || continue
-    if [[ "$command_line" =~ $pattern ]] && [[ "$command_line" == *"NeuroCade"* ]]; then
+    if [[ "$command_line" =~ $pattern ]] && { [[ "$command_line" == *"$ROOT_DIR"* ]] || [[ "$command_line" == *"NeuroCade"* ]]; }; then
       kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
+  sleep 0.2
+  for pid in $pids; do
+    command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    [[ -n "$command_line" ]] || continue
+    if [[ "$command_line" =~ $pattern ]] && { [[ "$command_line" == *"$ROOT_DIR"* ]] || [[ "$command_line" == *"NeuroCade"* ]]; }; then
+      echo "Warning: $name listener on port $port is still running after shutdown attempt (pid $pid)." >&2
     fi
   done
 }

@@ -88,6 +88,15 @@ function appendLog(message) {
   ).catch(() => {});
 }
 
+function formatElapsed(ms) {
+  return `${(ms / 1000).toFixed(3)}s`;
+}
+
+function timingLogger(label) {
+  const startedAt = performance.now();
+  return () => appendLog(`[startup timing] ${label}: ${formatElapsed(performance.now() - startedAt)}`);
+}
+
 function startupHtml() {
   return `<!doctype html>
 <html>
@@ -198,10 +207,14 @@ function spawnLogged(command, args, options = {}) {
 }
 
 async function waitForGatewayHealth(gatewayHealthUrl, apiServiceHealthUrl) {
+  const finishTiming = timingLogger('Electron gateway health wait');
   const deadline = Date.now() + healthTimeoutMs;
   let apiServiceWasHealthy = false;
   while (Date.now() < deadline) {
-    if (await isHealthy(gatewayHealthUrl)) return;
+    if (await isHealthy(gatewayHealthUrl)) {
+      finishTiming();
+      return;
+    }
     if (apiServiceHealthUrl && await isHealthy(apiServiceHealthUrl)) {
       apiServiceWasHealthy = true;
     }
@@ -216,14 +229,19 @@ async function waitForGatewayHealth(gatewayHealthUrl, apiServiceHealthUrl) {
 }
 
 async function startBackendIfNeeded(healthUrl, apiServiceHealthUrl) {
+  const finishInitialHealthTiming = timingLogger('Electron initial health check');
   appendLog(`Checking ${healthUrl}`);
   if (await isHealthy(healthUrl)) {
+    finishInitialHealthTiming();
     appendLog('Local backend is already running.');
     return false;
   }
+  finishInitialHealthTiming();
   appendLog('Starting local Apptainer stack.');
   startedStack = true;
+  const finishUpTiming = timingLogger('scripts/apptainer/up.sh -d');
   await spawnLogged(apptainerUpScript, ['-d']);
+  finishUpTiming();
   appendLog(`Waiting for ${appDisplayName} gateway.`);
   await waitForGatewayHealth(healthUrl, apiServiceHealthUrl);
   appendLog(`${appDisplayName} gateway is ready.`);
@@ -275,6 +293,7 @@ ipcMain.on('neurocade:titlebar-theme', (event, theme) => {
 });
 
 async function boot() {
+  const finishBackendReadyTiming = timingLogger('Electron backend-ready total');
   createWindow();
   const env = await readEnvFile();
   const appBaseUrl = env.APP_BASE_URL || 'http://localhost:8005';
@@ -282,6 +301,7 @@ async function boot() {
   const apiServiceHealthUrl = apiServiceHealthUrlFor(env);
   try {
     await startBackendIfNeeded(healthUrl, apiServiceHealthUrl);
+    finishBackendReadyTiming();
     await mainWindow?.loadURL(appBaseUrl);
   } catch (error) {
     appendLog(error.stack || error.message);

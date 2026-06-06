@@ -835,6 +835,95 @@ def test_install_core_indexes_existing_containers_when_index_missing(monkeypatch
     assert len(merge_calls) == 1
 
 
+def test_install_core_skips_hashing_existing_current_indexes(monkeypatch, tmp_path: Path):
+    """Verify startup install checks do not hash already-indexed core images."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
+    monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
+    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
+    monkeypatch.setattr(containers, "license_path", lambda root=None: None)
+
+    for name in ("fastsurfer", "bash_image", "dcm2niix"):
+        spec = CORE_SPECS[name]
+        image = containers.default_image_path(spec)
+        image.parent.mkdir(parents=True)
+        image.write_text("fake image", encoding="utf-8")
+        row = containers._container_row_without_hash(spec, image)
+        (image.parent / "index_meta.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": containers.CONTAINER_INDEX_SCHEMA_VERSION,
+                    "image_path": row["image_path"],
+                    "image_name": row["image_name"],
+                    "image_mtime_ns": row["image_mtime_ns"],
+                    "image_size_bytes": row["image_size_bytes"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (image.parent / "tool_index.jsonl").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_sha256_file", lambda _path: (_ for _ in ()).throw(AssertionError("should not hash existing images")))
+    monkeypatch.setattr(containers, "refresh_container_index", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not refresh")))
+    monkeypatch.setattr(containers, "merge_container_indexes", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not merge")))
+
+    install_core(source="auto")
+
+
+def test_check_core_fast_validates_existing_indexes(monkeypatch, tmp_path: Path):
+    """Verify the startup core check validates paths and sidecars without image hashing."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
+    monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
+
+    rows = []
+    for name in ("fastsurfer", "bash_image", "dcm2niix"):
+        spec = CORE_SPECS[name]
+        image = containers.default_image_path(spec, tmp_path)
+        image.parent.mkdir(parents=True)
+        image.write_text("fake image", encoding="utf-8")
+        row = containers._container_row_without_hash(spec, image)
+        rows.append(row)
+        (image.parent / "index_meta.json").write_text("{}", encoding="utf-8")
+        (image.parent / "tool_index.jsonl").write_text("{}\n", encoding="utf-8")
+
+    inventory = tmp_path / "tool-catalog" / "installed_containers.json"
+    tools = tmp_path / "tool-catalog" / "installed_tools.jsonl"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text(json.dumps({"containers": rows}), encoding="utf-8")
+    tools.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(containers, "_sha256_file", lambda _path: (_ for _ in ()).throw(AssertionError("should not hash")))
+
+    containers.check_core_fast(root=tmp_path)
+
+
+def test_check_core_fast_fails_when_sidecar_missing(monkeypatch, tmp_path: Path):
+    """Verify the startup core check falls back when a per-container index is missing."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
+    monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
+
+    rows = []
+    for name in ("fastsurfer", "bash_image", "dcm2niix"):
+        spec = CORE_SPECS[name]
+        image = containers.default_image_path(spec, tmp_path)
+        image.parent.mkdir(parents=True)
+        image.write_text("fake image", encoding="utf-8")
+        rows.append(containers._container_row_without_hash(spec, image))
+
+    inventory = tmp_path / "tool-catalog" / "installed_containers.json"
+    tools = tmp_path / "tool-catalog" / "installed_tools.jsonl"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text(json.dumps({"containers": rows}), encoding="utf-8")
+    tools.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="sidecar"):
+        containers.check_core_fast(root=tmp_path)
+
+
 def test_install_core_can_skip_refresh(monkeypatch, tmp_path: Path):
     """Verify install core can skip the expensive index refresh."""
     monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
@@ -1081,6 +1170,21 @@ def test_prefetch_core_cli_passes_with_freesurfer(monkeypatch):
     containers.main(["prefetch", "core", "--with-freesurfer"])
 
     assert calls == [{"dry_run": False, "include_freesurfer": True}]
+
+
+def test_check_core_fast_cli_passes_with_freesurfer(monkeypatch, capsys):
+    """Verify check core --fast CLI flags are passed through."""
+    calls = []
+
+    def fake_check_core_fast(*, include_freesurfer):
+        calls.append(include_freesurfer)
+
+    monkeypatch.setattr(containers, "check_core_fast", fake_check_core_fast)
+
+    containers.main(["check", "core", "--fast", "--with-freesurfer"])
+
+    assert calls == [True]
+    assert "lightweight startup check" in capsys.readouterr().out
 
 
 def test_install_container_cli_honors_no_harvest_help(monkeypatch):

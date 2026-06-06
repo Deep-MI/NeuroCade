@@ -534,6 +534,81 @@ setup_desktop_launcher() {
   "$root/scripts/desktop/install_launcher.sh"
 }
 
+is_wsl_host() {
+  [[ "$(uname -s 2>/dev/null || true)" == "Linux" && -r /proc/version ]] && grep -qi microsoft /proc/version
+}
+
+create_desktop_shortcut() {
+  local root="$1"
+  local runner="$root/scripts/desktop/run.sh"
+  local app_name="NeuroCade"
+  case "$(uname -s 2>/dev/null || true)" in
+    Linux)
+      if is_wsl_host; then
+        echo "Skipping Desktop shortcut creation under WSL."
+        return 0
+      fi
+      local desktop_dir
+      if command -v xdg-user-dir >/dev/null 2>&1; then
+        desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+      fi
+      desktop_dir="${desktop_dir:-$HOME/Desktop}"
+      mkdir -p "$desktop_dir"
+      local desktop_file="$desktop_dir/NeuroCade.desktop"
+      cat >"$desktop_file" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$app_name
+Comment=Local NeuroCade desktop launcher
+Exec=$runner
+Icon=$root/client/electron/assets/icon.png
+Terminal=false
+Categories=Science;Education;
+StartupNotify=true
+EOF
+      chmod 755 "$desktop_file"
+      if command -v gio >/dev/null 2>&1; then
+        gio set "$desktop_file" metadata::trusted true >/dev/null 2>&1 || true
+      fi
+      echo "Created Desktop shortcut: $desktop_file"
+      ;;
+    Darwin)
+      local desktop_dir="$HOME/Desktop"
+      local app_bundle="$HOME/Applications/NeuroCade.app"
+      local shortcut="$desktop_dir/NeuroCade.app"
+      mkdir -p "$desktop_dir"
+      if [[ ! -d "$app_bundle" ]]; then
+        echo "Skipping Desktop shortcut because $app_bundle was not found."
+        return 0
+      fi
+      if [[ -e "$shortcut" && ! -L "$shortcut" ]]; then
+        echo "Skipping Desktop shortcut because $shortcut already exists."
+        return 0
+      fi
+      ln -sfn "$app_bundle" "$shortcut"
+      echo "Created Desktop shortcut: $shortcut"
+      ;;
+    *)
+      echo "Desktop shortcut creation is not supported on this OS."
+      ;;
+  esac
+}
+
+prompt_desktop_shortcut() {
+  local root="$1"
+  local mode="$2"
+  if [[ "$mode" != "local" || "$DESKTOP_MODE" == "disabled" ]]; then
+    return
+  fi
+  if is_wsl_host; then
+    echo "Skipping Desktop shortcut prompt under WSL."
+    return
+  fi
+  if confirm "Create a Desktop shortcut icon? Pros: one-click launch from the Desktop, uses the NeuroCade icon, and starts the local backend automatically. Cons: adds an icon/link to your Desktop folder and depends on the Electron launcher files staying in this install location." "y"; then
+    create_desktop_shortcut "$root"
+  fi
+}
+
 sample_case_prepared() {
   local root="$1"
   local sample_dir="$root/sample_case/FastSurfer_Rhineland_0000"
@@ -752,6 +827,7 @@ main() {
     START_STACK=0
     START_SKIP_REASON="the Electron desktop launcher will start the local backend on first launch"
   fi
+  prompt_desktop_shortcut "$root" "$MODE"
 
   start_stack "$root"
   print_completion "$root"

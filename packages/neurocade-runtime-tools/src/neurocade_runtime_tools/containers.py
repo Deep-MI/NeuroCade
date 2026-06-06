@@ -531,6 +531,23 @@ def _container_row(spec: ContainerSpec, image: Path) -> dict[str, Any]:
     }
 
 
+def _container_row_without_hash(spec: ContainerSpec, image: Path) -> dict[str, Any]:
+    """Build a current container row without reading the whole image."""
+    stat = image.stat()
+    return {
+        "name": spec.name,
+        "kind": spec.kind,
+        "app": spec.app,
+        "runtime_version": spec.runtime_version,
+        "build_date": spec.build_date,
+        "image_name": spec.image_name,
+        "image_path": str(image.resolve()),
+        "image_size_bytes": stat.st_size,
+        "image_mtime_ns": stat.st_mtime_ns,
+        "commands": list(spec.command_names),
+    }
+
+
 def _generic_neurocontainer_rows(root: Path | None = None, *, skip_paths: set[Path] | None = None) -> list[dict[str, Any]]:
     """Return inventory rows for installed non-core NeuroContainers images."""
     neurocontainer_root = container_root(root) / "neurocontainer"
@@ -633,6 +650,35 @@ def container_status(root: Path | None = None) -> dict[str, Any]:
         "index_generated_at": inventory.get("generated_at"),
         "containers": rows,
     }
+
+
+def check_core_fast(*, root: Path | None = None, include_freesurfer: bool | None = None) -> None:
+    """Verify the core container startup contract without hashing image files."""
+    repo_root = find_repo_root(root)
+    inventory_target = inventory_path(repo_root)
+    tools_target = installed_tools_path(repo_root)
+    if not inventory_target.is_file() or inventory_target.stat().st_size == 0:
+        raise FileNotFoundError(f"missing inventory {inventory_target}")
+    if not tools_target.is_file() or tools_target.stat().st_size == 0:
+        raise FileNotFoundError(f"missing installed tool index {tools_target}")
+
+    indexed = _inventory_by_name(repo_root)
+    for name in core_install_plan(root=repo_root, include_freesurfer=include_freesurfer):
+        spec = resolve_container_spec(name)
+        image = default_image_path(spec, repo_root)
+        if not image.is_file():
+            raise FileNotFoundError(f"missing {name} image at {image}")
+        indexed_row = indexed.get(name)
+        if not indexed_row or not indexed_row.get("image_path"):
+            raise FileNotFoundError(f"missing {name} inventory row")
+        indexed_path = Path(str(indexed_row["image_path"])).expanduser()
+        if indexed_path.resolve() != image.resolve():
+            raise FileNotFoundError(f"{name} inventory points to {indexed_path}, expected {image}")
+
+        container = {"image_path": str(image)}
+        for sidecar in (container_index_meta_path(container), container_tool_index_path(container)):
+            if not sidecar.is_file() or sidecar.stat().st_size == 0:
+                raise FileNotFoundError(f"missing {name} sidecar {sidecar}")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1501,7 +1547,7 @@ def _install_core_images(source: str, dry_run: bool, *, include_freesurfer: bool
             raise RuntimeError(f"{spec.name} requires a FreeSurfer license. Install neurocade-data/license.txt first.")
         target = default_image_path(spec)
         if target.exists() and not dry_run:
-            container = _container_row(spec, target)
+            container = _container_row_without_hash(spec, target)
             print(f"{spec.name} already installed: {target}")
             if _load_container_index(container) is None:
                 print(f"{spec.name} local tool index is missing or stale; installing the bundled prebuilt index when available.")
@@ -1696,6 +1742,15 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("list", help="List managed containers")
     status_parser = subparsers.add_parser("status", help="Show managed container and index status")
     status_parser.add_argument("--json", action="store_true")
+    check_parser = subparsers.add_parser("check", help="Check managed container readiness")
+    check_parser.add_argument("name", choices=("core",))
+    check_parser.add_argument("--fast", action="store_true", help="Use startup-safe checks that avoid hashing image files.")
+    check_parser.add_argument(
+        "--with-freesurfer",
+        action="store_true",
+        default=None,
+        help="Include the full licensed FreeSurfer image in the core check.",
+    )
     refresh_parser = subparsers.add_parser("refresh-index", help="Refresh installed container inventory and tool index")
     refresh_parser.add_argument(
         "--no-harvest-help",
@@ -1739,6 +1794,19 @@ def main(argv: list[str] | None = None) -> None:
         list_containers()
     elif args.command == "status":
         print_status(as_json=args.json)
+    elif args.command == "check":
+        if args.name == "core" and args.fast:
+            try:
+                check_core_fast(include_freesurfer=args.with_freesurfer)
+            except FileNotFoundError as exc:
+                print(f"Core runtime container fast check failed: {exc}", file=sys.stderr)
+                raise SystemExit(1) from exc
+            print("Core runtime containers already verified by lightweight startup check.")
+        elif args.name == "core":
+            missing = [row["name"] for row in container_status()["containers"] if row["planned_by_core_install"] and row["missing_message"]]
+            if missing:
+                raise FileNotFoundError(f"core container check failed for: {', '.join(missing)}")
+            print("Core runtime containers are installed.")
     elif args.command == "refresh-index":
         refresh_index(harvest_help=not args.no_harvest_help, rebuild_index=args.rebuild_index)
     elif args.command == "path":
