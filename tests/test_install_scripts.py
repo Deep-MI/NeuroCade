@@ -555,8 +555,8 @@ def test_sample_case_download_uses_chosen_release_when_asset_exists(tmp_path: Pa
 
     sample_urls = [url for url in curl_urls if url.endswith("neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz")]
     assert sample_urls == [
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.6.4-beta.2/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.6.4-beta.2/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.2/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.2/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
     ]
     assert "scanning older release assets" not in result.stderr
 
@@ -571,9 +571,9 @@ def test_sample_case_download_scans_older_beta_assets_for_prerelease(tmp_path: P
 
     sample_urls = [url for url in curl_urls if url.endswith("neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz")]
     assert sample_urls == [
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.6.4-beta.2/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.6.4-beta.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.6.4-beta.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.2/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4-beta.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
     ]
     assert "Using demo/sample case asset from v2026.6.4-beta.1." in result.stderr
     assert all("/v2026.10.1/" not in url for url in sample_urls)
@@ -589,9 +589,9 @@ def test_sample_case_download_scans_older_stable_assets_for_stable_channel(tmp_p
 
     sample_urls = [url for url in curl_urls if url.endswith("neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz")]
     assert sample_urls == [
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.10.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.6.4/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
-        "https://github.com/ClePol/NeuroCade/releases/download/v2026.6.4/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.10.1/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
+        "https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.4/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz",
     ]
     assert "Using demo/sample case asset from v2026.6.4." in result.stderr
     assert all("-beta." not in url for url in sample_urls)

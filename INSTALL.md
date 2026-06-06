@@ -6,7 +6,7 @@ The recommended setup path is the interactive installer. It works from an
 existing checkout, or as a copy-paste command that clones the repo when needed:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/ClePol/NeuroCade/main/scripts/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh)
 ```
 
 Fresh one-line installs clone the latest stable release tag by default. Use
@@ -55,8 +55,8 @@ Useful non-interactive examples:
 ./scripts/install.sh --mode demo --llm-provider openai-compatible
 ./scripts/install.sh --mode local --llm-provider ollama --with-demo-case
 ./scripts/install.sh --mode local --no-desktop
-bash <(curl -fsSL https://raw.githubusercontent.com/ClePol/NeuroCade/main/scripts/install.sh) --prerelease --mode local
-bash <(curl -fsSL https://raw.githubusercontent.com/ClePol/NeuroCade/main/scripts/install.sh) --dev --mode local
+bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --prerelease --mode local
+bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --dev --mode local
 ```
 
 Windows users should run the installer inside a Linux/WSL2 environment with

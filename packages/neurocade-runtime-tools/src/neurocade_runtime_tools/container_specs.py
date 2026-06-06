@@ -7,7 +7,7 @@ import os
 import re
 
 
-GITHUB_RELEASE_CONTAINER_BASE_URL = "https://github.com/ClePol/NeuroCade/releases"
+GITHUB_RELEASE_CONTAINER_BASE_URL = "https://github.com/Deep-MI/NeuroCade/releases"
 NEUROCONTAINERS_SINGULARITY_BASE_URL = "https://neurocontainers.neurodesk.workers.dev"
 DOCKER_HUB_API_BASE = "https://hub.docker.com"
 NEUROCONTAINERS_NAMESPACE = "vnmd"

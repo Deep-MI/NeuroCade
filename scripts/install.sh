@@ -5,10 +5,10 @@
 set -euo pipefail
 
 APP_DISPLAY_NAME="NeuroCade"
-REPO_URL="${NEUROCADE_REPO_URL:-https://github.com/ClePol/NeuroCade.git}"
+REPO_URL="${NEUROCADE_REPO_URL:-https://github.com/Deep-MI/NeuroCade.git}"
 DEFAULT_INSTALL_DIR="${NEUROCADE_INSTALL_DIR:-$HOME/NeuroCade}"
 DEFAULT_RELEASE_CHANNEL="${NEUROCADE_INSTALL_CHANNEL:-stable}"
-NEUROCADE_RELEASE_CONTAINER_BASE_URL="${NEUROCADE_RELEASE_CONTAINER_BASE_URL:-https://github.com/ClePol/NeuroCade/releases}"
+NEUROCADE_RELEASE_CONTAINER_BASE_URL="${NEUROCADE_RELEASE_CONTAINER_BASE_URL:-https://github.com/Deep-MI/NeuroCade/releases}"
 SAMPLE_CASE_ARTIFACT_NAME="${NEUROCADE_SAMPLE_CASE_ARTIFACT_NAME:-neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz}"
 REQUIRED_RUNTIME_ASSET_NAME="${NEUROCADE_REQUIRED_RUNTIME_ASSET_NAME:-bash-image-python-3.12.sif}"
 LOCAL_APPTAINER_DIR_REL=".apptainer/runtime"
@@ -24,7 +24,7 @@ usage() {
 NeuroCade interactive installer
 
 Quick install from a terminal:
-  bash <(curl -fsSL https://raw.githubusercontent.com/ClePol/NeuroCade/main/scripts/install.sh)
+  bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh)
 
 From an existing checkout:
   ./scripts/install.sh

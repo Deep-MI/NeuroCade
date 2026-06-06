@@ -82,7 +82,7 @@ TRAEFIK_SIF="${TRAEFIK_SIF:-$APPTAINER_IMAGE_DIR/traefik-v2.11.14.sif}"
 POSTGRES_OCI="${POSTGRES_OCI:-docker://postgres:16-alpine}"
 REDIS_OCI="${REDIS_OCI:-docker://redis:7.2.4-alpine}"
 TRAEFIK_OCI="${TRAEFIK_OCI:-docker://traefik:v2.11.14}"
-NEUROCADE_RELEASE_CONTAINER_BASE_URL="${NEUROCADE_RELEASE_CONTAINER_BASE_URL:-https://github.com/ClePol/NeuroCade/releases}"
+NEUROCADE_RELEASE_CONTAINER_BASE_URL="${NEUROCADE_RELEASE_CONTAINER_BASE_URL:-https://github.com/Deep-MI/NeuroCade/releases}"
 
 release_asset_url() {
   local filename="$1"

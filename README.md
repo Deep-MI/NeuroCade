@@ -11,7 +11,7 @@ It can be used as a local app or installed on a server and acccessed via a web-b
 Install NeuroCade locally:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/ClePol/NeuroCade/main/scripts/install.sh) --mode local --desktop
+bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --desktop
 ```
 
 The one-line installer clones the latest stable release by default. Add
@@ -21,7 +21,7 @@ branch.
 If `curl` is unavailable:
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/ClePol/NeuroCade/main/scripts/install.sh) --mode local --desktop
+bash <(wget -qO- https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --desktop
 ```
 
 From an existing checkout:
