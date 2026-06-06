@@ -57,6 +57,7 @@ def test_raw_installer_bootstrap_clones_selected_release_channel(tmp_path: Path)
     bin_dir.mkdir()
     git_log = tmp_path / "git.log"
     exec_log = tmp_path / "exec.log"
+    exec_env_log = tmp_path / "exec-env.log"
     fake_git = bin_dir / "git"
     fake_git.write_text(
         """#!/usr/bin/env bash
@@ -79,6 +80,11 @@ case "${1:-}" in
       printf '%s\\n' 'else'
       printf '%s\\n' '  : > "$EXEC_LOG"'
       printf '%s\\n' 'fi'
+      printf '%s\\n' '{'
+      printf '%s\\n' '  printf "repo=%s\\n" "$NEUROCADE_REPO_URL"'
+      printf '%s\\n' '  printf "assets=%s\\n" "$NEUROCADE_RELEASE_CONTAINER_BASE_URL"'
+      printf '%s\\n' '  printf "channel=%s\\n" "$NEUROCADE_INSTALL_CHANNEL"'
+      printf '%s\\n' '} > "$EXEC_ENV_LOG"'
     } > "$target/scripts/install.sh"
     chmod +x "$target/scripts/install.sh"
     ;;
@@ -112,6 +118,7 @@ exit 0
         bootstrap_run_count += 1
         git_log.write_text("", encoding="utf-8")
         exec_log.write_text("", encoding="utf-8")
+        exec_env_log.write_text("", encoding="utf-8")
         command_args = [*args]
         if include_mode:
             command_args.extend(["--mode", "local"])
@@ -121,32 +128,38 @@ exit 0
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "GIT_LOG": str(git_log),
             "EXEC_LOG": str(exec_log),
+            "EXEC_ENV_LOG": str(exec_env_log),
             "MISSING_RELEASE_ASSET_TAGS": missing_release_asset_tags,
             "NEUROCADE_INSTALL_DIR": str(install_dir),
-            "NEUROCADE_REPO_URL": "https://example.invalid/ClePol/NeuroCade.git",
+            "NEUROCADE_REPO_URL": "https://example.invalid/Deep-MI/NeuroCade.git",
         }
         subprocess.run(["bash", str(script_path), *command_args], env=env, capture_output=True, text=True, check=True)
         return git_log.read_text(encoding="utf-8")
 
     stable_log = run_bootstrap()
-    assert "clone --branch v2026.10.1 --depth 1 https://example.invalid/ClePol/NeuroCade.git" in stable_log
+    assert "clone --branch v2026.10.1 --depth 1 https://example.invalid/Deep-MI/NeuroCade.git" in stable_log
     assert exec_log.read_text(encoding="utf-8") == "--mode\nlocal\n"
+    assert exec_env_log.read_text(encoding="utf-8") == (
+        "repo=https://example.invalid/Deep-MI/NeuroCade.git\n"
+        "assets=https://github.com/Deep-MI/NeuroCade/releases\n"
+        "channel=stable\n"
+    )
 
     prerelease_log = run_bootstrap("--prerelease")
-    assert "clone --branch v2026.6.4-beta.2 --depth 1 https://example.invalid/ClePol/NeuroCade.git" in prerelease_log
+    assert "clone --branch v2026.6.4-beta.2 --depth 1 https://example.invalid/Deep-MI/NeuroCade.git" in prerelease_log
     assert exec_log.read_text(encoding="utf-8") == "--mode\nlocal\n"
 
     prerelease_fallback_log = run_bootstrap("--prerelease", missing_release_asset_tags="v2026.6.4-beta.2")
-    assert "clone --branch v2026.6.4-beta.1 --depth 1 https://example.invalid/ClePol/NeuroCade.git" in prerelease_fallback_log
+    assert "clone --branch v2026.6.4-beta.1 --depth 1 https://example.invalid/Deep-MI/NeuroCade.git" in prerelease_fallback_log
     assert exec_log.read_text(encoding="utf-8") == "--mode\nlocal\n"
 
     dev_log = run_bootstrap("--dev")
-    assert "clone https://example.invalid/ClePol/NeuroCade.git" in dev_log
+    assert "clone https://example.invalid/Deep-MI/NeuroCade.git" in dev_log
     assert "--branch" not in dev_log
     assert exec_log.read_text(encoding="utf-8") == "--mode\nlocal\n"
 
     no_forwarded_args_log = run_bootstrap(include_mode=False)
-    assert "clone --branch v2026.10.1 --depth 1 https://example.invalid/ClePol/NeuroCade.git" in no_forwarded_args_log
+    assert "clone --branch v2026.10.1 --depth 1 https://example.invalid/Deep-MI/NeuroCade.git" in no_forwarded_args_log
     assert exec_log.read_text(encoding="utf-8") == ""
 
 
