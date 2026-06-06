@@ -15,7 +15,6 @@ site/
 .vscode
 .idea
 llm-data/*
-!llm-data/tool-catalog/
 tests/screenshots/
 tests/artifacts/benchmark/
 neurocade-data/
@@ -36,7 +35,6 @@ playwright/.clerk/
 docker-compose
 ScienceDirect_files_*.zip
 old_backup/
-migrations/
 sample_case/*
 !sample_case/README.md
 !sample_case/create_fastsurfer_sample_case.sh

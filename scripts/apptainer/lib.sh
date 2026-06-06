@@ -204,6 +204,37 @@ uses_lima_apptainer() {
   [[ "$APPTAINER_BIN" == "$ROOT_DIR/.apptainer/bin/apptainer" ]] && command -v limactl >/dev/null 2>&1
 }
 
+lima_checkout_mount_live_writable() {
+  uses_lima_apptainer || return 0
+  limactl shell apptainer sh -c '
+root="$1"
+mkdir -p "$root/.runtime" || exit 1
+probe="$root/.runtime/.neurocade-lima-write-probe.$$"
+: >"$probe" && rm -f "$probe"
+' sh "$ROOT_DIR" >/dev/null 2>&1
+}
+
+ensure_lima_checkout_mount_live_writable() {
+  uses_lima_apptainer || return 0
+  if lima_checkout_mount_live_writable; then
+    return 0
+  fi
+  echo "Lima checkout mount is not writable; restarting the Apptainer VM to refresh mounts."
+  limactl stop apptainer
+  limactl start apptainer
+  if ! lima_checkout_mount_live_writable; then
+    cat >&2 <<EOF
+The NeuroCade checkout is not writable inside the Lima Apptainer VM:
+  $ROOT_DIR
+
+Check ~/.lima/apptainer/lima.yaml and make sure this checkout is mounted with:
+  - location: "$ROOT_DIR"
+    writable: true
+EOF
+    return 1
+  fi
+}
+
 stop_lima_orphan() {
   local name="$1"
   uses_lima_apptainer || return 0
@@ -237,6 +268,48 @@ stop_lima_orphan() {
   ' sh "$port" >/dev/null 2>&1 || true
 }
 
+stop_host_orphan() {
+  local name="$1"
+  local port="" pattern=""
+  case "$name" in
+    host-runtime-runner)
+      port="$HOST_RUNTIME_RUNNER_PORT"
+      pattern="api_service.host_runtime_runner"
+      ;;
+    api-service)
+      port="$API_SERVICE_PORT"
+      pattern="api_service.main"
+      ;;
+    client)
+      port="$CLIENT_PORT"
+      pattern="vite|serve_static_client.py"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  command -v lsof >/dev/null 2>&1 || return 0
+  local pids pid command_line
+  pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  for pid in $pids; do
+    command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    [[ -n "$command_line" ]] || continue
+    if [[ "$command_line" =~ $pattern ]] && [[ "$command_line" == *"NeuroCade"* ]]; then
+      echo "Stopping stale $name listener on port $port (pid $pid)"
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+  sleep 1
+  for pid in $pids; do
+    command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    [[ -n "$command_line" ]] || continue
+    if [[ "$command_line" =~ $pattern ]] && [[ "$command_line" == *"NeuroCade"* ]]; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
 start_service() {
   local name="$1"
   shift
@@ -247,6 +320,7 @@ start_service() {
     echo "$name already running (pid $(cat "$pid_file"))"
     return 0
   fi
+  stop_host_orphan "$name"
   echo "Starting $name"
   : >"$log_file"
   (
@@ -267,6 +341,7 @@ stop_service() {
   local pid_file pid
   pid_file="$(service_pid_file "$name")"
   if [[ ! -f "$pid_file" ]]; then
+    stop_host_orphan "$name"
     stop_lima_orphan "$name"
     return 0
   fi
@@ -280,6 +355,7 @@ stop_service() {
     done
     kill -9 "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
   fi
+  stop_host_orphan "$name"
   stop_lima_orphan "$name"
   rm -f "$pid_file"
 }

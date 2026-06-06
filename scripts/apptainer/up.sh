@@ -38,6 +38,7 @@ record_runtime_log_offsets() {
 record_runtime_log_offsets
 
 require_apptainer
+ensure_lima_checkout_mount_live_writable
 "$SCRIPT_DIR/images.sh" infra
 echo "Checking core runtime containers..."
 "$ROOT_DIR/scripts/containers.sh" install core --no-harvest-help
@@ -237,9 +238,12 @@ start_service update-checker "$PYTHON_BIN" "$ROOT_DIR/scripts/update_checker.py"
 traefik_args=(
   traefik
   --providers.file.filename=/config/traefik-dynamic.yml
-  --entrypoints.web.address="$APP_HTTP_BIND:$APP_HTTP_PORT"
 )
+TRAEFIK_ENTRYPOINT_BIND="$APP_HTTP_BIND"
 if [[ "$APPTAINER_BIN" == "$ROOT_DIR/.apptainer/bin/apptainer" ]]; then
+  if [[ "$TRAEFIK_ENTRYPOINT_BIND" == "127.0.0.1" || "$TRAEFIK_ENTRYPOINT_BIND" == "localhost" ]]; then
+    TRAEFIK_ENTRYPOINT_BIND="0.0.0.0"
+  fi
   echo "Skipping Traefik dashboard for Lima-backed Apptainer; the app gateway remains enabled."
 elif [[ "${TRAEFIK_DASHBOARD_ENABLED:-false}" == "true" || "${TRAEFIK_API_INSECURE:-false}" == "true" ]]; then
   if [[ "${TRAEFIK_API_INSECURE:-false}" == "true" && "$TRAEFIK_DASHBOARD_PORT" == "8080" ]]; then
@@ -264,6 +268,7 @@ EOF
     )
   fi
 fi
+traefik_args+=(--entrypoints.web.address="$TRAEFIK_ENTRYPOINT_BIND:$APP_HTTP_PORT")
 start_service traefik "$APPTAINER_BIN" exec --cleanenv --bind "$RUNTIME_DIR/traefik:/config:ro" "$TRAEFIK_SIF" "${traefik_args[@]}"
 
 wait_for_url "http://$API_SERVICE_HOST:$API_SERVICE_PORT/api/app/healthz" 180

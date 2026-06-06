@@ -199,14 +199,18 @@ function spawnLogged(command, args, options = {}) {
 
 async function waitForGatewayHealth(gatewayHealthUrl, apiServiceHealthUrl) {
   const deadline = Date.now() + healthTimeoutMs;
+  let apiServiceWasHealthy = false;
   while (Date.now() < deadline) {
     if (await isHealthy(gatewayHealthUrl)) return;
     if (apiServiceHealthUrl && await isHealthy(apiServiceHealthUrl)) {
-      throw new Error(
-        `${appDisplayName} API is healthy at ${apiServiceHealthUrl}, but the app gateway is not responding at ${gatewayHealthUrl}. Check Traefik logs and APP_BASE_URL.`,
-      );
+      apiServiceWasHealthy = true;
     }
     await sleep(healthPollMs);
+  }
+  if (apiServiceWasHealthy) {
+    throw new Error(
+      `${appDisplayName} API is healthy at ${apiServiceHealthUrl}, but the app gateway is not responding at ${gatewayHealthUrl}. Check Traefik logs and APP_BASE_URL.`,
+    );
   }
   throw new Error(`Timed out waiting for ${gatewayHealthUrl}`);
 }

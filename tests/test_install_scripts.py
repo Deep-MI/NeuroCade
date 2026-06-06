@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install.sh"
 APPTAINER_UP_SCRIPT = REPO_ROOT / "scripts" / "apptainer" / "up.sh"
+APPTAINER_LIB_SCRIPT = REPO_ROOT / "scripts" / "apptainer" / "lib.sh"
 APPTAINER_IMAGES_SCRIPT = REPO_ROOT / "scripts" / "apptainer" / "images.sh"
 CONTAINERS_SCRIPT = REPO_ROOT / "scripts" / "containers.sh"
 APPTAINER_DOWN_SCRIPT = REPO_ROOT / "scripts" / "apptainer" / "down.sh"
@@ -283,11 +284,13 @@ def test_env_example_exposes_installer_managed_settings() -> None:
     ]:
         assert key in env_example
     assert "NEURO_CLI_RECORDS_JSONL=" not in env_example
+    assert (REPO_ROOT / "migrations" / "env.py").is_file()
 
 
 def test_apptainer_launcher_is_rootless_and_port_driven() -> None:
     launcher_text = APPTAINER_UP_SCRIPT.read_text(encoding="utf-8")
     image_text = APPTAINER_IMAGES_SCRIPT.read_text(encoding="utf-8")
+    lib_text = APPTAINER_LIB_SCRIPT.read_text(encoding="utf-8")
 
     assert "images.sh\" infra" in launcher_text
     assert "containers.sh\" install core" in launcher_text
@@ -296,7 +299,11 @@ def test_apptainer_launcher_is_rootless_and_port_driven() -> None:
     assert "Python runtime dependencies already installed." in launcher_text
     assert "UV_CACHE_DIR" in launcher_text
     assert "start_service update-checker" in launcher_text
-    assert '--entrypoints.web.address="$APP_HTTP_BIND:$APP_HTTP_PORT"' in launcher_text
+    assert "stop_host_orphan" in lib_text
+    assert "Stopping stale $name listener on port $port" in lib_text
+    assert "ensure_lima_checkout_mount_live_writable" in launcher_text
+    assert 'TRAEFIK_ENTRYPOINT_BIND="0.0.0.0"' in launcher_text
+    assert '--entrypoints.web.address="$TRAEFIK_ENTRYPOINT_BIND:$APP_HTTP_PORT"' in launcher_text
     assert "serve_static_client.py" in launcher_text
     assert "POSTGRES_PORT" in launcher_text
     assert "Invalid Traefik dashboard configuration." in launcher_text
@@ -328,6 +335,7 @@ def test_electron_launcher_is_local_stack_wrapper() -> None:
     assert "startedStack" in electron_text
     assert "const healthTimeoutMs = 600_000" in electron_text
     assert "API is healthy at" in electron_text
+    assert "apiServiceWasHealthy" in electron_text
     assert "but the app gateway is not responding" in electron_text
     assert "DESKTOP_MODE=auto" in install_text
     assert "source \"$INSTALL_LIB_DIR/common.sh\"" in install_text

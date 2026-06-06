@@ -7,6 +7,35 @@ lima_instance_running() {
   limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null | awk '$1 == "apptainer" && $2 == "Running" { found = 1 } END { exit(found ? 0 : 1) }'
 }
 
+lima_checkout_mount_live_writable() {
+  local root="$1"
+  lima_instance_running || return 1
+  limactl shell apptainer sh -c '
+root="$1"
+mkdir -p "$root/.runtime" || exit 1
+probe="$root/.runtime/.neurocade-lima-write-probe.$$"
+: >"$probe" && rm -f "$probe"
+' sh "$root" >/dev/null 2>&1
+}
+
+restart_lima_for_checkout_mount() {
+  local root="$1"
+  echo "Restarting Lima Apptainer VM so the checkout mount is writable ..."
+  limactl stop apptainer
+  limactl start apptainer
+  if ! lima_checkout_mount_live_writable "$root"; then
+    cat >&2 <<EOF
+Lima restarted, but the NeuroCade checkout is still not writable inside the VM:
+  $root
+
+Check ~/.lima/apptainer/lima.yaml and make sure this checkout is mounted with:
+  - location: "$root"
+    writable: true
+EOF
+    return 1
+  fi
+}
+
 prepend_local_lima() {
   local root="$1"
   local lima_bin="$root/$LOCAL_LIMA_DIR_REL/bin"
@@ -73,8 +102,9 @@ install_lima_macos_local() {
 ensure_lima_checkout_mount() {
   local root="$1"
   local yaml="$HOME/.lima/apptainer/lima.yaml"
+  local config_changed=0
   [[ -f "$yaml" ]] || return 0
-  if awk -v root="$root" '
+  if ! awk -v root="$root" '
     $0 == "- location: \"" root "\"" {
       found = 1
       in_target = 1
@@ -90,14 +120,12 @@ ensure_lima_checkout_mount() {
       exit(found && writable ? 0 : 1)
     }
   ' "$yaml"; then
-    return 0
-  fi
 
-  local backup="$yaml.neurocade-backup.$(date +%Y%m%d%H%M%S)"
-  local tmp
-  tmp="$(mktemp)"
-  cp "$yaml" "$backup"
-  awk -v root="$root" '
+    local backup="$yaml.neurocade-backup.$(date +%Y%m%d%H%M%S)"
+    local tmp
+    tmp="$(mktemp)"
+    cp "$yaml" "$backup"
+    awk -v root="$root" '
     function add_checkout_mount() {
       print "- location: \"" root "\""
       print "  writable: true"
@@ -143,14 +171,16 @@ ensure_lima_checkout_mount() {
         add_checkout_mount()
       }
     }
-  ' "$yaml" >"$tmp"
-  mv "$tmp" "$yaml"
-  echo "Configured writable Lima mount for this checkout: $root"
-  echo "Backed up previous Lima config to $backup"
+    ' "$yaml" >"$tmp"
+    mv "$tmp" "$yaml"
+    config_changed=1
+    echo "Configured writable Lima mount for this checkout: $root"
+    echo "Backed up previous Lima config to $backup"
+  fi
 
   if lima_instance_running; then
-    echo "Restarting Lima Apptainer VM so the checkout mount is writable ..."
-    limactl stop apptainer
-    limactl start apptainer
+    if [[ "$config_changed" -eq 1 ]] || ! lima_checkout_mount_live_writable "$root"; then
+      restart_lima_for_checkout_mount "$root"
+    fi
   fi
 }
