@@ -1,0 +1,67 @@
+[project]
+name = "neurocade"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.128.8",
+  "uvicorn[standard]==0.31.0",
+  "celery==5.3.6",
+  "sqlalchemy==2.0.36",
+  "psycopg[binary]==3.2.3",
+  "alembic==1.14.0",
+  "pydantic-settings==2.6.1",
+  "PyJWT[crypto]==2.13.0",
+  "langchain-openai==1.1.14",
+  "langchain-anthropic>=1.2,<2",
+  "langchain-google-genai>=4.0,<5",
+  "langchain-ollama>=1.1,<2",
+  "langgraph==1.0.10",
+  "redis==5.2.0",
+  "python-multipart==0.0.27",
+  "python-dotenv==1.2.2",
+  "nibabel==5.2.1",
+  "numpy==1.26.4",
+  "neurocade-runtime-tools",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "requests>=2.31",
+  "playwright>=1.40",
+  "pyright>=1.1.409",
+]
+
+[tool.uv.sources]
+neurocade-runtime-tools = { path = "packages/neurocade-runtime-tools", editable = true }
+
+[tool.uv]
+package = false
+
+[tool.pyright]
+include = [
+  "backend_common",
+  "api-service/api_service",
+  "packages/neurocade-runtime-tools/src",
+  "packages/neurocade-runtime-tools/tests",
+  "tests",
+  "scripts",
+  "migrations",
+]
+exclude = [
+  "**/__pycache__",
+  ".venv",
+  "client",
+  "fastsurfer-data",
+  "neurocade-data",
+]
+extraPaths = [
+  ".",
+  "api-service",
+  "packages/neurocade-runtime-tools/src",
+]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+venv = ".venv"
+venvPath = "."

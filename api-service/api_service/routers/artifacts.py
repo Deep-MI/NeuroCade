@@ -1,0 +1,123 @@
+"""Provide API service artifacts behavior for NeuroCade."""
+
+from pathlib import Path
+import tempfile
+import zipfile
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+from sqlalchemy.orm import Session
+
+from api_service.artifacts.service import (
+    filter_existing_artifacts,
+    resolve_artifact_file_for_user,
+    serialize_artifact,
+)
+from api_service.deps import get_context, get_db
+from api_service.helpers import (
+    get_case_for_user,
+    get_workspace_for_user,
+    log_event,
+    ensure_case_storage_synced,
+)
+from api_service.runtime import settings
+from api_service.policies import require_case_read, require_workspace_read
+from api_service.schemas import ArtifactSummary
+from backend_common.auth import AuthContext
+from backend_common.case_storage import case_storage_dir
+from backend_common.db import Artifact
+
+
+router = APIRouter(prefix="/api/app", tags=["artifacts"])
+
+
+def _write_case_archive(case_dir: Path, archive_path: Path, archive_root: str) -> None:
+    """Create a zip archive from regular files under a case directory."""
+    case_root = case_dir.resolve()
+    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        if not case_dir.exists():
+            return
+        for path in sorted(case_dir.rglob("*")):
+            if path.is_symlink():
+                continue
+            if not path.is_file():
+                continue
+            resolved_path = path.resolve()
+            if case_root not in resolved_path.parents:
+                continue
+            relative_path = path.relative_to(case_dir)
+            archive.write(path, arcname=str(Path(archive_root) / relative_path))
+
+
+@router.get("/cases/{case_id}/artifacts", response_model=list[ArtifactSummary])
+def list_case_artifacts(
+    case_id: str,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> list[ArtifactSummary]:
+    """Return existing artifacts for a readable case."""
+    case, role = get_case_for_user(db, case_id, context.user.id)
+    require_case_read(role)
+    ensure_case_storage_synced(db, case)
+    artifacts = db.query(Artifact).filter(Artifact.case_id == case_id).order_by(Artifact.created_at.desc()).all()
+    existing_artifacts = filter_existing_artifacts(artifacts)
+    log_event(db, context, "artifact.listed", case_id=case_id)
+    return [serialize_artifact(artifact) for artifact in existing_artifacts]
+
+
+@router.get("/workspaces/{workspace_id}/artifacts", response_model=list[ArtifactSummary])
+def list_workspace_artifacts(
+    workspace_id: str,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> list[ArtifactSummary]:
+    """Return existing top-level artifacts for a readable workspace."""
+    _workspace, role = get_workspace_for_user(db, workspace_id, context.user.id)
+    require_workspace_read(role)
+    artifacts = (
+        db.query(Artifact)
+        .filter(Artifact.workspace_id == workspace_id, Artifact.case_id.is_(None))
+        .order_by(Artifact.created_at.desc())
+        .all()
+    )
+    log_event(db, context, "workspace.artifact_listed", details={"workspace_id": workspace_id})
+    return [serialize_artifact(artifact) for artifact in filter_existing_artifacts(artifacts)]
+
+
+@router.get("/artifacts/{artifact_id}/download")
+def download_artifact(
+    artifact_id: str,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> FileResponse:
+    """Stream an artifact file after verifying the requesting user can read it."""
+    artifact, path = resolve_artifact_file_for_user(db, context, artifact_id)
+    log_event(db, context, "artifact.downloaded", case_id=artifact.case_id, artifact_id=artifact.id)
+    return FileResponse(path, media_type=artifact.mime_type, filename=artifact.name)
+
+
+@router.get("/cases/{case_id}/download")
+def download_case_archive(
+    case_id: str,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> FileResponse:
+    """Build and stream a temporary zip archive for a readable case."""
+    case, role = get_case_for_user(db, case_id, context.user.id)
+    require_case_read(role)
+    workspace = ensure_case_storage_synced(db, case)
+    case_dir = case_storage_dir(settings, workspace.id, case.id)
+
+    archive_file = tempfile.NamedTemporaryFile(prefix=f"case-{case.id}-", suffix=".zip", delete=False)
+    archive_path = Path(archive_file.name)
+    archive_file.close()
+    _write_case_archive(case_dir, archive_path, case.title)
+
+    log_event(db, context, "case.downloaded", case_id=case.id, details={"mode": "archive"})
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=f"{case.title}.zip",
+        background=BackgroundTask(lambda: archive_path.unlink(missing_ok=True)),
+    )

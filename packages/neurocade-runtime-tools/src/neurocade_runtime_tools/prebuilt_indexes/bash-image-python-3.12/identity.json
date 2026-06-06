@@ -1,0 +1,7 @@
+{
+  "app": "bash_image",
+  "build_date": null,
+  "image_name": "bash-image-python-3.12.sif",
+  "name": "bash_image",
+  "runtime_version": "python-3.12"
+}

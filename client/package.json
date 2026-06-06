@@ -1,0 +1,59 @@
+{
+  "name": "client",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10.9.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "electron:local": "electron ./electron/main.mjs",
+    "lint": "eslint .",
+    "test:node": "tsc -p tsconfig.test.json && node --test .tmp-test/tests/*.test.js",
+    "preview": "vite preview",
+    "auth:state": "node ./scripts/prepareClerkStorageState.mjs"
+  },
+  "dependencies": {
+    "@clerk/clerk-react": "^5.20.0",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.562.0",
+    "nifti-reader-js": "^0.8.0",
+    "pako": "^2.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.15.1",
+    "react-syntax-highlighter": "^16.1.0",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@clerk/testing": "^2.0.14",
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.59.1",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^24.10.1",
+    "@types/pako": "^2.0.4",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "autoprefixer": "^10.4.23",
+    "electron": "^41.3.0",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.18.0",
+    "vite": "^6.4.2"
+  },
+  "overrides": {
+    "js-cookie": "3.0.7"
+  }
+}

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neurocade-runtime-tools"
+version = "0.1.0"
+description = "Local NeuroCade runtime container management and tool routing"
+requires-python = ">=3.10"
+
+[project.scripts]
+neurocade-containers = "neurocade_runtime_tools.containers:main"
+neurocade-runtime-tool = "neurocade_runtime_tools.runtime_router:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+neurocade_runtime_tools = [
+  "apptainer/*",
+  "prebuilt_indexes/*/*.json",
+  "prebuilt_indexes/*/*.jsonl",
+]

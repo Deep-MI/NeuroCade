@@ -1,0 +1,107 @@
+name: PR verification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - integration/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+        working-directory: client
+      - run: npm run lint
+        working-directory: client
+      - run: npm run test:node
+        working-directory: client
+      - run: npm run build
+        working-directory: client
+
+  python:
+    name: Backend and security tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install -r pyproject.toml --extra test
+      - name: Compile changed Python surfaces
+        run: |
+          . .venv/bin/activate
+          python -m compileall backend_common api-service/api_service packages/neurocade-runtime-tools/src scripts
+      - name: Run Python type check
+        run: |
+          . .venv/bin/activate
+          pyright
+      - name: Run focused backend/security tests
+        run: |
+          . .venv/bin/activate
+          pytest \
+            tests/test_install_scripts.py \
+            tests/test_security_hardening.py \
+            tests/test_runtime_service_tools.py \
+            tests/test_assistant_file_tools.py \
+            tests/test_assistant_runtime.py \
+            -q
+
+  runtime-tools:
+    name: NeuroCade runtime tools tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install pytest -e packages/neurocade-runtime-tools
+      - name: Run runtime tools package tests
+        run: |
+          . .venv/bin/activate
+          pytest packages/neurocade-runtime-tools/tests -q
+
+  repository-policy:
+    name: Repository policy checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Shell syntax
+        run: |
+          shopt -s nullglob
+          bash -n scripts/install.sh
+          for path in \
+            scripts/*.sh \
+            scripts/admin/*.sh \
+            scripts/apptainer/*.sh \
+            scripts/demo/*.sh \
+            scripts/desktop/*.sh \
+            scripts/install/*.sh \
+            scripts/release/*.sh \
+            scripts/runtime/*.sh
+          do
+            bash -n "$path"
+          done

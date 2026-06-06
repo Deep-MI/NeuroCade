@@ -1,0 +1,17 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  cacheDir: '/tmp/vite-cache',
+  server: {
+    allowedHosts: ['kronecker.dzne.ds', 'hopper.dzne.de', 'hopper.dzne.ds', 'germain.dzne.de', 'gateway', 'client', 'host.lima.internal'],
+    proxy: {
+      '/api/app': {
+        target: 'http://api-service:8000',
+        changeOrigin: true,
+      },
+    },
+  },
+})

@@ -1,0 +1,169 @@
+"""Test app architecture behavior for NeuroCade."""
+
+from pathlib import Path
+import sys
+import tomllib
+from typing import Any, cast
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from backend_common import providers as provider_module
+from backend_common.providers import ProviderRole, provider_registry
+from backend_common.scan import classify_volume_metadata
+from backend_common.settings import Settings, get_settings
+
+
+def _settings_without_env_file() -> Settings:
+    """Build settings without loading repository environment files."""
+    return cast(Any, Settings)(_env_file=None)
+
+
+def test_provider_registry_exposes_chat_and_orchestration_models():
+    models = provider_registry.list_models()
+    roles = {model.role for model in models}
+    assert ProviderRole.chat in roles
+    assert ProviderRole.orchestration in roles
+
+
+def test_openai_compatible_provider_builds_langchain_model(monkeypatch):
+    monkeypatch.setattr(provider_module.settings, "llm_provider_default", "openai-compatible")
+    monkeypatch.setattr(provider_module.settings, "workflow_default_provider", "openai-compatible")
+    monkeypatch.setattr(provider_module.settings, "llm_backend_url", "http://127.0.0.1:11434")
+    monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "backend-token")
+    registry = provider_module.ProviderRegistry()
+
+    cfg = registry.get(ProviderRole.chat)
+    assert cfg.provider == "openai-compatible"
+    assert cfg.provider_family == "openai_compatible"
+    assert cfg.base_url == provider_module.settings.llm_backend_url
+
+    model = registry.build_chat_model(ProviderRole.chat)
+    assert type(model).__name__ == "ChatOpenAI"
+
+
+def test_openai_compatible_provider_allows_blank_api_key(monkeypatch):
+    monkeypatch.setattr(provider_module.settings, "llm_provider_default", "openai-compatible")
+    monkeypatch.setattr(provider_module.settings, "llm_backend_url", "http://127.0.0.1:11434")
+    monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "")
+
+    registry = provider_module.ProviderRegistry()
+    cfg = registry.get(ProviderRole.chat)
+
+    assert cfg.available is True
+    assert cfg.api_key is None
+
+
+def test_openai_compatible_provider_disables_qwen_thinking_by_default(monkeypatch):
+    monkeypatch.setattr(provider_module.settings, "llm_backend_url", "http://127.0.0.1:11434")
+    monkeypatch.setattr(provider_module.settings, "llm_disable_thinking", True)
+    monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "backend-token")
+    registry = provider_module.ProviderRegistry()
+
+    model = registry.build_chat_model(ProviderRole.chat)
+
+    assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_settings_construct_sqlalchemy_url():
+    settings = get_settings()
+    assert settings.sqlalchemy_database_url.startswith("postgresql+psycopg://")
+
+
+def test_assistant_max_rounds_default_is_shared_limit():
+    settings = _settings_without_env_file()
+
+    assert settings.assistant_max_rounds == 18
+
+
+def test_settings_derives_outputs_from_host_data_dir(monkeypatch, tmp_path):
+    data_root = tmp_path / "neurocade-data"
+    monkeypatch.setenv("HOST_DATA_DIR", str(data_root))
+
+    settings = _settings_without_env_file()
+
+    assert settings.fs_data_root == data_root
+    assert settings.outputs_dir == data_root / "output"
+
+
+def test_settings_ignore_removed_data_root_aliases(monkeypatch, tmp_path):
+    monkeypatch.delenv("HOST_DATA_DIR", raising=False)
+    monkeypatch.setenv("NEUROCADE_DATA_ROOT", str(tmp_path / "ignored-data"))
+    monkeypatch.setenv("NEUROCADE_OUTPUTS_DIR", str(tmp_path / "ignored-output"))
+
+    settings = _settings_without_env_file()
+
+    assert settings.fs_data_root != tmp_path / "ignored-data"
+    assert settings.outputs_dir != tmp_path / "ignored-output"
+
+
+def test_classify_volume_metadata_distinguishes_segmentation_and_intensity():
+    assert classify_volume_metadata("orig.mgz")["volume_role"] == "intensity"
+    aseg = classify_volume_metadata("aparc.DKTatlas+aseg.deep.mgz")
+    assert aseg["volume_role"] == "segmentation"
+    assert aseg["lut"] == "freesurfer"
+    mask = classify_volume_metadata("brainmask_bin.nii.gz")
+    assert mask["volume_role"] == "segmentation"
+    assert mask["lut"] == "binary"
+
+
+def test_apptainer_launcher_exposes_clerk_audience_to_backend_services():
+    launcher_text = Path("scripts/apptainer/up.sh").read_text()
+    assert "CLERK_AUDIENCE=${CLERK_AUDIENCE:-}" in launcher_text
+    assert "VITE_CLERK_JWT_TEMPLATE=${VITE_CLERK_JWT_TEMPLATE:-}" in launcher_text
+
+
+def test_apptainer_launcher_pins_project_python_version():
+    launcher_text = Path("scripts/apptainer/up.sh").read_text()
+    launcher_lib_text = Path("scripts/apptainer/lib.sh").read_text()
+    installer_text = Path("scripts/install/python.sh").read_text()
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    assert pyproject["project"]["requires-python"] == ">=3.12,<3.13"
+    assert pyproject["tool"]["uv"]["package"] is False
+    assert pyproject["tool"]["pyright"]["pythonVersion"] == "3.12"
+    assert not Path("pyrightconfig.json").exists()
+    assert "NEUROCADE_PYTHON_VERSION" not in launcher_lib_text
+    assert "NEUROCADE_PYTHON_VERSION" not in installer_text
+    assert "PYTHON_BIN=\"$(python_bin)\"" in launcher_text
+    assert 'uv venv --project "$ROOT_DIR" "$ROOT_DIR/.venv"' in launcher_lib_text
+    assert '-r "$ROOT_DIR/pyproject.toml"' in launcher_text
+
+
+def test_pyproject_is_python_dependency_source_of_truth():
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    dependencies = set(pyproject["project"]["dependencies"])
+    test_dependencies = set(pyproject["project"]["optional-dependencies"]["test"])
+
+    assert not Path("api-service/requirements.txt").exists()
+    assert not Path("tests/requirements.txt").exists()
+    assert "fastapi==0.128.8" in dependencies
+    assert "neurocade-runtime-tools" in dependencies
+    assert "pytest>=8.0" in test_dependencies
+    assert pyproject["tool"]["uv"]["sources"]["neurocade-runtime-tools"] == {
+        "path": "packages/neurocade-runtime-tools",
+        "editable": True,
+    }
+
+
+def test_apptainer_launcher_does_not_inject_dead_proxy_url_into_backend_services():
+    launcher_text = Path("scripts/apptainer/up.sh").read_text()
+    assert "LLM_PROXY_URL=" not in launcher_text
+
+
+def test_apptainer_launcher_uses_single_data_root_variable():
+    launcher_text = Path("scripts/apptainer/up.sh").read_text()
+    assert "HOST_DATA_DIR=$HOST_DATA_DIR" in launcher_text
+    assert "NEUROCADE_DATA_ROOT" not in launcher_text
+    assert "FASTSURFER_DATA_ROOT" not in launcher_text
+
+
+def test_env_example_documents_clerk_audience():
+    env_example = Path(".env.example").read_text()
+    assert "CLERK_AUDIENCE=" in env_example
+    assert "VITE_CLERK_JWT_TEMPLATE=" in env_example
+
+
+def test_env_example_documents_monitoring_admin_allowlist():
+    env_example = Path(".env.example").read_text()
+    assert "ASSISTANT_MAX_ROUNDS=18" in env_example
+    assert "MONITORING_ADMIN_USER_IDS=" in env_example
+    assert "MONITORING_ACTIVE_WINDOW_MINUTES=" in env_example

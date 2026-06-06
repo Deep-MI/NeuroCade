@@ -1,0 +1,7 @@
+{
+  "app": "freesurfer",
+  "build_date": "20260311",
+  "image_name": "freesurfer_8.1.0_20260311.simg",
+  "name": "freesurfer",
+  "runtime_version": "8.1.0"
+}
