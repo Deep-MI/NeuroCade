@@ -99,7 +99,7 @@ jobs:
         env:
           SAMPLE_CASE_ARTIFACT_URL: ${{ github.event.inputs.sample_case_artifact_url || vars.RELEASE_SAMPLE_CASE_ARTIFACT_URL || '' }}
           SAMPLE_CASE_ARTIFACT_SHA256: ${{ github.event.inputs.sample_case_artifact_sha256 || vars.RELEASE_SAMPLE_CASE_ARTIFACT_SHA256 || '' }}
-          SKIP_SAMPLE_CASE_ARTIFACT_INPUT: ${{ github.event.inputs.skip_sample_case_artifact || vars.SKIP_SAMPLE_CASE_ARTIFACT || 'false' }}
+          SKIP_SAMPLE_CASE_ARTIFACT_INPUT: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.skip_sample_case_artifact || vars.SKIP_SAMPLE_CASE_ARTIFACT || 'false' }}
         run: |
           if [[ "$SKIP_SAMPLE_CASE_ARTIFACT_INPUT" == "true" ]]; then
             echo "SKIP_SAMPLE_CASE_ARTIFACT=true" >> "$GITHUB_ENV"
