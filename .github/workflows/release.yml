@@ -173,7 +173,7 @@ jobs:
           )
 
           if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
-            args+=(--title "NeuroCade ${RELEASE_VERSION} beta" --prerelease --latest=false)
+            args+=(--title "NeuroCade ${RELEASE_VERSION}" --prerelease --latest=false)
           else
             args+=(--title "NeuroCade ${RELEASE_VERSION}" --latest)
           fi
