@@ -478,6 +478,7 @@ start_service() {
     return 0
   fi
   stop_host_orphan "$name"
+  stop_lima_orphan "$name"
   echo "Starting $name"
   : >"$log_file"
   (

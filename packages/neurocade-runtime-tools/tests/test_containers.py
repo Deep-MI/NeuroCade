@@ -1621,11 +1621,29 @@ def test_remote_container_install_allows_missing_integrity_metadata(monkeypatch,
     containers._download_file("https://example.invalid/container.sif", target, expected_sha256=None, dry_run=True)
     containers._run_apptainer_pull(target, "docker://vnmd/fastsurfer_2.4.2:20260115", dry_run=True)
 
-    assert calls == [(["curl", "-fL", "https://example.invalid/container.sif", "-o", str(target.with_name("container.sif.partial"))], tmp_path, True)]
+    assert calls == [
+        (
+            [
+                "curl",
+                "-fL",
+                "--retry",
+                containers.CURL_RETRY_COUNT,
+                "--retry-delay",
+                containers.CURL_RETRY_DELAY_SECONDS,
+                "--continue-at",
+                "-",
+                "https://example.invalid/container.sif",
+                "-o",
+                str(target.with_name("container.sif.partial")),
+            ],
+            tmp_path,
+            True,
+        )
+    ]
 
 
-def test_download_file_writes_final_target_only_after_success(monkeypatch, tmp_path: Path):
-    """Verify interrupted downloads do not leave a partial file at the final image path."""
+def test_download_file_preserves_partial_after_transport_failure(monkeypatch, tmp_path: Path):
+    """Verify interrupted downloads keep a resumable partial away from the final image path."""
     target = tmp_path / "container.sif"
 
     def fake_run(_command, *, cwd, dry_run=False):
@@ -1641,6 +1659,24 @@ def test_download_file_writes_final_target_only_after_success(monkeypatch, tmp_p
         pass
     else:
         raise AssertionError("download failure did not propagate")
+
+    assert not target.exists()
+    assert target.with_name("container.sif.partial").read_text(encoding="utf-8") == "partial"
+
+
+def test_download_file_removes_partial_after_hash_mismatch(monkeypatch, tmp_path: Path):
+    """Verify failed integrity checks discard partial downloads."""
+    target = tmp_path / "container.sif"
+
+    def fake_run(_command, *, cwd, dry_run=False):
+        partial = cwd / "container.sif.partial"
+        partial.write_text("corrupt", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_run", fake_run)
+    monkeypatch.setattr(containers, "_sha256_file", lambda _path: "bad")
+
+    with pytest.raises(RuntimeError, match="SHA256 mismatch"):
+        containers._download_file("https://example.invalid/container.sif", target, expected_sha256="good")
 
     assert not target.exists()
     assert not target.with_name("container.sif.partial").exists()

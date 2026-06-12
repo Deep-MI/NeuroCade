@@ -432,6 +432,7 @@ def test_apptainer_launcher_is_rootless_and_port_driven() -> None:
     assert "electron_config_cache" in launcher_text
     assert "start_service update-checker" in launcher_text
     assert "stop_host_orphan" in lib_text
+    assert "stop_lima_orphan \"$name\"" in lib_text
     assert "Stopping stale $name listener on port $port" in lib_text
     assert "ensure_lima_checkout_mount_live_writable" in launcher_text
     assert 'TRAEFIK_ENTRYPOINT_BIND="0.0.0.0"' in launcher_text

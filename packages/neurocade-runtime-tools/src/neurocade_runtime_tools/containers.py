@@ -85,6 +85,8 @@ _COMMAND_EXCLUDED_SUFFIXES = (
 _COMMAND_EXCLUDED_PREFIXES = ("bashcomplete_",)
 
 CORE_DOWNLOAD_JOBS_ENV = "NEUROCADE_CONTAINER_DOWNLOAD_JOBS"
+CURL_RETRY_COUNT = "5"
+CURL_RETRY_DELAY_SECONDS = "2"
 PREBUILT_INDEX_ROOT = Path(__file__).with_name("prebuilt_indexes")
 _INSTALL_PRINT_LOCK = Lock()
 
@@ -471,18 +473,28 @@ def _verify_sha256(path: Path, expected_sha256: str) -> None:
 def _download_file(url: str, target: Path, *, expected_sha256: str | None = None, dry_run: bool = False) -> None:
     """Download a file atomically to the requested target path and verify it when configured."""
     partial = target.with_name(f"{target.name}.partial")
-    if not dry_run:
-        partial.unlink(missing_ok=True)
-    try:
-        _run(["curl", "-fL", url, "-o", str(partial)], cwd=target.parent, dry_run=dry_run)
-        if dry_run:
-            return
-        if expected_sha256:
-            _verify_sha256(partial, expected_sha256)
-        partial.replace(target)
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
+    _run(
+        [
+            "curl",
+            "-fL",
+            "--retry",
+            CURL_RETRY_COUNT,
+            "--retry-delay",
+            CURL_RETRY_DELAY_SECONDS,
+            "--continue-at",
+            "-",
+            url,
+            "-o",
+            str(partial),
+        ],
+        cwd=target.parent,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        return
+    if expected_sha256:
+        _verify_sha256(partial, expected_sha256)
+    partial.replace(target)
 
 
 def _fallback_install(spec: ContainerSpec, target: Path, *, dry_run: bool = False) -> None:
@@ -1655,7 +1667,7 @@ def _install_core_images(source: str, dry_run: bool, *, include_freesurfer: bool
                 container = _container_row_without_hash(spec, target)
                 print(f"{spec.name} already installed: {target}")
                 if _load_container_index(container) is None:
-                    print(f"{spec.name} local tool index is missing or stale; installing the bundled prebuilt index when available.")
+                    print(f"{spec.name} image is present; installing bundled tool index.")
                     existing_needing_index.append((index, container))
                 continue
             except RuntimeError as exc:
