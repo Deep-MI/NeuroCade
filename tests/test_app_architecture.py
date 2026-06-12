@@ -147,6 +147,12 @@ def test_apptainer_launcher_pins_project_python_version():
     assert not Path("pyrightconfig.json").exists()
     assert "NEUROCADE_PYTHON_VERSION" not in launcher_lib_text
     assert "NEUROCADE_PYTHON_VERSION" not in installer_text
+    assert "ensure_uv_state_dir" in installer_text
+    assert "XDG_CONFIG_HOME" in installer_text
+    assert "UV_CACHE_DIR" in installer_text
+    assert "UV_INSTALL_DIR" in installer_text
+    assert "INSTALLER_NO_MODIFY_PATH=1" in installer_text
+    assert ".runtime/uv/bin" in installer_text
     assert "PYTHON_BIN=\"$(python_bin)\"" in launcher_text
     assert 'uv venv --project "$ROOT_DIR" "$ROOT_DIR/.venv"' in launcher_lib_text
     assert '-r "$ROOT_DIR/pyproject.toml"' in launcher_text

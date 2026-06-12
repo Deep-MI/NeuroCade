@@ -100,7 +100,8 @@ if PYTHONPATH="$ROOT_DIR/packages/neurocade-runtime-tools/src${PYTHONPATH:+:$PYT
   :
 else
   if command -v uv >/dev/null 2>&1; then
-    UV_CACHE_DIR="${UV_CACHE_DIR:-$RUNTIME_DIR/uv-cache}" uv pip install --python "$PYTHON_BIN" -q -r "$ROOT_DIR/pyproject.toml"
+    ensure_uv_state_dir "$RUNTIME_DIR/uv"
+    uv pip install --python "$PYTHON_BIN" -q -r "$ROOT_DIR/pyproject.toml"
     PYTHONPATH="$ROOT_DIR/packages/neurocade-runtime-tools/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" "$ROOT_DIR/scripts/check_python_runtime.py" --pyproject "$ROOT_DIR/pyproject.toml" --sentinel "$RUNTIME_DIR/python-deps.ok"
   else
     echo "uv is required to install Python runtime dependencies." >&2
@@ -111,6 +112,7 @@ fi
 timing_end_phase
 
 timing_start_phase "Client dependency/build check"
+configure_node_runtime_cache "$ROOT_DIR" "$RUNTIME_DIR"
 case "$CLIENT_SERVE_MODE" in
   static|vite)
     ;;
@@ -286,7 +288,7 @@ timing_start_phase "Start API service, worker, client, and update checker"
 start_service api-service "${COMMON_ENV[@]}" PYTHONPATH="$ROOT_DIR/api-service:$ROOT_DIR" "$PYTHON_BIN" -m uvicorn api_service.main:app --host "$API_SERVICE_HOST" --port "$API_SERVICE_PORT"
 start_service api-worker "${COMMON_ENV[@]}" PYTHONPATH="$ROOT_DIR/api-service:$ROOT_DIR" "$PYTHON_BIN" -m celery --workdir "$ROOT_DIR/api-service" -A api_service.celery_app worker --loglevel=info --concurrency="${API_WORKER_CONCURRENCY:-2}" -Q workspace_batch,fastsurfer -n api-worker@%h
 if [[ "$CLIENT_SERVE_MODE" == "vite" ]]; then
-  start_service client env HOME="$RUNTIME_DIR/home" NPM_CONFIG_CACHE="$RUNTIME_DIR/npm-cache" VITE_API_URL=/api/app VITE_CLERK_PUBLISHABLE_KEY="${VITE_CLERK_PUBLISHABLE_KEY:-}" VITE_CLERK_JWT_TEMPLATE="${VITE_CLERK_JWT_TEMPLATE:-}" VITE_LOCAL_AUTH_ENABLED="${LOCAL_AUTH_ENABLED:-false}" npm --prefix "$ROOT_DIR/client" run dev -- --host "$CLIENT_HOST" --port "$CLIENT_PORT" --strictPort
+  start_service client env HOME="$RUNTIME_DIR/home" NPM_CONFIG_CACHE="$NPM_CONFIG_CACHE" ELECTRON_CACHE="$ELECTRON_CACHE" electron_config_cache="$electron_config_cache" VITE_API_URL=/api/app VITE_CLERK_PUBLISHABLE_KEY="${VITE_CLERK_PUBLISHABLE_KEY:-}" VITE_CLERK_JWT_TEMPLATE="${VITE_CLERK_JWT_TEMPLATE:-}" VITE_LOCAL_AUTH_ENABLED="${LOCAL_AUTH_ENABLED:-false}" npm --prefix "$ROOT_DIR/client" run dev -- --host "$CLIENT_HOST" --port "$CLIENT_PORT" --strictPort
 else
   start_service client "$PYTHON_BIN" "$ROOT_DIR/scripts/serve_static_client.py" --directory "$ROOT_DIR/client/dist" --host "$CLIENT_HOST" --port "$CLIENT_PORT"
 fi

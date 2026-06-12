@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ APPTAINER_STATUS_SCRIPT = REPO_ROOT / "scripts" / "apptainer" / "status.sh"
 UPDATE_CHECKER_SCRIPT = REPO_ROOT / "scripts" / "update_checker.py"
 RUN_DESKTOP_SCRIPT = REPO_ROOT / "scripts" / "desktop" / "run.sh"
 INSTALL_DESKTOP_SCRIPT = REPO_ROOT / "scripts" / "desktop" / "install_launcher.sh"
+RUNTIME_CACHE_SCRIPT = REPO_ROOT / "scripts" / "runtime_cache_env.sh"
 RELEASE_STAGE_UPLOAD_SCRIPT = REPO_ROOT / "scripts" / "release" / "stage_upload_assets.sh"
 TRAEFIK_DYNAMIC_CONFIG = REPO_ROOT / "config" / "traefik-dynamic.yml"
 INSTALL_LIB_DIR = REPO_ROOT / "scripts" / "install"
@@ -164,6 +166,8 @@ exit 0
 
 def test_install_shell_scripts_parse() -> None:
     subprocess.run(["bash", "-n", str(INSTALL_SCRIPT)], check=True)
+    subprocess.run(["bash", "-n", str(RUNTIME_CACHE_SCRIPT)], check=True)
+    subprocess.run(["bash", "-n", str(APPTAINER_LIB_SCRIPT)], check=True)
     subprocess.run(["bash", "-n", str(APPTAINER_UP_SCRIPT)], check=True)
     subprocess.run(["bash", "-n", str(APPTAINER_IMAGES_SCRIPT)], check=True)
     subprocess.run(["bash", "-n", str(CONTAINERS_SCRIPT)], check=True)
@@ -175,6 +179,127 @@ def test_install_shell_scripts_parse() -> None:
     subprocess.run(["bash", "-n", str(INSTALL_DESKTOP_SCRIPT)], check=True)
     for lib_path in sorted(INSTALL_LIB_DIR.glob("*.sh")):
         subprocess.run(["bash", "-n", str(lib_path)], check=True)
+
+
+def test_node_runtime_cache_helper_keeps_state_repo_local(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    runtime_dir = root / ".runtime"
+    root.mkdir()
+    script = f"""
+set -euo pipefail
+source {shlex.quote(str(RUNTIME_CACHE_SCRIPT))}
+configure_node_runtime_cache {shlex.quote(str(root))} {shlex.quote(str(runtime_dir))}
+test "$NPM_CONFIG_CACHE" = {shlex.quote(str(runtime_dir / "npm-cache"))}
+test "$ELECTRON_CACHE" = {shlex.quote(str(runtime_dir / "electron" / "download-cache"))}
+test "$electron_config_cache" = "$ELECTRON_CACHE"
+test -d "$NPM_CONFIG_CACHE"
+test -d "$ELECTRON_CACHE"
+"""
+
+    subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+
+
+def test_python_runtime_installs_uv_into_existing_repo_local_dir(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    bin_dir = tmp_path / "bin"
+    root.mkdir()
+    bin_dir.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'fake'\nversion = '0.0.0'\n", encoding="utf-8")
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+out=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat > "$out" <<'INSTALLER'
+#!/usr/bin/env bash
+set -euo pipefail
+test -d "$UV_INSTALL_DIR"
+cat > "$UV_INSTALL_DIR/uv" <<'UV'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  venv)
+    target="${!#}"
+    mkdir -p "$target/bin"
+    printf '#!/usr/bin/env bash\\nexit 0\\n' > "$target/bin/python"
+    chmod +x "$target/bin/python"
+    ;;
+  pip)
+    exit 0
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+UV
+chmod +x "$UV_INSTALL_DIR/uv"
+INSTALLER
+""",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+
+    script = f"""
+set -euo pipefail
+export PATH={shlex.quote(str(bin_dir) + os.pathsep + os.environ["PATH"])}
+export HOME={shlex.quote(str(tmp_path / "home"))}
+export ASSUME_YES=1
+export INSTALL_PREREQS=1
+source {shlex.quote(str(INSTALL_LIB_DIR / "common.sh"))}
+source {shlex.quote(str(INSTALL_LIB_DIR / "python.sh"))}
+ensure_python_runtime {shlex.quote(str(root))}
+test -x {shlex.quote(str(root / ".runtime" / "uv" / "bin" / "uv"))}
+test -d {shlex.quote(str(root / ".runtime" / "uv" / "config"))}
+test -d {shlex.quote(str(root / ".runtime" / "uv" / "cache"))}
+test -x {shlex.quote(str(root / ".venv" / "bin" / "python"))}
+"""
+
+    subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+
+
+def test_apptainer_launcher_prefers_repo_local_uv(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    lib_dir = root / "scripts" / "apptainer"
+    uv_dir = root / ".runtime" / "uv" / "bin"
+    lib_dir.mkdir(parents=True)
+    uv_dir.mkdir(parents=True)
+    (lib_dir / "lib.sh").write_text(APPTAINER_LIB_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "scripts" / "runtime_cache_env.sh").write_text(RUNTIME_CACHE_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    local_uv = uv_dir / "uv"
+    local_uv.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--project" && "${3:-}" == "python" && "${4:-}" == "find" && "${5:-}" == "--show-version" ]]; then
+  printf '3.12.7\\n'
+  exit 0
+fi
+exit 2
+""",
+        encoding="utf-8",
+    )
+    local_uv.chmod(0o755)
+
+    script = f"""
+set -euo pipefail
+export ENV_FILE={shlex.quote(str(tmp_path / "missing.env"))}
+export HOME={shlex.quote(str(tmp_path / "home"))}
+source {shlex.quote(str(lib_dir / "lib.sh"))}
+test "$(command -v uv)" = {shlex.quote(str(local_uv))}
+test "$(project_python_minor_version)" = "3.12"
+"""
+
+    subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
 
 
 def test_release_upload_staging_requires_bash_runtime_asset(tmp_path: Path) -> None:
@@ -297,7 +422,14 @@ def test_apptainer_launcher_is_rootless_and_port_driven() -> None:
     assert "docker compose" not in launcher_text
     assert "--fakeroot" not in launcher_text
     assert "check_python_runtime.py" in launcher_text
-    assert "UV_CACHE_DIR" in launcher_text
+    assert "ensure_uv_state_dir" in launcher_text
+    assert "UV_CACHE_DIR" in lib_text
+    assert "XDG_CONFIG_HOME" in lib_text
+    assert "runtime_cache_env.sh" in lib_text
+    assert "configure_node_runtime_cache" in launcher_text
+    assert "NPM_CONFIG_CACHE" in launcher_text
+    assert "ELECTRON_CACHE" in launcher_text
+    assert "electron_config_cache" in launcher_text
     assert "start_service update-checker" in launcher_text
     assert "stop_host_orphan" in lib_text
     assert "Stopping stale $name listener on port $port" in lib_text
@@ -315,6 +447,119 @@ def test_apptainer_launcher_is_rootless_and_port_driven() -> None:
     assert "curl -fL" in image_text
     assert "fakeroot preflight failed" in image_text
     assert "Runtime/tool containers are" in image_text
+    assert "check_system_container_arch_compatibility" not in launcher_text
+    assert "check_system_container_arch_compatibility" in image_text
+    assert "compat)" in image_text
+    assert "org.label-schema.build-arch" in lib_text
+    assert "list_core_container_images" not in lib_text
+    assert "fastsurfer_2.4.2_20260115.simg" not in lib_text
+
+
+def test_system_container_arch_check_flags_apple_silicon_mismatch(tmp_path: Path) -> None:
+    fake_apptainer = tmp_path / "apptainer"
+    fake_apptainer.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "inspect" && "${2:-}" == "--json" ]]; then
+  printf '{"data":{"attributes":{"labels":{"org.label-schema.build-arch":"amd64"}}}}\\n'
+  exit 0
+fi
+if [[ "${1:-}" == "exec" ]]; then
+  printf 'amd64\\n'
+  exit 0
+fi
+exit 2
+""",
+        encoding="utf-8",
+    )
+    fake_apptainer.chmod(0o755)
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    postgres = image_dir / "postgres.sif"
+    redis = image_dir / "redis.sif"
+    traefik = image_dir / "traefik.sif"
+    for image in [postgres, redis, traefik]:
+        image.write_text("sif", encoding="utf-8")
+
+    script = f"""
+set -euo pipefail
+export ENV_FILE={tmp_path / "missing.env"}
+export APPTAINER_BIN={fake_apptainer}
+export POSTGRES_SIF={postgres}
+export REDIS_SIF={redis}
+export TRAEFIK_SIF={traefik}
+export NEUROCADE_CONTAINER_ROOT={tmp_path / "containers"}
+source {APPTAINER_LIB_SCRIPT}
+apptainer_guest_arch() {{ printf 'aarch64\\n'; }}
+check_system_container_arch_compatibility
+"""
+
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "is amd64, but the Apptainer guest is aarch64" in result.stderr
+    assert "Apple Silicon Macs" in result.stderr
+
+
+def test_system_container_arch_check_ignores_unrelated_container_files(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    lib_dir = root / "scripts" / "apptainer"
+    lib_dir.mkdir(parents=True)
+    (lib_dir / "lib.sh").write_text(APPTAINER_LIB_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "scripts" / "runtime_cache_env.sh").write_text(RUNTIME_CACHE_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    call_log = tmp_path / "apptainer-calls.log"
+    fake_apptainer = tmp_path / "apptainer"
+    fake_apptainer.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> {shlex.quote(str(call_log))}
+if [[ "${{1:-}}" == "inspect" && "${{2:-}}" == "--json" ]]; then
+  printf '{{"data":{{"attributes":{{"labels":{{"org.label-schema.build-arch":"arm64"}}}}}}}}\\n'
+  exit 0
+fi
+if [[ "${{1:-}}" == "exec" ]]; then
+  printf 'aarch64\\n'
+  exit 0
+fi
+exit 2
+""",
+        encoding="utf-8",
+    )
+    fake_apptainer.chmod(0o755)
+
+    image_dir = tmp_path / "images"
+    container_root = tmp_path / "containers"
+    image_dir.mkdir()
+    postgres = image_dir / "postgres.sif"
+    redis = image_dir / "redis.sif"
+    traefik = image_dir / "traefik.sif"
+    extra_image = container_root / "neurocontainer" / "custom" / "extra.sif"
+    for image in [postgres, redis, traefik, extra_image]:
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_text("sif", encoding="utf-8")
+
+    script = f"""
+set -euo pipefail
+export ENV_FILE={shlex.quote(str(tmp_path / "missing.env"))}
+export HOME={shlex.quote(str(tmp_path / "home"))}
+export APPTAINER_BIN={shlex.quote(str(fake_apptainer))}
+export POSTGRES_SIF={shlex.quote(str(postgres))}
+export REDIS_SIF={shlex.quote(str(redis))}
+export TRAEFIK_SIF={shlex.quote(str(traefik))}
+export NEUROCADE_CONTAINER_ROOT={shlex.quote(str(container_root))}
+source {shlex.quote(str(lib_dir / "lib.sh"))}
+apptainer_guest_arch() {{ printf 'aarch64\\n'; }}
+check_system_container_arch_compatibility
+"""
+
+    subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    calls = call_log.read_text(encoding="utf-8")
+
+    assert str(postgres) in calls
+    assert str(redis) in calls
+    assert str(traefik) in calls
+    assert str(extra_image) not in calls
 
 
 def test_electron_launcher_is_local_stack_wrapper() -> None:
@@ -324,10 +569,15 @@ def test_electron_launcher_is_local_stack_wrapper() -> None:
     common_text = (INSTALL_LIB_DIR / "common.sh").read_text(encoding="utf-8")
     install_bundle_text = install_text + "\n" + "\n".join(path.read_text(encoding="utf-8") for path in INSTALL_LIB_DIR.glob("*.sh"))
     runner_text = RUN_DESKTOP_SCRIPT.read_text(encoding="utf-8")
+    desktop_installer_text = INSTALL_DESKTOP_SCRIPT.read_text(encoding="utf-8")
 
     assert '"main": "electron/main.mjs"' in package_text
     assert '"electron:local": "electron ./electron/main.mjs"' in package_text
     assert "'apptainer', 'up.sh'" in electron_text
+    assert "const appDesktopFileName = 'neurocade.desktop'" in electron_text
+    assert "const appBundleIdentifier = 'org.neurocade.app'" in electron_text
+    assert "app.setDesktopName(appDesktopFileName)" in electron_text
+    assert "app.setAppUserModelId(appBundleIdentifier)" in electron_text
     assert "/api/app/healthz" in electron_text
     assert "disable-gpu-sandbox" in electron_text
     assert "sandbox: !chromiumSandboxDisabled" in electron_text
@@ -350,8 +600,28 @@ def test_electron_launcher_is_local_stack_wrapper() -> None:
     assert "install/node.sh" in "\n".join(str(path.relative_to(REPO_ROOT)) for path in INSTALL_LIB_DIR.glob("*.sh"))
     assert "Installing Node.js locally" in install_bundle_text
     assert "install_lima_macos_local" in install_bundle_text
+    assert "--arch \"$NEUROCADE_LIMA_ARCH\"" in install_bundle_text
+    assert "NEUROCADE_LIMA_ARCH=aarch64" in install_bundle_text
+    assert "env_line_configured \"$root\" NEUROCADE_LIMA_ARCH" in install_bundle_text
+    assert "dpkg --print-architecture" in install_bundle_text
+    assert "apptainer_${release_version}_${release_deb_arch}.deb" in install_bundle_text
+    assert "apptainer_${release_version}_amd64.deb" not in install_bundle_text
     assert "NEUROCADE_INSTALL_TELEMETRY_URL" not in install_bundle_text
     assert "git clone \"$REPO_URL\"" not in common_text
+    assert "StartupWMClass=$APP_NAME" in desktop_installer_text
+    assert 'mv "$app_contents/MacOS/Electron" "$app_contents/MacOS/$APP_NAME"' in desktop_installer_text
+    assert 'Set :CFBundleExecutable $APP_NAME' in desktop_installer_text
+    assert "source \"$SCRIPT_DIR/runtime_cache_env.sh\"" in install_text
+    assert "configure_node_runtime_cache \"$root\"" in install_text
+    assert "runtime_cache_env.sh" in runner_text
+    assert "configure_node_runtime_cache \"$ROOT_DIR\"" in runner_text
+    assert "electronRuntimeDir" in electron_text
+    assert "app.setPath(name, target)" in electron_text
+    assert "setLocalAppPath('appData'" in electron_text
+    assert "setLocalAppPath('userData'" in electron_text
+    assert "setLocalAppPath('sessionData'" in electron_text
+    assert "setLocalAppPath('crashDumps'" in electron_text
+    assert "app.setAppLogsPath" in electron_text
     assert "start_sample_case_prefetch" in install_text
     assert "wait_sample_case_prefetch" in install_text
     assert "sample-case-prefetch.log" in install_text
@@ -413,6 +683,7 @@ def _make_minimal_installer_checkout(tmp_path: Path) -> Path:
     (root / "client" / "package.json").write_text('{"version":"1.2.3"}\n', encoding="utf-8")
     (root / "scripts" / "install.sh").write_text(INSTALL_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
     (root / "scripts" / "install.sh").chmod(0o755)
+    (root / "scripts" / "runtime_cache_env.sh").write_text(RUNTIME_CACHE_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
     (root / "scripts" / "apptainer" / "up.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     (root / "scripts" / "apptainer" / "up.sh").chmod(0o755)
     (root / "scripts" / "apptainer" / "images.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -759,6 +1030,7 @@ def test_install_doctor_and_dry_run_do_not_start_stack() -> None:
     assert "Actions the installer may take" in doctor.stdout
     assert "Deployment checks" in doctor.stdout
     assert "Runtime network containment" in doctor.stdout
+    assert ".runtime/uv" in doctor.stdout
     assert "update checks" in doctor.stdout.lower()
 
     dry_run = subprocess.run(
@@ -778,6 +1050,34 @@ def test_install_doctor_and_dry_run_do_not_start_stack() -> None:
     )
     assert "Dry run only" in dry_run.stdout
     assert "No files were written" in dry_run.stdout
+
+
+def test_doctor_writable_directory_check_does_not_create_target(tmp_path: Path) -> None:
+    target = tmp_path / "new-data" / "output"
+    script = f"""
+set -euo pipefail
+source {shlex.quote(str(INSTALL_LIB_DIR / "doctor.sh"))}
+doctor_check_directory_writable "Data directory" {shlex.quote(str(target))}
+test ! -e {shlex.quote(str(target.parent))}
+test ! -e {shlex.quote(str(target))}
+"""
+
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+
+    assert "[plan]" in result.stdout
+
+
+def test_apple_silicon_defaults_lima_to_x86_64_unless_overridden() -> None:
+    script = f"""
+set -euo pipefail
+source {shlex.quote(str(INSTALL_LIB_DIR / "apptainer.sh"))}
+host_arch_macos() {{ printf 'arm64\\n'; }}
+test "$(default_lima_arch_macos)" = "x86_64"
+export NEUROCADE_LIMA_ARCH=arm64
+test "$(normalize_lima_arch "$NEUROCADE_LIMA_ARCH")" = "aarch64"
+"""
+
+    subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
 
 
 def test_update_checker_logs_only_when_new_version_is_available(tmp_path: Path) -> None:

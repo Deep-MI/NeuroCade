@@ -267,6 +267,7 @@ bootstrap_from_raw_script() {
 bootstrap_from_raw_script "$@"
 
 source "$INSTALL_LIB_DIR/common.sh"
+source "$SCRIPT_DIR/runtime_cache_env.sh"
 source "$INSTALL_LIB_DIR/python.sh"
 source "$INSTALL_LIB_DIR/node.sh"
 source "$INSTALL_LIB_DIR/lima.sh"
@@ -529,6 +530,7 @@ setup_desktop_launcher() {
     echo "Electron desktop dependencies already installed."
   else
     log_section "Installing Electron desktop dependencies"
+    configure_node_runtime_cache "$root"
     (cd "$root/client" && npm ci)
   fi
   "$root/scripts/desktop/install_launcher.sh"

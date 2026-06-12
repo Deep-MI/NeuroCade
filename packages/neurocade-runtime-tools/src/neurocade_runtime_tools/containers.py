@@ -376,6 +376,81 @@ def _run_apptainer_pull(target: Path, uri: str, *, dry_run: bool = False) -> Non
         ) from exc
 
 
+def _normalize_container_arch(value: str) -> str:
+    """Normalize common container architecture labels for comparisons."""
+    normalized = value.strip().lower()
+    if normalized in {"amd64", "x86_64"}:
+        return "amd64"
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    return normalized
+
+
+def _command_text(command: list[str], *, cwd: Path, timeout_s: int = 30) -> str:
+    result = execute_runtime_request(
+        RuntimeExecutionRequest(
+            argv=command,
+            cwd=cwd,
+            timeout_s=timeout_s,
+            execution_mode="runtime-tools-container-arch-check",
+            check=True,
+            capture_output=True,
+        )
+    )
+    return (result.stdout or "").strip()
+
+
+def _apptainer_guest_arch() -> str:
+    """Return the host/guest architecture that Apptainer will execute under."""
+    runtime = apptainer_bin()
+    try:
+        if _lima_apptainer_wrapper(runtime) and shutil.which("limactl"):
+            return _command_text(["limactl", "shell", "apptainer", "uname", "-m"], cwd=find_repo_root())
+        return os.uname().machine
+    except Exception as exc:
+        raise RuntimeError("Could not determine Apptainer guest architecture") from exc
+
+
+def _image_build_arch(image: Path) -> str | None:
+    """Return the image build architecture label when Apptainer exposes it."""
+    try:
+        output = _command_text([apptainer_bin(), "inspect", "--json", str(image)], cwd=image.parent)
+    except Exception:
+        return None
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    labels = payload.get("data", {}).get("attributes", {}).get("labels", {})
+    if not isinstance(labels, dict):
+        return None
+    value = labels.get("org.label-schema.build-arch")
+    return str(value).strip() if value else None
+
+
+def _image_runtime_arch(image: Path) -> str:
+    """Probe the architecture of a runnable image with uname."""
+    return _command_text([apptainer_bin(), "exec", str(image), "uname", "-m"], cwd=image.parent)
+
+
+def _validate_container_architecture(image: Path) -> None:
+    """Raise when an image cannot run under the current Apptainer guest architecture."""
+    guest_arch_raw = _apptainer_guest_arch()
+    guest_arch = _normalize_container_arch(guest_arch_raw)
+    image_arch_raw = _image_build_arch(image)
+    if image_arch_raw:
+        image_arch = _normalize_container_arch(image_arch_raw)
+        if image_arch != guest_arch:
+            raise RuntimeError(f"{image} is {image_arch_raw}, but the Apptainer guest is {guest_arch_raw}")
+    try:
+        runtime_arch_raw = _image_runtime_arch(image)
+    except Exception as exc:
+        raise RuntimeError(f"{image} could not be executed by the current Apptainer guest") from exc
+    runtime_arch = _normalize_container_arch(runtime_arch_raw)
+    if runtime_arch != guest_arch:
+        raise RuntimeError(f"{image} runs as {runtime_arch_raw}, but the Apptainer guest is {guest_arch_raw}")
+
+
 def _sha256_file(path: Path) -> str:
     """Return the SHA256 digest for a local file."""
     digest = hashlib.sha256()
@@ -415,20 +490,26 @@ def _fallback_install(spec: ContainerSpec, target: Path, *, dry_run: bool = Fals
     if spec.docker_uri:
         print(f"Installing {spec.name} from upstream Docker image: {spec.docker_uri}")
         _run_apptainer_pull(target, spec.docker_uri, dry_run=dry_run)
+        if not dry_run:
+            _validate_container_architecture(target)
         return
     if spec.build_file:
         build_file = find_repo_root() / spec.build_file
         print(f"Building {spec.name} locally from {build_file}")
         if _lima_apptainer_wrapper(apptainer_bin()):
-            if os.environ.get("NEUROCADE_ALLOW_LOCAL_CONTAINER_BUILDS") != "1":
+            if spec.name != "bash_image" and os.environ.get("NEUROCADE_ALLOW_LOCAL_CONTAINER_BUILDS") != "1":
                 raise RuntimeError(
                     f"{spec.name} prebuilt GitHub release asset is unavailable, and local Apptainer builds are disabled on macOS/Lima. "
                     "Publish the release asset or set NEUROCADE_ALLOW_LOCAL_CONTAINER_BUILDS=1 to attempt a large local build."
                 )
             print(f"Building {spec.name} inside the Lima VM, then copying the SIF back to {target}")
             _run_lima_apptainer_build(target, build_file, dry_run=dry_run)
+            if not dry_run:
+                _validate_container_architecture(target)
             return
         _run([apptainer_bin(), "build", str(target), str(build_file)], cwd=target.parent, dry_run=dry_run)
+        if not dry_run:
+            _validate_container_architecture(target)
         return
     raise RuntimeError(f"No install source is configured for {spec.name}.")
 
@@ -441,10 +522,14 @@ def _pull_or_build(spec: ContainerSpec, target: Path, *, source: str, dry_run: b
         print(f"Installing {spec.name} from direct container image: {spec.fileshare_url}")
         try:
             _download_file(spec.fileshare_url, target, expected_sha256=spec.fileshare_sha256, dry_run=dry_run)
+            if not dry_run:
+                _validate_container_architecture(target)
             if source == "auto" and dry_run:
                 _fallback_install(spec, target, dry_run=True)
             return
         except (CalledProcessError, OSError, RuntimeError) as exc:
+            if not dry_run:
+                target.unlink(missing_ok=True)
             if source == "fileshare":
                 raise
             print(f"Direct container image source unavailable for {spec.name}; falling back to local/upstream source. ({exc})", file=sys.stderr)
@@ -457,8 +542,17 @@ def _install_container_image(spec: ContainerSpec, *, source: str = "auto", dry_r
         raise RuntimeError(f"{spec.name} requires a FreeSurfer license. Install neurocade-data/license.txt first.")
     target = default_image_path(spec)
     if target.exists() and not dry_run:
-        print(f"{spec.name} already installed: {target}")
-        return None
+        try:
+            _validate_container_architecture(target)
+            print(f"{spec.name} already installed: {target}")
+            return None
+        except RuntimeError as exc:
+            if source != "auto":
+                raise
+            if not spec.docker_uri and not spec.build_file:
+                raise
+            print(f"{spec.name} existing image is incompatible; reinstalling from local/upstream source. ({exc})", file=sys.stderr)
+            target.unlink(missing_ok=True)
     print(f"Installing {spec.name} -> {target}")
     _pull_or_build(spec, target, source=source, dry_run=dry_run)
     if dry_run:
@@ -668,6 +762,7 @@ def check_core_fast(*, root: Path | None = None, include_freesurfer: bool | None
         image = default_image_path(spec, repo_root)
         if not image.is_file():
             raise FileNotFoundError(f"missing {name} image at {image}")
+        _validate_container_architecture(image)
         indexed_row = indexed.get(name)
         if not indexed_row or not indexed_row.get("image_path"):
             raise FileNotFoundError(f"missing {name} inventory row")
@@ -1519,7 +1614,13 @@ def _core_download_jobs(count: int) -> int:
     return min(count, _env_int(CORE_DOWNLOAD_JOBS_ENV, default))
 
 
-def _download_direct_core_container(spec: ContainerSpec, target: Path, *, source: str) -> dict[str, Any] | None:
+def _download_direct_core_container(
+    spec: ContainerSpec,
+    target: Path,
+    *,
+    source: str,
+    validate_architecture: bool = True,
+) -> dict[str, Any] | None:
     """Install one core image from its direct URL without invoking Apptainer fallback."""
     if not spec.fileshare_url:
         raise RuntimeError(f"No direct container image source is configured for {spec.name}.")
@@ -1528,6 +1629,8 @@ def _download_direct_core_container(spec: ContainerSpec, target: Path, *, source
     _install_print(f"Installing {spec.name} from direct container image: {spec.fileshare_url}")
     try:
         _download_file(spec.fileshare_url, target, expected_sha256=spec.fileshare_sha256)
+        if validate_architecture:
+            _validate_container_architecture(target)
     except (CalledProcessError, OSError, RuntimeError) as exc:
         target.unlink(missing_ok=True)
         if source == "fileshare":
@@ -1547,12 +1650,21 @@ def _install_core_images(source: str, dry_run: bool, *, include_freesurfer: bool
             raise RuntimeError(f"{spec.name} requires a FreeSurfer license. Install neurocade-data/license.txt first.")
         target = default_image_path(spec)
         if target.exists() and not dry_run:
-            container = _container_row_without_hash(spec, target)
-            print(f"{spec.name} already installed: {target}")
-            if _load_container_index(container) is None:
-                print(f"{spec.name} local tool index is missing or stale; installing the bundled prebuilt index when available.")
-                existing_needing_index.append((index, container))
-            continue
+            try:
+                _validate_container_architecture(target)
+                container = _container_row_without_hash(spec, target)
+                print(f"{spec.name} already installed: {target}")
+                if _load_container_index(container) is None:
+                    print(f"{spec.name} local tool index is missing or stale; installing the bundled prebuilt index when available.")
+                    existing_needing_index.append((index, container))
+                continue
+            except RuntimeError as exc:
+                if source != "auto":
+                    raise
+                if not spec.docker_uri and not spec.build_file:
+                    raise
+                print(f"{spec.name} existing image is incompatible; reinstalling from local/upstream source. ({exc})", file=sys.stderr)
+                target.unlink(missing_ok=True)
         items.append((index, spec, target))
 
     if dry_run or source == "upstream":
@@ -1604,7 +1716,10 @@ def prefetch_core(*, dry_run: bool = False, include_freesurfer: bool | None = No
         for index, spec in enumerate(CORE_SPECS.values())
         if spec.name in planned and spec.fileshare_url
     ]
-    pending = [(index, spec, target) for index, spec, target in items if dry_run or not target.exists()]
+    pending: list[tuple[int, ContainerSpec, Path]] = []
+    for index, spec, target in items:
+        if dry_run or not target.exists():
+            pending.append((index, spec, target))
     if not pending:
         print("All direct core container images are already present.")
         return
@@ -1617,7 +1732,7 @@ def prefetch_core(*, dry_run: bool = False, include_freesurfer: bool | None = No
     _install_print(f"Prefetching {len(pending)} direct core container image(s) with {jobs} download job(s).")
     with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="neurocade-container-prefetch") as executor:
         futures = {
-            executor.submit(_download_direct_core_container, spec, target, source="fileshare"): (index, spec)
+            executor.submit(_download_direct_core_container, spec, target, source="fileshare", validate_architecture=False): (index, spec)
             for index, spec, target in pending
         }
         for future in as_completed(futures):
@@ -1798,7 +1913,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.name == "core" and args.fast:
             try:
                 check_core_fast(include_freesurfer=args.with_freesurfer)
-            except FileNotFoundError as exc:
+            except (FileNotFoundError, RuntimeError) as exc:
                 print(f"Core runtime container fast check failed: {exc}", file=sys.stderr)
                 raise SystemExit(1) from exc
             print("Core runtime containers already verified by lightweight startup check.")

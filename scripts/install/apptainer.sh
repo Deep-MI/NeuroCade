@@ -53,6 +53,45 @@ host_cpu_count_macos() {
   fi
 }
 
+host_arch_macos() {
+  uname -m 2>/dev/null || true
+}
+
+normalize_lima_arch() {
+  case "$1" in
+    amd64|x86_64)
+      printf 'x86_64\n'
+      ;;
+    arm64|aarch64)
+      printf 'aarch64\n'
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+default_lima_arch_macos() {
+  local host_arch
+  host_arch="$(normalize_lima_arch "$(host_arch_macos)")"
+  case "$host_arch" in
+    aarch64)
+      printf 'x86_64\n'
+      ;;
+    x86_64)
+      printf 'x86_64\n'
+      ;;
+    *)
+      printf '%s\n' "${host_arch:-x86_64}"
+      ;;
+  esac
+}
+
+existing_lima_instance_arch() {
+  local name="$1"
+  limactl list --format '{{.Name}} {{.Arch}}' 2>/dev/null | awk -v name="$name" '$1 == name { print $2; found = 1 } END { exit(found ? 0 : 1) }'
+}
+
 host_disk_free_gib() {
   local path="$1"
   df -g "$path" 2>/dev/null | awk 'NR == 2 { print $4 + 0; found = 1 } END { if (!found) print 0 }'
@@ -141,15 +180,17 @@ prompt_lima_vm_size_macos() {
   local recommended_memory=12
   local recommended_cpus=4
   local recommended_disk=100
-  local memory_default cpus_default disk_default
+  local memory_default cpus_default disk_default arch_default host_arch
 
   host_memory_gib="$(host_memory_gib_macos)"
   host_cpus="$(host_cpu_count_macos)"
   free_disk_gib="$(host_disk_free_gib "$root")"
+  host_arch="$(normalize_lima_arch "$(host_arch_macos)")"
 
   memory_default="${LIMA_MEMORY_GIB:-$(default_lima_memory_gib "$host_memory_gib")}"
   cpus_default="${LIMA_CPUS:-$(default_lima_cpus "$host_cpus")}"
   disk_default="${LIMA_DISK_GIB:-$(default_lima_disk_gib "$free_disk_gib")}"
+  arch_default="$(normalize_lima_arch "${NEUROCADE_LIMA_ARCH:-$(default_lima_arch_macos)}")"
 
   cat <<EOF
 
@@ -158,14 +199,24 @@ Detected host resources:
   Memory: $(resource_display_value "$host_memory_gib") GiB total
   CPU: $(resource_display_value "$host_cpus") logical cores
   Disk free near checkout: $(resource_display_value "$free_disk_gib") GiB
+  Host architecture: ${host_arch:-unknown}
 
 Recommended for CPU FastSurfer: at least ${recommended_memory} GiB RAM, ${recommended_cpus} CPUs, and ${recommended_disk} GiB disk.
 To keep macOS responsive, leave roughly 4 GiB RAM, 1-2 CPU cores, and 20 GiB disk free for the host.
 EOF
+  if [[ "$host_arch" == "aarch64" && "$arch_default" == "x86_64" ]]; then
+    cat <<EOF
+Apple Silicon detected. NeuroCade defaults the Apptainer Lima VM to x86_64 because
+some required runtime containers, including the configured FastSurfer image, are
+currently amd64-only. Set NEUROCADE_LIMA_ARCH=aarch64 to opt into native arm64
+when compatible runtime images are available.
+EOF
+  fi
 
   LIMA_MEMORY_GIB="$(integer_or_default "$(prompt "Lima VM memory in GiB" "$memory_default")" "$memory_default")"
   LIMA_CPUS="$(integer_or_default "$(prompt "Lima VM CPU cores" "$cpus_default")" "$cpus_default")"
   LIMA_DISK_GIB="$(integer_or_default "$(prompt "Lima VM disk in GiB" "$disk_default")" "$disk_default")"
+  NEUROCADE_LIMA_ARCH="$(normalize_lima_arch "$(prompt "Lima VM architecture" "$arch_default")")"
 
   if [[ "$LIMA_MEMORY_GIB" -lt "$recommended_memory" ]]; then
     echo "Warning: ${LIMA_MEMORY_GIB} GiB RAM is below the recommended ${recommended_memory} GiB for CPU FastSurfer and may cause segmentation runs to fail."
@@ -177,7 +228,7 @@ EOF
     echo "Warning: ${LIMA_DISK_GIB} GiB disk is below the recommended ${recommended_disk} GiB for local images, cache, and MRI outputs."
   fi
 
-  export LIMA_MEMORY_GIB LIMA_CPUS LIMA_DISK_GIB
+  export LIMA_MEMORY_GIB LIMA_CPUS LIMA_DISK_GIB NEUROCADE_LIMA_ARCH
 }
 
 install_apptainer_macos() {
@@ -187,6 +238,7 @@ install_apptainer_macos() {
   local timeout="${APPTAINER_VM_START_TIMEOUT:-1800}"
   local fallback_after="${APPTAINER_VM_FALLBACK_AFTER:-300}"
   local release_version="${APPTAINER_RELEASE_VERSION:-1.4.5}"
+  local release_deb_arch=""
 
   cat <<EOF
 Apptainer needs a Linux kernel and cannot run natively on macOS.
@@ -217,11 +269,25 @@ EOF
 
   if ! limactl list --format '{{.Name}}' 2>/dev/null | grep -qx 'apptainer'; then
     prompt_lima_vm_size_macos "$root"
-    echo "Creating the Lima Apptainer VM with ${LIMA_MEMORY_GIB} GiB RAM, ${LIMA_CPUS} CPUs, and ${LIMA_DISK_GIB} GiB sparse disk ..."
-    if ! limactl start --name=apptainer --memory "$LIMA_MEMORY_GIB" --cpus "$LIMA_CPUS" --disk "$LIMA_DISK_GIB" template:apptainer; then
+    echo "Creating the Lima Apptainer VM with ${LIMA_MEMORY_GIB} GiB RAM, ${LIMA_CPUS} CPUs, ${LIMA_DISK_GIB} GiB sparse disk, and ${NEUROCADE_LIMA_ARCH} architecture ..."
+    if ! limactl start --name=apptainer --arch "$NEUROCADE_LIMA_ARCH" --memory "$LIMA_MEMORY_GIB" --cpus "$LIMA_CPUS" --disk "$LIMA_DISK_GIB" template:apptainer; then
       echo "Lima reported a startup error; checking whether the VM is still running." >&2
     fi
-  elif ! lima_instance_running; then
+  else
+    local existing_arch desired_arch
+    existing_arch="$(existing_lima_instance_arch apptainer || true)"
+    desired_arch="$(normalize_lima_arch "${NEUROCADE_LIMA_ARCH:-$(default_lima_arch_macos)}")"
+    if [[ -n "$existing_arch" && "$(normalize_lima_arch "$existing_arch")" != "$desired_arch" ]]; then
+      cat >&2 <<EOF
+Existing Lima Apptainer VM architecture is $existing_arch, but NeuroCade is configured for $desired_arch.
+Lima VM architecture cannot be changed in place. Delete/recreate the apptainer VM, or set
+NEUROCADE_LIMA_ARCH=$(normalize_lima_arch "$existing_arch") to reuse the existing VM.
+EOF
+      exit 1
+    fi
+    export NEUROCADE_LIMA_ARCH="$desired_arch"
+  fi
+  if ! lima_instance_running; then
     echo "Starting existing Lima Apptainer VM ..."
     if ! limactl start apptainer; then
       echo "Lima reported a startup error; checking whether the VM is still running." >&2
@@ -237,7 +303,9 @@ EOF
     if [[ "$tried_release_fallback" -eq 0 ]] && (( SECONDS >= fallback_at )); then
       tried_release_fallback=1
       echo "Lima template provisioning is still waiting; trying the Apptainer GitHub release package fallback ..."
-      limactl shell apptainer bash -lc "cd /tmp && curl -fL -o apptainer_${release_version}_amd64.deb https://github.com/apptainer/apptainer/releases/download/v${release_version}/apptainer_${release_version}_amd64.deb && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./apptainer_${release_version}_amd64.deb" || true
+      release_deb_arch="$(limactl shell apptainer dpkg --print-architecture 2>/dev/null || true)"
+      release_deb_arch="${release_deb_arch:-amd64}"
+      limactl shell apptainer bash -lc "cd /tmp && curl -fL -o apptainer_${release_version}_${release_deb_arch}.deb https://github.com/apptainer/apptainer/releases/download/v${release_version}/apptainer_${release_version}_${release_deb_arch}.deb && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./apptainer_${release_version}_${release_deb_arch}.deb" || true
     fi
     if (( SECONDS >= deadline )); then
       cat >&2 <<EOF

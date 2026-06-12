@@ -7,10 +7,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
+source "$ROOT_DIR/scripts/runtime_cache_env.sh"
 if [[ -x "$ROOT_DIR/.node/bin/node" && -x "$ROOT_DIR/.node/bin/npm" ]]; then
   export PATH="$ROOT_DIR/.node/bin:$PATH"
 fi
-if [[ -x "$HOME/.local/bin/uv" ]]; then
+if [[ -x "$ROOT_DIR/.runtime/uv/bin/uv" ]]; then
+  export PATH="$ROOT_DIR/.runtime/uv/bin:$PATH"
+elif [[ -x "$HOME/.local/bin/uv" ]]; then
   export PATH="$HOME/.local/bin:$PATH"
 elif [[ -x "$HOME/.cargo/bin/uv" ]]; then
   export PATH="$HOME/.cargo/bin:$PATH"
@@ -83,6 +86,19 @@ POSTGRES_OCI="${POSTGRES_OCI:-docker://postgres:16-alpine}"
 REDIS_OCI="${REDIS_OCI:-docker://redis:7.2.4-alpine}"
 TRAEFIK_OCI="${TRAEFIK_OCI:-docker://traefik:v2.11.14}"
 RELEASE_CONTAINER_BASE_URL="https://github.com/Deep-MI/NeuroCade/releases"
+
+ensure_uv_state_dir() {
+  local uv_state_dir="${1:-$RUNTIME_DIR/uv}"
+
+  mkdir -p "$uv_state_dir/config" "$uv_state_dir/cache"
+
+  if [[ -z "${XDG_CONFIG_HOME:-}" || "${XDG_CONFIG_HOME:-}" != /* ]] || ! mkdir -p "$XDG_CONFIG_HOME" 2>/dev/null || [[ ! -w "$XDG_CONFIG_HOME" ]]; then
+    export XDG_CONFIG_HOME="$uv_state_dir/config"
+  fi
+  if [[ -z "${UV_CACHE_DIR:-}" || "${UV_CACHE_DIR:-}" != /* ]] || ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null || [[ ! -w "$UV_CACHE_DIR" ]]; then
+    export UV_CACHE_DIR="$uv_state_dir/cache"
+  fi
+}
 
 release_asset_url() {
   local filename="$1"
@@ -204,8 +220,14 @@ uses_lima_apptainer() {
   [[ "$APPTAINER_BIN" == "$ROOT_DIR/.apptainer/bin/apptainer" ]] && command -v limactl >/dev/null 2>&1
 }
 
+lima_instance_running() {
+  uses_lima_apptainer || return 0
+  limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null | awk '$1 == "apptainer" && $2 == "Running" { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
 lima_checkout_mount_live_writable() {
   uses_lima_apptainer || return 0
+  lima_instance_running || return 1
   limactl shell apptainer sh -c '
 root="$1"
 mkdir -p "$root/.runtime" || exit 1
@@ -219,8 +241,12 @@ ensure_lima_checkout_mount_live_writable() {
   if lima_checkout_mount_live_writable; then
     return 0
   fi
-  echo "Lima checkout mount is not writable; restarting the Apptainer VM to refresh mounts."
-  limactl stop apptainer
+  if lima_instance_running; then
+    echo "Lima checkout mount is not writable; restarting the Apptainer VM to refresh mounts."
+    limactl stop apptainer
+  else
+    echo "Lima Apptainer VM is stopped; starting it before checking checkout mounts."
+  fi
   limactl start apptainer
   if ! lima_checkout_mount_live_writable; then
     cat >&2 <<EOF
@@ -230,6 +256,118 @@ The NeuroCade checkout is not writable inside the Lima Apptainer VM:
 Check ~/.lima/apptainer/lima.yaml and make sure this checkout is mounted with:
   - location: "$ROOT_DIR"
     writable: true
+EOF
+    return 1
+  fi
+}
+
+normalize_container_arch() {
+  local arch
+  arch="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$arch" in
+    amd64|x86_64)
+      printf 'amd64\n'
+      ;;
+    arm64|aarch64)
+      printf 'arm64\n'
+      ;;
+    *)
+      printf '%s\n' "$arch"
+      ;;
+  esac
+}
+
+apptainer_guest_arch() {
+  if uses_lima_apptainer; then
+    limactl shell apptainer uname -m < /dev/null
+    return
+  fi
+  uname -m
+}
+
+image_build_arch() {
+  local image="$1"
+  { "$APPTAINER_BIN" inspect --json "$image" < /dev/null 2>/dev/null || true; } \
+    | sed -n 's/.*"org.label-schema.build-arch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | sed -n '1p'
+}
+
+image_runtime_arch() {
+  local image="$1"
+  "$APPTAINER_BIN" exec "$image" uname -m < /dev/null 2>/dev/null | sed -n '1p'
+}
+
+image_compatible_with_guest() {
+  local image="$1"
+  local guest_arch_raw="$2"
+  local guest_arch image_arch_raw image_arch runtime_arch_raw runtime_arch
+  [[ -n "$guest_arch_raw" ]] || return 1
+  guest_arch="$(normalize_container_arch "$guest_arch_raw")"
+  image_arch_raw="$(image_build_arch "$image")"
+  if [[ -n "$image_arch_raw" ]]; then
+    image_arch="$(normalize_container_arch "$image_arch_raw")"
+    [[ "$image_arch" == "$guest_arch" ]] || return 1
+  fi
+  runtime_arch_raw="$(image_runtime_arch "$image" || true)"
+  [[ -n "$runtime_arch_raw" ]] || return 1
+  runtime_arch="$(normalize_container_arch "$runtime_arch_raw")"
+  [[ "$runtime_arch" == "$guest_arch" ]]
+}
+
+list_startup_container_images() {
+  printf '%s\n' "$POSTGRES_SIF" "$REDIS_SIF" "$TRAEFIK_SIF"
+}
+
+check_system_container_arch_compatibility() {
+  require_apptainer
+  local guest_arch_raw guest_arch image image_arch_raw image_arch runtime_arch_raw runtime_arch failures
+  local checked_images=""
+  guest_arch_raw="$(apptainer_guest_arch 2>/dev/null || true)"
+  if [[ -z "$guest_arch_raw" ]]; then
+    echo "Could not determine Apptainer guest architecture." >&2
+    return 1
+  fi
+  guest_arch="$(normalize_container_arch "$guest_arch_raw")"
+  failures=0
+  while IFS= read -r image; do
+    [[ -n "$image" && -f "$image" ]] || continue
+    if [[ "$checked_images" == *"|$image|"* ]]; then
+      continue
+    fi
+    checked_images="${checked_images}|$image|"
+    image_arch_raw="$(image_build_arch "$image")"
+    if [[ -z "$image_arch_raw" ]]; then
+      echo "Warning: could not determine image architecture for $image" >&2
+    else
+      image_arch="$(normalize_container_arch "$image_arch_raw")"
+      if [[ "$image_arch" != "$guest_arch" ]]; then
+        echo "Incompatible container architecture: $image is $image_arch_raw, but the Apptainer guest is $guest_arch_raw." >&2
+        failures=1
+        continue
+      fi
+    fi
+    runtime_arch_raw="$(image_runtime_arch "$image" || true)"
+    if [[ -z "$runtime_arch_raw" ]]; then
+      echo "Incompatible container architecture: $image could not be executed by the current Apptainer guest ($guest_arch_raw)." >&2
+      failures=1
+      continue
+    fi
+    runtime_arch="$(normalize_container_arch "$runtime_arch_raw")"
+    if [[ "$runtime_arch" != "$guest_arch" ]]; then
+      echo "Incompatible container architecture: $image runs as $runtime_arch_raw, but the Apptainer guest is $guest_arch_raw." >&2
+      failures=1
+    else
+      echo "Container architecture ok: $image (${image_arch_raw:-unknown label}, runs $runtime_arch_raw on $guest_arch_raw)"
+    fi
+  done < <(list_startup_container_images)
+
+  if (( failures )); then
+    cat >&2 <<EOF
+One or more NeuroCade system containers cannot run in the current Apptainer guest.
+
+On Apple Silicon Macs, use an amd64/x86_64 Lima VM for the current release
+(NEUROCADE_LIMA_ARCH=x86_64), or publish arm64-compatible system container
+images before using a native arm64/aarch64 Lima guest.
 EOF
     return 1
   fi

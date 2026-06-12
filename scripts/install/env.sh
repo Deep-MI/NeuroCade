@@ -386,6 +386,7 @@ write_env() {
     env_line NEUROCADE_CONTAINER_INVENTORY "$root/llm-data/tool-catalog/installed_containers.json"
     env_line NEUROCADE_INSTALLED_TOOLS_JSONL "$root/llm-data/tool-catalog/installed_tools.jsonl"
     env_line_configured "$root" APPTAINER_BIN "${APPTAINER_BIN:-apptainer}"
+    env_line_configured "$root" NEUROCADE_LIMA_ARCH "${NEUROCADE_LIMA_ARCH:-}"
     env_line_configured "$root" APPTAINER_IMAGE_DIR "$root/.apptainer/images"
     env_line_configured "$root" APPTAINER_CACHE_DIR "$root/.apptainer/cache"
     env_line_configured "$root" POSTGRES_SIF "$root/.apptainer/images/postgres-16-alpine.sif"
