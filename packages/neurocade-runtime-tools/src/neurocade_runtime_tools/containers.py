@@ -565,6 +565,7 @@ def _install_container_image(spec: ContainerSpec, *, source: str = "auto", dry_r
                 raise
             print(f"{spec.name} existing image is incompatible; reinstalling from local/upstream source. ({exc})", file=sys.stderr)
             target.unlink(missing_ok=True)
+            source = "upstream"
     print(f"Installing {spec.name} -> {target}")
     _pull_or_build(spec, target, source=source, dry_run=dry_run)
     if dry_run:

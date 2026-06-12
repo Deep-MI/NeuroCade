@@ -1593,6 +1593,7 @@ def test_bash_image_can_build_inside_lima_without_escape_hatch(monkeypatch, tmp_
         builds.append((target, build_file, dry_run))
         target.write_text("built image", encoding="utf-8")
 
+    monkeypatch.setattr(containers, "_lima_apptainer_wrapper", lambda _command: True)
     monkeypatch.setattr(containers, "_run_lima_apptainer_build", fake_lima_build)
     monkeypatch.setattr(containers, "_validate_container_architecture", lambda _target: None)
 
