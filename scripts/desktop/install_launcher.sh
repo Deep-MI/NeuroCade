@@ -23,6 +23,7 @@ Icon=$ROOT_DIR/client/electron/assets/icon.png
 Terminal=false
 Categories=Science;Education;
 StartupNotify=true
+StartupWMClass=$APP_NAME
 EOF
     chmod 755 "$desktop_file"
     echo "Installed desktop launcher: $desktop_file"
@@ -38,7 +39,11 @@ EOF
       app_contents="$app_bundle/Contents"
       app_resources="$app_contents/Resources"
       cp "$ROOT_DIR/client/electron/assets/icon.icns" "$app_resources/icon.icns"
+      if [[ -f "$app_contents/MacOS/Electron" ]]; then
+        mv "$app_contents/MacOS/Electron" "$app_contents/MacOS/$APP_NAME"
+      fi
       /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$app_contents/Info.plist"
+      /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$app_contents/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile icon.icns" "$app_contents/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.neurocade.app" "$app_contents/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$app_contents/Info.plist"

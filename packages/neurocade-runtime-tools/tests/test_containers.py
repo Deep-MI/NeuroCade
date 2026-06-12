@@ -22,6 +22,12 @@ from neurocade_runtime_tools.execution import RuntimeExecutionResult
 from neurocade_runtime_tools.retrieval import hybrid_rank
 
 
+@pytest.fixture(autouse=True)
+def _skip_real_container_arch_validation(monkeypatch):
+    """Keep unit tests on fake image files from invoking Apptainer."""
+    monkeypatch.setattr(containers, "_validate_container_architecture", lambda _image: None)
+
+
 def test_refresh_index_generates_inventory_and_installed_tools(tmp_path: Path, monkeypatch):
     """Verify refresh_index writes container inventory and tool indexes."""
     root = tmp_path
@@ -895,8 +901,12 @@ def test_check_core_fast_validates_existing_indexes(monkeypatch, tmp_path: Path)
     inventory.write_text(json.dumps({"containers": rows}), encoding="utf-8")
     tools.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(containers, "_sha256_file", lambda _path: (_ for _ in ()).throw(AssertionError("should not hash")))
+    validated_images: list[Path] = []
+    monkeypatch.setattr(containers, "_validate_container_architecture", lambda image: validated_images.append(Path(image)))
 
     containers.check_core_fast(root=tmp_path)
+
+    assert validated_images == [Path(row["image_path"]) for row in rows]
 
 
 def test_check_core_fast_fails_when_sidecar_missing(monkeypatch, tmp_path: Path):
@@ -1021,6 +1031,128 @@ def test_install_core_auto_fallback_removes_partial_direct_download(monkeypatch,
 
     assert pulls == [(fastsurfer_target, "docker://vnmd/fastsurfer_2.4.2:20260115", False)]
     assert fastsurfer_target.read_text(encoding="utf-8") == "fallback image"
+
+
+def test_install_core_auto_falls_back_after_direct_arch_mismatch(monkeypatch, tmp_path: Path):
+    """Verify core install validates the parallel direct-download path."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
+    monkeypatch.setattr(containers, "license_path", lambda root=None: None)
+    fastsurfer_target = containers.default_image_path(CORE_SPECS["fastsurfer"])
+    pulls: list[tuple[Path, str, bool]] = []
+
+    def fake_download(_url, target, *, expected_sha256=None, dry_run=False):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("direct amd64 image" if target == fastsurfer_target else "direct ok image", encoding="utf-8")
+
+    def fake_validate(target):
+        if target.read_text(encoding="utf-8") == "direct amd64 image":
+            raise RuntimeError("image is amd64, but the Apptainer guest is aarch64")
+
+    def fake_apptainer_pull(target, uri, *, dry_run=False):
+        assert target == fastsurfer_target
+        assert not target.exists()
+        pulls.append((target, uri, dry_run))
+        target.write_text("fallback arm64 image", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_download_file", fake_download)
+    monkeypatch.setattr(containers, "_validate_container_architecture", fake_validate)
+    monkeypatch.setattr(containers, "_run_apptainer_pull", fake_apptainer_pull)
+
+    install_core(source="auto", refresh=False)
+
+    assert pulls == [(fastsurfer_target, "docker://vnmd/fastsurfer_2.4.2:20260115", False)]
+    assert fastsurfer_target.read_text(encoding="utf-8") == "fallback arm64 image"
+
+
+def test_install_core_existing_incompatible_image_reinstalls(monkeypatch, tmp_path: Path):
+    """Verify core install validates existing images before reusing them."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
+    monkeypatch.setattr(containers, "license_path", lambda root=None: None)
+    fastsurfer_target = containers.default_image_path(CORE_SPECS["fastsurfer"])
+    fastsurfer_target.parent.mkdir(parents=True)
+    fastsurfer_target.write_text("old amd64 image", encoding="utf-8")
+    pulls: list[tuple[Path, str, bool]] = []
+
+    def fake_download(_url, target, *, expected_sha256=None, dry_run=False):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("direct amd64 image" if target == fastsurfer_target else "direct ok image", encoding="utf-8")
+
+    def fake_validate(target):
+        if target.read_text(encoding="utf-8") in {"old amd64 image", "direct amd64 image"}:
+            raise RuntimeError("image is amd64, but the Apptainer guest is aarch64")
+
+    def fake_apptainer_pull(target, uri, *, dry_run=False):
+        assert target == fastsurfer_target
+        assert not target.exists()
+        pulls.append((target, uri, dry_run))
+        target.write_text("fallback arm64 image", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_download_file", fake_download)
+    monkeypatch.setattr(containers, "_validate_container_architecture", fake_validate)
+    monkeypatch.setattr(containers, "_run_apptainer_pull", fake_apptainer_pull)
+
+    install_core(source="auto", refresh=False)
+
+    assert pulls == [(fastsurfer_target, "docker://vnmd/fastsurfer_2.4.2:20260115", False)]
+    assert fastsurfer_target.read_text(encoding="utf-8") == "fallback arm64 image"
+
+
+def test_prefetch_core_does_not_validate_existing_direct_images(monkeypatch, tmp_path: Path):
+    """Verify prefetch stays a download-only step when Apptainer is not ready yet."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
+    monkeypatch.setattr(containers, "license_path", lambda root=None: None)
+    dcm2niix_target = containers.default_image_path(CORE_SPECS["dcm2niix"])
+    dcm2niix_target.parent.mkdir(parents=True)
+    dcm2niix_target.write_text("old amd64 image", encoding="utf-8")
+    downloaded: list[Path] = []
+
+    def fake_download(_url, target, *, expected_sha256=None, dry_run=False):
+        downloaded.append(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("direct ok image", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_download_file", fake_download)
+    monkeypatch.setattr(
+        containers,
+        "_validate_container_architecture",
+        lambda _target: pytest.fail("prefetch should not invoke Apptainer architecture validation"),
+    )
+
+    containers.prefetch_core()
+
+    assert dcm2niix_target not in downloaded
+    assert dcm2niix_target.read_text(encoding="utf-8") == "old amd64 image"
+
+
+def test_prefetch_core_downloads_without_arch_validation(monkeypatch, tmp_path: Path):
+    """Verify fresh prefetch does not require Apptainer to be installed yet."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
+    monkeypatch.setattr(containers, "license_path", lambda root=None: None)
+    downloaded: list[Path] = []
+
+    def fake_download(_url, target, *, expected_sha256=None, dry_run=False):
+        downloaded.append(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("direct image", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_download_file", fake_download)
+    monkeypatch.setattr(
+        containers,
+        "_validate_container_architecture",
+        lambda _target: pytest.fail("prefetch should not invoke Apptainer architecture validation"),
+    )
+
+    containers.prefetch_core()
+
+    assert downloaded
 
 
 def test_prefetch_core_skips_freesurfer_by_default(monkeypatch, tmp_path: Path):
@@ -1390,6 +1522,92 @@ def test_auto_install_falls_back_after_fileshare_failure(monkeypatch, tmp_path: 
     assert calls == [(target, "docker://vnmd/fastsurfer_2.4.2:20260115", False)]
 
 
+def test_auto_install_falls_back_after_fileshare_arch_mismatch(monkeypatch, tmp_path: Path):
+    """Verify auto install replaces an incompatible direct image with an OCI pull."""
+    target = tmp_path / "fastsurfer.sif"
+    pulls: list[tuple[object, object, bool]] = []
+
+    def fake_download(_url, target, *, expected_sha256=None, dry_run=False):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("direct amd64 image", encoding="utf-8")
+
+    def fake_validate(image):
+        if image.read_text(encoding="utf-8") == "direct amd64 image":
+            raise RuntimeError("image is amd64, but the Apptainer guest is aarch64")
+
+    def fake_apptainer_pull(target, uri, *, dry_run=False):
+        assert not target.exists()
+        pulls.append((target, uri, dry_run))
+        target.write_text("fallback arm64 image", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_download_file", fake_download)
+    monkeypatch.setattr(containers, "_validate_container_architecture", fake_validate)
+    monkeypatch.setattr(containers, "_run_apptainer_pull", fake_apptainer_pull)
+
+    containers._pull_or_build(CORE_SPECS["fastsurfer"], target, source="auto")
+
+    assert pulls == [(target, "docker://vnmd/fastsurfer_2.4.2:20260115", False)]
+    assert target.read_text(encoding="utf-8") == "fallback arm64 image"
+
+
+def test_existing_incompatible_image_reinstalls_from_upstream(monkeypatch, tmp_path: Path):
+    """Verify an existing incompatible image is not reused in auto mode."""
+    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
+    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
+    image = containers.default_image_path(CORE_SPECS["dcm2niix"])
+    image.parent.mkdir(parents=True)
+    image.write_text("old amd64 image", encoding="utf-8")
+    pulls: list[tuple[Path, str, bool]] = []
+
+    def fake_validate(target):
+        if target.read_text(encoding="utf-8") == "old amd64 image":
+            raise RuntimeError("image is amd64, but the Apptainer guest is aarch64")
+
+    def fake_apptainer_pull(target, uri, *, dry_run=False):
+        assert not target.exists()
+        pulls.append((target, uri, dry_run))
+        target.write_text("new arm64 image", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_validate_container_architecture", fake_validate)
+    monkeypatch.setattr(containers, "_run_apptainer_pull", fake_apptainer_pull)
+
+    result = containers.install_container("dcm2niix", refresh=False)
+
+    assert result is not None
+    assert result["name"] == "dcm2niix"
+    assert pulls == [(image, "docker://vnmd/dcm2niix_v1.0.20240202:20260512", False)]
+    assert image.read_text(encoding="utf-8") == "new arm64 image"
+
+
+def test_bash_image_can_build_inside_lima_without_escape_hatch(monkeypatch, tmp_path: Path):
+    """Verify bash_image can fall back to its Docker Buildfile on macOS/Lima."""
+    wrapper = tmp_path / ".apptainer" / "bin" / "apptainer"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setenv("APPTAINER_BIN", str(wrapper))
+    monkeypatch.delenv("NEUROCADE_ALLOW_LOCAL_CONTAINER_BUILDS", raising=False)
+    target = tmp_path / "bash-image-python-3.12.sif"
+    builds: list[tuple[Path, Path, bool]] = []
+
+    def fake_lima_build(target, build_file, *, dry_run=False):
+        builds.append((target, build_file, dry_run))
+        target.write_text("built image", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_lima_apptainer_wrapper", lambda _command: True)
+    monkeypatch.setattr(containers, "_run_lima_apptainer_build", fake_lima_build)
+    monkeypatch.setattr(containers, "_validate_container_architecture", lambda _target: None)
+
+    containers._fallback_install(CORE_SPECS["bash_image"], target)
+
+    assert builds == [
+        (
+            target,
+            containers.find_repo_root() / "packages/neurocade-runtime-tools/src/neurocade_runtime_tools/bash_python_image/Buildfile",
+            False,
+        )
+    ]
+
+
 def test_remote_container_install_allows_missing_integrity_metadata(monkeypatch, tmp_path: Path):
     """Allow remote image sources without immutable metadata while verification is deferred."""
     target = tmp_path / "container.sif"
@@ -1404,11 +1622,29 @@ def test_remote_container_install_allows_missing_integrity_metadata(monkeypatch,
     containers._download_file("https://example.invalid/container.sif", target, expected_sha256=None, dry_run=True)
     containers._run_apptainer_pull(target, "docker://vnmd/fastsurfer_2.4.2:20260115", dry_run=True)
 
-    assert calls == [(["curl", "-fL", "https://example.invalid/container.sif", "-o", str(target.with_name("container.sif.partial"))], tmp_path, True)]
+    assert calls == [
+        (
+            [
+                "curl",
+                "-fL",
+                "--retry",
+                containers.CURL_RETRY_COUNT,
+                "--retry-delay",
+                containers.CURL_RETRY_DELAY_SECONDS,
+                "--continue-at",
+                "-",
+                "https://example.invalid/container.sif",
+                "-o",
+                str(target.with_name("container.sif.partial")),
+            ],
+            tmp_path,
+            True,
+        )
+    ]
 
 
-def test_download_file_writes_final_target_only_after_success(monkeypatch, tmp_path: Path):
-    """Verify interrupted downloads do not leave a partial file at the final image path."""
+def test_download_file_preserves_partial_after_transport_failure(monkeypatch, tmp_path: Path):
+    """Verify interrupted downloads keep a resumable partial away from the final image path."""
     target = tmp_path / "container.sif"
 
     def fake_run(_command, *, cwd, dry_run=False):
@@ -1424,6 +1660,24 @@ def test_download_file_writes_final_target_only_after_success(monkeypatch, tmp_p
         pass
     else:
         raise AssertionError("download failure did not propagate")
+
+    assert not target.exists()
+    assert target.with_name("container.sif.partial").read_text(encoding="utf-8") == "partial"
+
+
+def test_download_file_removes_partial_after_hash_mismatch(monkeypatch, tmp_path: Path):
+    """Verify failed integrity checks discard partial downloads."""
+    target = tmp_path / "container.sif"
+
+    def fake_run(_command, *, cwd, dry_run=False):
+        partial = cwd / "container.sif.partial"
+        partial.write_text("corrupt", encoding="utf-8")
+
+    monkeypatch.setattr(containers, "_run", fake_run)
+    monkeypatch.setattr(containers, "_sha256_file", lambda _path: "bad")
+
+    with pytest.raises(RuntimeError, match="SHA256 mismatch"):
+        containers._download_file("https://example.invalid/container.sif", target, expected_sha256="good")
 
     assert not target.exists()
     assert not target.with_name("container.sif.partial").exists()

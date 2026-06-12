@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,9 +11,12 @@ const envPath = path.join(repoRoot, '.env');
 const apptainerUpScript = path.join(repoRoot, 'scripts', 'apptainer', 'up.sh');
 const apptainerDownScript = path.join(repoRoot, 'scripts', 'apptainer', 'down.sh');
 const appIconPath = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+const electronRuntimeDir = path.join(repoRoot, '.runtime', 'electron');
 const healthPollMs = 1500;
 const healthTimeoutMs = 600_000;
 const appDisplayName = 'NeuroCade';
+const appDesktopFileName = 'neurocade.desktop';
+const appBundleIdentifier = 'org.neurocade.app';
 const titlebarHeight = 44;
 const titlebarThemes = {
   dark: {
@@ -44,6 +48,22 @@ let startedStack = false;
 let quitting = false;
 let stopping = false;
 
+function setLocalAppPath(name, target) {
+  mkdirSync(target, { recursive: true });
+  app.setPath(name, target);
+}
+
+function configureLocalElectronStorage() {
+  setLocalAppPath('appData', path.join(electronRuntimeDir, 'app-data'));
+  setLocalAppPath('userData', path.join(electronRuntimeDir, 'user-data'));
+  setLocalAppPath('sessionData', path.join(electronRuntimeDir, 'session-data'));
+  setLocalAppPath('crashDumps', path.join(electronRuntimeDir, 'crash-dumps'));
+  mkdirSync(path.join(electronRuntimeDir, 'logs'), { recursive: true });
+  app.setAppLogsPath(path.join(electronRuntimeDir, 'logs'));
+}
+
+configureLocalElectronStorage();
+
 function titlebarOptions(theme = 'dark') {
   const titlebarTheme = titlebarThemes[theme] ?? titlebarThemes.dark;
   return {
@@ -68,6 +88,12 @@ function windowChromeOptions() {
 
 function configureAppIdentity() {
   app.setName(appDisplayName);
+  if (process.platform === 'linux') {
+    app.setDesktopName(appDesktopFileName);
+  }
+  if (process.platform === 'win32') {
+    app.setAppUserModelId(appBundleIdentifier);
+  }
   if (process.platform !== 'darwin' || !app.dock) return;
   const dockIcon = nativeImage.createFromPath(appIconPath);
   if (!dockIcon.isEmpty()) {

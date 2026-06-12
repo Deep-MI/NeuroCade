@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/apptainer/images.sh [infra|all|preflight]
+Usage: ./scripts/apptainer/images.sh [infra|all|preflight|compat]
 
 Fetch rootless Apptainer infrastructure SIF images. Runtime/tool containers are
 managed by ./scripts/containers.sh.
@@ -22,25 +22,53 @@ download_or_pull() {
   local url="$2"
   local oci="$3"
   local label="$4"
+  local image_arch_raw guest_arch_raw
+  guest_arch_raw="$(apptainer_guest_arch)"
   if [[ -f "$target" ]]; then
-    echo "$label image exists: $target"
-    return 0
+    if image_compatible_with_guest "$target" "$guest_arch_raw"; then
+      echo "$label image exists: $target"
+      return 0
+    fi
+    if [[ -z "$oci" ]]; then
+      image_arch_raw="$(image_build_arch "$target")"
+      echo "$label image is $image_arch_raw, but the Apptainer guest is $guest_arch_raw and no OCI fallback is configured: $target" >&2
+      return 1
+    fi
+    image_arch_raw="$(image_build_arch "$target")"
+    echo "$label image architecture mismatch ($image_arch_raw on $guest_arch_raw); replacing it from $oci"
+    rm -f "$target"
   fi
   mkdir -p "$(dirname "$target")"
   if [[ -n "$url" ]]; then
     echo "Downloading $label image from $url"
     if curl -fL "$url" -o "$target"; then
-      return 0
+      if image_compatible_with_guest "$target" "$guest_arch_raw"; then
+        return 0
+      fi
+      image_arch_raw="$(image_build_arch "$target")"
+      rm -f "$target"
+      if [[ -z "$oci" ]]; then
+        echo "$label image from $url is $image_arch_raw, but the Apptainer guest is $guest_arch_raw and no OCI fallback is configured." >&2
+        return 1
+      fi
+      echo "$label direct image is $image_arch_raw, but the Apptainer guest is $guest_arch_raw; falling back to $oci"
+    else
+      rm -f "$target"
+      if [[ -z "$oci" ]]; then
+        return 1
+      fi
+      echo "Download failed; falling back to $oci"
     fi
-    rm -f "$target"
-    if [[ -z "$oci" ]]; then
-      return 1
-    fi
-    echo "Download failed; falling back to $oci"
   fi
   if [[ -n "$oci" ]]; then
     echo "Pulling $label image from $oci"
     "$APPTAINER_BIN" pull --force "$target" "$oci"
+    if ! image_compatible_with_guest "$target" "$guest_arch_raw"; then
+      image_arch_raw="$(image_build_arch "$target")"
+      rm -f "$target"
+      echo "$label OCI image is $image_arch_raw, but the Apptainer guest is $guest_arch_raw: $oci" >&2
+      return 1
+    fi
     return 0
   fi
   echo "No URL or OCI source configured for $label ($target)" >&2
@@ -68,6 +96,12 @@ preflight() {
   fi
 }
 
+compat() {
+  require_apptainer
+  ensure_lima_checkout_mount_live_writable
+  check_system_container_arch_compatibility
+}
+
 infra() {
   require_apptainer
   download_or_pull "$POSTGRES_SIF" "${POSTGRES_SIF_URL:-}" "$POSTGRES_OCI" "Postgres"
@@ -78,6 +112,9 @@ infra() {
 case "${1:-all}" in
   preflight)
     preflight
+    ;;
+  compat)
+    compat
     ;;
   infra|all)
     infra

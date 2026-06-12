@@ -23,12 +23,15 @@ doctor_check_node() {
 }
 
 doctor_check_uv() {
-  local uv_path
-  uv_path="$(find_uv || true)"
-  if [[ -n "$uv_path" ]]; then
-    printf '  [ok]   %-18s %s\n' "uv" "$uv_path"
+  local root="$1"
+  local local_uv global_uv
+  local_uv="$(find_local_uv "$root" || true)"
+  if [[ -n "$local_uv" ]]; then
+    printf '  [ok]   %-18s %s\n' "uv" "$local_uv"
+  elif global_uv="$(find_uv "$root" 2>/dev/null)" && [[ -n "$global_uv" ]]; then
+    printf '  [plan] %-18s repo-local uv install; global uv available at %s\n' "uv" "$global_uv"
   else
-    printf '  [plan] %-18s install uv, then create .venv from pyproject.toml\n' "uv"
+    printf '  [plan] %-18s repo-local uv install, then create .venv from pyproject.toml\n' "uv"
   fi
 }
 
@@ -92,9 +95,18 @@ doctor_check_file() {
 doctor_check_directory_writable() {
   local label="$1"
   local path="$2"
-  mkdir -p "$path" >/dev/null 2>&1 || true
   if [[ -d "$path" && -w "$path" ]]; then
     printf '  [ok]   %-22s writable\n' "$label"
+  elif [[ ! -e "$path" ]]; then
+    local parent="$path"
+    while [[ "$parent" != "/" && ! -d "$parent" ]]; do
+      parent="$(dirname "$parent")"
+    done
+    if [[ -d "$parent" && -w "$parent" ]]; then
+      printf '  [plan] %-22s create under writable parent: %s\n' "$label" "$parent"
+    else
+      printf '  [warn] %-22s parent not writable: %s\n' "$label" "$parent"
+    fi
   else
     printf '  [warn] %-22s not writable: %s\n' "$label" "$path"
   fi
@@ -113,7 +125,7 @@ run_doctor() {
   echo "Host tools"
   doctor_check_command "git" git
   doctor_check_command "curl" curl
-  doctor_check_uv
+  doctor_check_uv "$root"
   doctor_check_node "$root"
   doctor_check_apptainer "$root"
   echo
@@ -156,7 +168,7 @@ run_doctor() {
   echo "  - write $root/.env with shell-safe quoted values"
   echo "  - write install log to $root/.runtime/logs/install.log"
   echo "  - create $root/neurocade-data/output"
-  echo "  - install uv, then create $root/.venv from pyproject.toml"
+  echo "  - install uv under $root/.runtime/uv, then create $root/.venv from pyproject.toml"
   echo "  - download Apptainer/Lima/Node only when missing and --no-prereqs is not set"
   echo "  - attempt the release demo/sample case download in the background"
   echo "  - warn and continue when no release demo/sample case artifact is available"
