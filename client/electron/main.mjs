@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..');
 const envPath = path.join(repoRoot, '.env');
-const apptainerUpScript = path.join(repoRoot, 'scripts', 'apptainer', 'up.sh');
-const apptainerDownScript = path.join(repoRoot, 'scripts', 'apptainer', 'down.sh');
+const composeUpScript = path.join(repoRoot, 'scripts', 'compose', 'up.sh');
+const composeDownScript = path.join(repoRoot, 'scripts', 'compose', 'down.sh');
 const appIconPath = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 const electronRuntimeDir = path.join(repoRoot, '.runtime', 'electron');
 const healthPollMs = 1500;
@@ -248,7 +248,7 @@ async function waitForGatewayHealth(gatewayHealthUrl, apiServiceHealthUrl) {
   }
   if (apiServiceWasHealthy) {
     throw new Error(
-      `${appDisplayName} API is healthy at ${apiServiceHealthUrl}, but the app gateway is not responding at ${gatewayHealthUrl}. Check Traefik logs and APP_BASE_URL.`,
+      `${appDisplayName} API is healthy at ${apiServiceHealthUrl}, but the app gateway is not responding at ${gatewayHealthUrl}. Check Docker Compose gateway logs and APP_BASE_URL.`,
     );
   }
   throw new Error(`Timed out waiting for ${gatewayHealthUrl}`);
@@ -263,10 +263,10 @@ async function startBackendIfNeeded(healthUrl, apiServiceHealthUrl) {
     return false;
   }
   finishInitialHealthTiming();
-  appendLog('Starting local Apptainer stack.');
+  appendLog('Starting local Docker Compose stack.');
   startedStack = true;
-  const finishUpTiming = timingLogger('scripts/apptainer/up.sh -d');
-  await spawnLogged(apptainerUpScript, ['-d']);
+  const finishUpTiming = timingLogger('scripts/compose/up.sh -d');
+  await spawnLogged(composeUpScript, ['-d']);
   finishUpTiming();
   appendLog(`Waiting for ${appDisplayName} gateway.`);
   await waitForGatewayHealth(healthUrl, apiServiceHealthUrl);
@@ -277,11 +277,11 @@ async function startBackendIfNeeded(healthUrl, apiServiceHealthUrl) {
 async function stopBackendIfOwned() {
   if (!startedStack || stopping) return;
   stopping = true;
-  appendLog('Stopping local Apptainer stack.');
+  appendLog('Stopping local Docker Compose stack.');
   try {
-    await spawnLogged(apptainerDownScript, []);
+    await spawnLogged(composeDownScript, []);
   } catch (error) {
-    appendLog(`Failed to stop Apptainer stack: ${error.message}`);
+    appendLog(`Failed to stop Docker Compose stack: ${error.message}`);
   }
 }
 
@@ -335,7 +335,7 @@ async function boot() {
       type: 'error',
       title: `${appDisplayName} could not start`,
       message: `The local ${appDisplayName} backend did not start.`,
-      detail: `${error.message}\n\nCheck Apptainer and the service logs, then try ./scripts/desktop/run.sh from the repo root.`,
+      detail: `${error.message}\n\nCheck Docker Compose and the service logs, then try ./scripts/desktop/run.sh from the repo root.`,
     });
   }
 }

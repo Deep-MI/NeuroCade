@@ -205,7 +205,7 @@ def get_dynamic_gui_tools(gui_state: dict) -> list[RuntimeToolSpec]:
                     "Read pre-computed volumetric statistics from a FastSurfer .stats file. "
                     "FastSurfer writes stats/aseg+DKT.stats after every run — use this tool "
                     "instead of mri_segstats to get structure volumes, voxel counts, and "
-                    "global brain measures without spawning an Apptainer runtime. "
+                    "global brain measures without spawning a container runtime. "
                     "Supports ranked label lookup by name, annotation phrase, abbreviation, or numeric ID."
                 ),
                 input_schema={

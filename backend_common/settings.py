@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     )
 
     api_service_url: str = Field(default="http://127.0.0.1:58080", alias="API_SERVICE_URL")
-    host_runtime_runner_url: str | None = Field(default=None, alias="HOST_RUNTIME_RUNNER_URL")
-    host_runtime_runner_token: str | None = Field(default=None, alias="HOST_RUNTIME_RUNNER_TOKEN")
+    runtime_runner_url: str | None = Field(default=None, alias="RUNTIME_RUNNER_URL")
+    runtime_runner_token: str | None = Field(default=None, alias="RUNTIME_RUNNER_TOKEN")
     container_inventory: Path = Field(default=ROOT_DIR / "llm-data" / "tool-catalog" / "installed_containers.json", alias="NEUROCADE_CONTAINER_INVENTORY")
     installed_tools_jsonl: Path = Field(default=ROOT_DIR / "llm-data" / "tool-catalog" / "installed_tools.jsonl", alias="NEUROCADE_INSTALLED_TOOLS_JSONL")
 

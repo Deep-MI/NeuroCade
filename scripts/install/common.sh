@@ -121,7 +121,7 @@ require_supported_os() {
       ;;
   esac
   if [[ "$uname_s" == "Linux" && -r /proc/version ]] && grep -qi microsoft /proc/version; then
-    echo "Detected WSL. Use a Linux environment with Apptainer available."
+    echo "Detected WSL. Docker Desktop with WSL2 integration is required for local containers."
   fi
 }
 
@@ -208,15 +208,22 @@ normalize_provider() {
 find_repo_root() {
   local dir
   dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd || pwd)"
-  if [[ -f "$dir/scripts/apptainer/up.sh" ]]; then
+  if [[ -f "$dir/scripts/compose/up.sh" ]]; then
     printf '%s\n' "$dir"
     return
   fi
-  if [[ -f "./scripts/apptainer/up.sh" ]]; then
+  if [[ -f "./scripts/compose/up.sh" ]]; then
     pwd
     return
   fi
   printf '\n'
+}
+
+configure_node_runtime_cache() {
+  local root="$1"
+  local runtime_dir="${2:-$root/.runtime}"
+  mkdir -p "$runtime_dir/npm-cache"
+  export npm_config_cache="$runtime_dir/npm-cache"
 }
 
 ensure_checkout() {

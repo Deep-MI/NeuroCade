@@ -12,7 +12,7 @@ Flow:
   8. Verify status becomes 'canceled'
 
 Prerequisites:
-  ./scripts/apptainer/up.sh -d
+  ./scripts/compose/up.sh -d
   At least one MRI fixture must be available via NEUROCADE_UPLOAD_FIXTURES_DIR
 
 Usage:
@@ -38,7 +38,7 @@ from conftest import (
 
 @pytest.fixture(autouse=True)
 def require_services(services_up):
-    """Skip all tests in this module if Apptainer is not running."""
+    """Skip all tests in this module if local NeuroCade stack is not running."""
     pass
 
 

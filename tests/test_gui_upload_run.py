@@ -17,7 +17,7 @@ Flow:
   9. Screenshot the final state
 
 Prerequisites:
-  ./scripts/apptainer/up.sh -d
+  ./scripts/compose/up.sh -d
   pip install playwright && playwright install chromium
   A fixture MRI must exist under NEUROCADE_UPLOAD_FIXTURES_DIR
 

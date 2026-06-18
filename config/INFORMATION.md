@@ -17,7 +17,7 @@ You can:
 ## System Architecture (How Your Tool Calls Are Executed)
 
 1. **API Gateway (Traefik)**: Routes all traffic to the NeuroCade API service.
-2. **API Runtime Tools**: GUI/direct tool calls and installed-tool command execution happen through the API service's assistant tools and isolated Apptainer runtimes. In case mode, the active case data is mounted read-write at `/case`.
+2. **API Runtime Tools**: GUI/direct tool calls and installed-tool command execution happen through the API service's assistant tools and isolated Docker runtime containers. In case mode, the active case data is mounted read-write at `/case`.
 3. **Job Queue (Celery + Redis)**: Long-running FastSurfer pipeline runs are handled asynchronously. You can trigger them via the `gui_run_fastsurfer` tool.
 4. **GUI State Sync**: The frontend periodically syncs its state (active case, loaded volumes, job status) to the API runtime. This information is injected into your context so you know what the user is looking at.
 

@@ -9,7 +9,6 @@ from typing import Any, cast
 from .types import ToolTextContent, error_response, text_response
 from dotenv import load_dotenv
 from backend_common.settings import ROOT_DIR, get_settings
-from neurocade_runtime_tools.containers import missing_container_message
 
 from .case_resolver import (
     CONTAINER_CASE_ROOT,
@@ -20,7 +19,6 @@ from .container_commands import (
     _VOLUME_FILE_SUFFIXES,
     _current_case_relative_output_path,
     _looks_like_segmentation,
-    _managed_image,
     _resolve_case_mount_local_dir,
 )
 from .lut import get_by_id, search_lut
@@ -541,10 +539,6 @@ def handle_gui_run_fastsurfer(
 
     input_artifact_id = gui_state.get("current_intensity_artifact_id")
     input_volume_name = gui_state.get("current_intensity_volume")
-    try:
-        _managed_image("fastsurfer")
-    except FileNotFoundError:
-        return error_response(missing_container_message("fastsurfer"))
 
     case_name = arguments.get("case_name", "")
     run_request = {

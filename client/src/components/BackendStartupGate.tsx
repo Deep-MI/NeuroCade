@@ -20,7 +20,7 @@ function isLocalHost() {
 }
 
 function isFrontendDevServer() {
-  return isLocalHost() && window.location.port === '5173'
+  return import.meta.env.DEV && isLocalHost()
 }
 
 function localGatewayUrl() {
@@ -75,16 +75,16 @@ function BackendStartupScreen({
         ? `Starting ${APP_DISPLAY_NAME} services`
         : `Connecting to ${APP_DISPLAY_NAME} services`
   const detail = timedOut
-    ? 'The web UI loaded, but the API never became reachable. The most common cause is that the local Apptainer stack is not running.'
+    ? 'The web UI loaded, but the API never became reachable. The most common cause is that the local Docker Compose stack is not running.'
     : devFrontendOnly
       ? 'You are viewing the Vite frontend directly. Start the local stack, then open the gateway URL so the API, database, workers, and viewer are all connected.'
       : local
-        ? 'The local Apptainer services may still be starting. The workspace will open automatically when the API is healthy.'
+        ? 'The local Docker Compose services may still be starting. The workspace will open automatically when the API is healthy.'
         : 'The workspace will open automatically when the API is healthy.'
   const gatewayUrl = localGatewayUrl()
   const recoveryCommand = devFrontendOnly
-    ? './scripts/install.sh --mode local\n./scripts/apptainer/up.sh -d\n# then open http://localhost:8005'
-    : './scripts/apptainer/status.sh\n./scripts/apptainer/logs.sh api-service\n./scripts/apptainer/up.sh -d'
+    ? './scripts/install.sh --mode local\n./scripts/compose/up.sh -d\n# then open http://localhost:8005'
+    : './scripts/compose/status.sh\n./scripts/compose/logs.sh api-service\n./scripts/compose/up.sh -d'
   const checks = [
     {
       label: 'Web UI',
@@ -101,9 +101,9 @@ function BackendStartupScreen({
       tone: timedOut ? 'nc-chip-yellow' : 'nc-chip-blue',
     },
     {
-      label: 'Apptainer stack',
+      label: 'Docker Compose stack',
       state: devFrontendOnly || timedOut ? 'Needs a check' : 'Starting',
-      detail: './scripts/apptainer/status.sh',
+      detail: './scripts/compose/status.sh',
       icon: TerminalSquare,
       tone: '',
     },

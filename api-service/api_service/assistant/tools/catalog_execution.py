@@ -22,9 +22,9 @@ from api_service.runtime.execution import execute_runtime_request
 from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT, resolve_case_mount_from_db
 from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope
-from neurocade_runtime_tools.apptainer_command import RuntimeBind
-from neurocade_runtime_tools.containers import installed_tools_path
-from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeExecutionPolicy, RuntimeExecutionRequest
+from neurocade_runtime_tools.container_specs import CORE_SPECS
+from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request
+from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest, RuntimeExecutionPolicy, RuntimeExecutionRequest
 
 
 class CatalogToolCallArgs(BaseModel):
@@ -91,24 +91,22 @@ class AssistantCatalogExecutor:
         parsed = CatalogToolCallArgs.model_validate(raw_args)
         records_jsonl = self.catalog_records_path(parsed.model_dump())
         if not records_jsonl.exists():
-            return f"Error: installed tool index not found at {records_jsonl}. Run `./scripts/containers.sh refresh-index`."
+            return f"Error: installed tool index not found at {records_jsonl}. Run `./scripts/compose/images.sh` or restart the Compose stack."
         try:
-            from neurocade_runtime_tools.runtime_router import build_container_command, ensure_image_exists, resolve_tool
-
-            row = resolve_tool(parsed.tool, records_jsonl=records_jsonl)
-            ensure_image_exists(row)
-            command = build_container_command(
-                row,
-                parsed.tool_args,
-                project_root=self.root_dir,
+            row = self.resolve_tool(parsed.tool, records_jsonl=records_jsonl)
+            docker_image = self.docker_image_for_row(row)
+            command = build_docker_container_request(
+                image=docker_image,
+                command=[row["container_command"], *parsed.tool_args],
                 binds=binds or [],
+                cwd=self.container_cwd_for_binds(binds or []),
+                disable_network=True,
+                gpu=False,
             )
         except Exception as exc:
             return f"Error preparing tool execution: {exc}"
 
         public_execution = self.public_catalog_execution(row, parsed.tool, parsed.tool_args)
-        if not isinstance(command, list) or not command:
-            return f"Error: catalog entry did not produce an executable command for {parsed.tool}."
         timeout_s = int(os.environ.get("NEURO_CLI_TOOL_TIMEOUT", "300"))
         try:
             execute_kwargs: dict[str, Any] = {"timeout_s": timeout_s}
@@ -116,7 +114,7 @@ class AssistantCatalogExecutor:
                 execute_kwargs["db"] = db
             if artifact_index_targets:
                 execute_kwargs["artifact_index_targets"] = artifact_index_targets
-            completed = self.execute_runtime_command([str(part) for part in command], **execute_kwargs)
+            completed = self.execute_runtime_command(command, **execute_kwargs)
         except Exception as exc:
             return f"Error executing catalog tool: {exc}"
 
@@ -136,38 +134,98 @@ class AssistantCatalogExecutor:
         configured = os.environ.get("NEUROCADE_INSTALLED_TOOLS_JSONL")
         if configured:
             return Path(str(configured)).expanduser()
-        return installed_tools_path(self.root_dir)
+        return self.settings.installed_tools_jsonl
 
     def execute_runtime_command(
         self,
-        command: list[str],
+        command: RuntimeContainerRunRequest,
         *,
         timeout_s: int,
         db=None,
         artifact_index_targets: tuple[RuntimeArtifactIndexTarget, ...] = (),
     ) -> dict[str, Any]:
-        """Execute a prepared runtime command locally or through the host runner.
-
-        When ``HOST_RUNTIME_RUNNER_URL`` is configured in settings, execution is
-        delegated to that service. Otherwise the command runs as a subprocess
-        with the repository root as its working directory.
-        """
-        runner_url = (self.settings.host_runtime_runner_url or "").strip().rstrip("/")
+        """Execute a prepared Docker runtime command through runtime-runner."""
+        runner_url = (self.settings.runtime_runner_url or "").strip().rstrip("/")
+        if not runner_url:
+            raise RuntimeError("RUNTIME_RUNNER_URL is required for Docker runtime execution")
         result = execute_runtime_request(
             RuntimeExecutionRequest(
-                argv=command,
+                argv=["docker:catalog-tool"],
                 cwd=self.root_dir,
                 timeout_s=timeout_s,
-                execution_mode="host-runtime-runner" if runner_url else "local-subprocess",
-                require_rootless_apptainer=True,
-                runtime_policy=RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False),
+                execution_mode="host-runtime-runner",
+                runtime_policy=RuntimeExecutionPolicy(
+                    runtime="docker",
+                    network_disabled=True,
+                    gpu_enabled=command.gpu_enabled,
+                ),
                 artifact_index_targets=artifact_index_targets,
-                host_runner_url=runner_url or None,
-                host_runner_token=(self.settings.host_runtime_runner_token or None),
+                runtime_runner_url=runner_url or None,
+                runtime_runner_token=(self.settings.runtime_runner_token or None),
+                container_run=command,
             ),
             db=db,
         )
         return result.as_dict()
+
+    @staticmethod
+    def container_cwd_for_binds(binds: list[RuntimeBind]) -> str | None:
+        """Choose the natural working directory for a Docker catalog request."""
+        if any(bind.container_path.rstrip("/") == CONTAINER_CASE_ROOT for bind in binds):
+            return CONTAINER_CASE_ROOT
+        if any(bind.container_path.rstrip("/") == "/workspace" for bind in binds):
+            return "/workspace"
+        return None
+
+    @staticmethod
+    def docker_image_for_row(row: dict[str, Any]) -> str:
+        """Return the Docker image for a catalog row, using core pinned defaults."""
+        docker_uri = str(row.get("docker_uri") or "").strip()
+        if docker_uri:
+            return docker_uri
+        name = str(row.get("name") or row.get("app") or "").strip()
+        spec = CORE_SPECS.get(name)
+        if spec and spec.docker_uri:
+            return spec.docker_uri
+        raise ValueError(
+            f"Catalog row {name or '<unknown>'} does not define a Docker image. "
+            "Docker runtime supports the pinned core catalog only."
+        )
+
+    @staticmethod
+    def resolve_tool(tool: str, *, records_jsonl: Path) -> dict[str, Any]:
+        """Resolve a tool name or unambiguous alias from the generated Docker catalog."""
+        rows = [
+            json.loads(line)
+            for line in records_jsonl.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        lookup: dict[str, dict[str, Any]] = {}
+        ambiguous_aliases: set[str] = set()
+        protected_names = {str(row.get("name") or "") for row in rows}
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            if name:
+                lookup[name] = row
+        for row in rows:
+            for alias in row.get("aliases") or []:
+                alias = str(alias or "").strip()
+                if not alias or alias in protected_names:
+                    continue
+                existing = lookup.get(alias)
+                if existing and existing.get("name") != row.get("name"):
+                    ambiguous_aliases.add(alias)
+                    continue
+                lookup[alias] = row
+        for alias in ambiguous_aliases:
+            lookup.pop(alias, None)
+        row = lookup.get(tool)
+        if row is None:
+            raise ValueError(f"Tool {tool!r} was not found in {records_jsonl}. Run tool_search first and pass an exact catalog name.")
+        for key in ("docker_uri", "container_command"):
+            if not row.get(key):
+                raise ValueError(f"Tool {tool!r} is missing required field {key!r}.")
+        return row
 
     @staticmethod
     def public_catalog_execution(row: dict[str, Any], tool: str, tool_args: list[str]) -> dict[str, Any]:

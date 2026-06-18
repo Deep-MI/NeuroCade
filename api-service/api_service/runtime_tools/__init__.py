@@ -4,7 +4,7 @@ from .schemas import STATIC_TOOLS as STATIC_TOOLS
 from .schemas import get_dynamic_gui_tools as get_dynamic_gui_tools
 from .container_commands import execute_workspace_bash as execute_workspace_bash
 from .container_commands import execute_workspace_case_bash as execute_workspace_case_bash
-from .container_commands import run_synchronous_apptainer_task as run_synchronous_apptainer_task
+from .container_commands import run_synchronous_runtime_task as run_synchronous_runtime_task
 from .handlers import handle_case_file_tree as handle_case_file_tree
 from .handlers import handle_gui_adjust_display as handle_gui_adjust_display
 from .handlers import handle_gui_close_volume as handle_gui_close_volume
@@ -37,5 +37,5 @@ __all__ = [
     "handle_gui_select_volume",
     "handle_lut_lookup",
     "handle_read_stats",
-    "run_synchronous_apptainer_task",
+    "run_synchronous_runtime_task",
 ]

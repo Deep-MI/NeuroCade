@@ -55,11 +55,9 @@ RUNTIME_DIR="$(env_config_value "$ROOT_DIR" NEUROCADE_RUNTIME_DIR "$ROOT_DIR/.ru
 require_repo_local_path ".runtime" "$RUNTIME_DIR"
 require_repo_local_path "HOST_DATA_DIR" "$HOST_DATA_DIR"
 
-source "$ROOT_DIR/scripts/apptainer/lib.sh"
-
 kill_repo_service_orphans() {
   local pids pid
-  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|$ROOT_DIR/scripts/serve_static_client.py|api_service.main:app|api_service.host_runtime_runner:app|api_service.celery_app|redis-server ${REDIS_HOST}:${REDIS_PORT}|postgres -D /var/lib/postgresql/data -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" || true)"
+  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|api_service.main:app|api_service.runtime_runner:app|api_service.celery_app" || true)"
   [[ -n "$pids" ]] || return 0
   for pid in $pids; do
     [[ "$pid" != "$$" ]] || continue
@@ -73,8 +71,8 @@ kill_repo_service_orphans() {
   done
 }
 
-echo "Stopping Apptainer-managed services..."
-"$ROOT_DIR/scripts/apptainer/down.sh"
+echo "Stopping Docker Compose services..."
+"$ROOT_DIR/scripts/compose/down.sh"
 kill_repo_service_orphans
 
 echo "Removing local runtime state..."
@@ -91,6 +89,6 @@ if [[ "$KEEP_STACK_DOWN" -eq 1 ]]; then
 fi
 
 echo "Starting the stack..."
-"$ROOT_DIR/scripts/apptainer/up.sh" -d
+"$ROOT_DIR/scripts/compose/up.sh" -d
 
 echo "Reset complete."

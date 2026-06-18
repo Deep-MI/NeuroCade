@@ -38,10 +38,10 @@ desktop shortcut or with:
 ./scripts/desktop/run.sh
 ```
 
-The desktop launcher starts the local Apptainer backend when needed, waits for the
+The desktop launcher starts the local Docker Compose stack when needed, waits for the
 API to become healthy, opens the app window, and stops the stack on quit if it
-started the stack itself. Apptainer remains required, but backend startup is hidden
-behind the desktop app after setup. On Linux, the launcher starts Electron with
+started the stack itself. Docker Compose remains required, but backend startup is
+hidden behind the desktop app after setup. On Linux, the launcher starts Electron with
 Chromium sandbox fallback flags used by Electron apps on hosts where the setuid
 sandbox is unavailable. Use `--no-desktop` to keep the browser-only local flow.
 
@@ -53,33 +53,29 @@ Useful non-interactive examples:
 ./scripts/install.sh --mode local --llm-provider ollama --no-start --yes
 ./scripts/install.sh --mode internal --llm-provider openai-compatible
 ./scripts/install.sh --mode demo --llm-provider openai-compatible
-./scripts/install.sh --mode local --llm-provider ollama --with-demo-case
 ./scripts/install.sh --mode local --no-desktop
 bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --prerelease --mode local
 bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --dev --mode local
 ```
 
 Windows users should run the installer inside a Linux/WSL2 environment with
-Apptainer available. Native PowerShell installation is not supported in this
+Docker Engine and the Compose plugin available. Native PowerShell installation is not supported in this
 repository yet.
 
 ## Prerequisites
 
 The installer checks prerequisites, installs `uv` with confirmation when it is
 missing, creates `.venv` from the Python runtime declared in `pyproject.toml`,
-can prepare Apptainer/Lima without sudo where possible, and still avoids
-changing system package managers unless a missing runtime is required. Install
-any remaining missing prerequisites with your site-approved method, then rerun
-it.
+checks Docker Compose, and still avoids changing system package managers unless
+a missing runtime is required. Install any remaining missing prerequisites with
+your site-approved method, then rerun it.
 
 Main dependencies are:
 - uv for the project Python runtime. The installer uses it to create `.venv`
   and install backend/runtime tooling consistently.
-- Apptainer. On Linux, the installer can prepare a repo-local unprivileged
-  Apptainer runtime when the supporting host tools are present. On macOS,
-  Apptainer runs through Lima because it needs a Linux kernel; the installer can
-  use an existing Lima install, install Lima through Homebrew when available, or
-  download Lima's official binary archive into the repo without Homebrew.
+- Docker Engine with the Docker Compose plugin. Docker Desktop is the simplest
+  path on macOS; Linux hosts should use the site-approved Docker Engine and
+  Compose plugin installation.
 - Node.js 20+ and npm 11.10.0+. If they are missing on macOS/Linux x64 or arm64, the
   installer downloads the official Node.js v22 binary archive into `.node/`.
 - optional GPU support if you want the worker to use CUDA
@@ -96,15 +92,16 @@ When the local stack starts, NeuroCade runs a quiet update checker once and then
 every 24 hours while the stack keeps running. It fetches
 `NEUROCADE_VERSION_CHECK_URL` as a static JSON document and compares the returned
 `version`, `latest_version`, or `tag` with the local `NEUROCADE_VERSION`. If a
-newer version is available, the message is written to
-`.runtime/logs/update-checker.log` and appears in `./scripts/apptainer/logs.sh`.
+newer version is available, the message is written to the `update-checker`
+service logs and appears in `./scripts/compose/logs.sh`.
 If the endpoint is unreachable or returns invalid data, nothing is logged.
 
 ## Required Repo Configuration
 
 Copy or edit `.env` before startup. The minimum configuration keys are:
 
-- `HOST_DATA_DIR`: absolute host path to the NeuroCade runtime data directory. Local installs default to `neurocade-data/`.
+- `NEUROCADE_HOST_DATA_DIR`: host path to the NeuroCade runtime data directory. Local installs default to `neurocade-data/`.
+- `HOST_DATA_DIR`: in-container data root. Compose sets this to `/data`.
 - `LLM_API_TOKEN`
 - `LLM_BACKEND_URL`
 - `LLM_BACKEND_API_KEY`
@@ -118,14 +115,14 @@ Bearer authentication.
 Optional but commonly needed:
 
 - `FREESURFER_LICENSE`: optional path to a valid FreeSurfer license file. The installer copies it to `neurocade-data/license.txt`, which is required for the full MRI pipeline. FreeSurfer licenses are free from https://surfer.nmr.mgh.harvard.edu/registration.html.
-- `NEUROCADE_CONTAINER_ROOT`: optional override for managed runtime containers. Defaults to `.apptainer/containers`.
 - `NEUROCADE_INSTALLED_TOOLS_JSONL`: optional override for the generated installed-tool index. Defaults to `llm-data/tool-catalog/installed_tools.jsonl`.
 - `OLLAMA_MODEL` if you want the optional local Gemma 4 backend
 
 Example:
 
 ```bash
-HOST_DATA_DIR=/abs/path/to/neurocade-data
+NEUROCADE_HOST_DATA_DIR=/abs/path/to/neurocade-data
+HOST_DATA_DIR=/data
 FREESURFER_LICENSE=/abs/path/to/license.txt
 REDIS_PASSWORD=fastsurfer-dev-redis
 ```
@@ -149,77 +146,41 @@ OLLAMA_MODEL=gemma4:e2b
 LLM_NATIVE_TOOL_CALLING=false
 ```
 
-Start the app with the standard Apptainer launcher:
+Start the app with the standard Docker Compose launcher:
 
 ```bash
-./scripts/apptainer/up.sh -d
+./scripts/compose/up.sh -d
 ```
 
 Notes:
 
 - `gemma4:e2b` is the safest starting point on the current 16 GB GPU.
 - `gemma4:e4b` may also fit, but with less headroom.
-- Local Ollama support expects an Ollama service reachable at `OLLAMA_BASE_URL`; the rootless launcher does not require Docker volumes.
+- Local Ollama support expects an Ollama service reachable at `OLLAMA_BASE_URL`; use `http://host.docker.internal:11434` when Ollama runs on the host.
 
 ## Runtime Containers And Tool Index
 
-The assistant uses the containers installed under `NEUROCADE_CONTAINER_ROOT` and a generated installed-tool index. The installer runs:
+Docker Compose installs use pinned core Docker images and generate a core installed-tool index at startup. The installer runs:
 
 ```bash
-./scripts/containers.sh prefetch core
-./scripts/containers.sh install core --source auto
+./scripts/compose/images.sh
 ```
 
-The prefetch step downloads direct image artifacts in the background while other
-installer work continues. It fetches FastSurfer, dcm2niix, the managed bash
-runtime, and the FreeSurfer image when they are missing. The managed bash/Python
-runtime is published as `bash-image-python-3.12.sif` on each GitHub release.
-The Postgres, Redis, and Traefik service images are also published as release
-SIF artifacts (`postgres-16-alpine.sif`, `redis-7-alpine.sif`, and
-`traefik-v2.11.14.sif`). Redis is built from the pinned
-`docker://redis:7.2.4-alpine` source. Tagged installs download release assets
-from their matching release; dev installs use the latest release assets and fall
-back to OCI pulls if a new release asset is not available yet. FreeSurfer image
-bytes can be downloaded without a license, but FreeSurfer is only indexed and
-exposed as an installed runtime tool when a FreeSurfer license is available.
+The Compose path builds the NeuroCade backend, gateway, and managed bash runtime
+images locally. Runtime jobs use pinned Docker images for FastSurfer,
+dcm2niix, and FreeSurfer through the internal `runtime-runner` service. The
+runner is the only app service with Docker socket access.
 
 Known core containers use prebuilt tool indexes shipped with the runtime-tools
 package. This avoids install-time command discovery and help harvesting for the
 standard images. The FreeSurfer prebuilt index is intentionally curated instead
 of indexing every executable in the image.
 
-You can refresh the index without reinstalling containers:
+Docker Compose startup regenerates the pinned core Docker index automatically.
+Maintainers can regenerate it explicitly with:
 
 ```bash
-./scripts/containers.sh refresh-index
-```
-
-Maintainers can force live command discovery for validation or index refreshes:
-
-```bash
-./scripts/containers.sh refresh-index --rebuild-index
-./scripts/containers.sh install core --rebuild-index
-```
-
-Check installed/missing containers and index freshness with:
-
-```bash
-./scripts/containers.sh status --json
-```
-
-With `--source auto`, managed runtime containers try direct image downloads first,
-then fall back to upstream Docker pulls or local Buildfile builds when direct
-images are unavailable. On macOS/Lima, local Buildfile fallback is disabled by
-default because it can require large VM disk space; publish the GitHub release
-asset or set `NEUROCADE_ALLOW_LOCAL_CONTAINER_BUILDS=1` to attempt it explicitly.
-FreeSurfer is installed from NeuroContainers only when a FreeSurfer license is
-found.
-
-You can also install additional NeuroContainers by app or repository name. The container helper searches the Docker Hub `vnmd` namespace, picks the best matching repository and latest build tag, pulls it with Apptainer, then indexes the installed command:
-
-```bash
-./scripts/containers.sh search matlab
-./scripts/containers.sh install matlab
+./scripts/compose/images.sh
 ```
 
 ## Sample Case Setup
@@ -228,14 +189,14 @@ The seeded app sample case is generated from a real FastSurfer run on the Rhinel
 Release builds attach the curated seed as
 `neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz` when
 `sample_case/FastSurfer_Rhineland_0000` is present. The installer downloads and
-extracts that release asset when `--with-demo-case` is used. If the chosen
+extracts that release asset automatically. If the chosen
 release does not include the sample-case archive, the installer scans older
 releases in the selected channel for that archive only; other release assets
-still come from the chosen release. It falls back to building the sample locally
-only if no matching release asset is available and a FreeSurfer license is
-configured. Maintainers should generate or refresh that directory before cutting
-a release, or set `BUILD_SAMPLE_CASE_ARTIFACT=true` in a release environment
-that has the raw sample data, FastSurfer container, and FreeSurfer license.
+still come from the chosen release. If no matching release asset is available,
+the installer warns and continues without a sample case. Maintainers should
+generate or refresh that directory before cutting a release, or set
+`BUILD_SAMPLE_CASE_ARTIFACT=true` in a release environment that has the raw
+sample data, FastSurfer container, and FreeSurfer license.
 
 Recommended quick call from the repo root:
 
@@ -270,19 +231,19 @@ Notes:
 
 ## Recommended Startup Path
 
-Use the rootless repo wrapper:
+Use the Docker Compose repo wrapper:
 
 ```bash
-./scripts/apptainer/up.sh -d
+./scripts/compose/up.sh -d
 ```
 
 This script:
 
-- fetches the required infrastructure SIFs with `scripts/apptainer/images.sh infra`
-- refreshes the installed-container tool index with `scripts/containers.sh refresh-index`
-- starts Postgres, Redis, Traefik, the Python services, and the configured frontend server as user-owned processes
-- binds FastSurfer/FreeSurfer tool execution through Apptainer without Docker or sudo
-- writes logs and pid files under `.runtime/`
+- builds the backend, gateway, and managed runtime bash images when needed
+- starts Postgres, Redis, Nginx, `api-service`, `api-worker`, `runtime-runner`, and `update-checker`
+- generates the pinned Docker core installed-tool index under `llm-data/tool-catalog/`
+- routes FastSurfer, FreeSurfer, dcm2niix, and workspace bash execution through `runtime-runner`
+- stores persistent app data under `neurocade-data/` and Docker service state under `.runtime/docker/`
 
 The application is available at:
 
@@ -292,14 +253,9 @@ The application is available at:
 For local desktop installs, users normally do not need these URLs directly; the
 Electron launcher loads the local app automatically.
 
-Traefik dashboard:
-
-- `http://localhost:8080`
-
-`CLIENT_SERVE_MODE=static` builds `client/dist` when needed and serves the
-static client behind Traefik with SPA fallback. `CLIENT_SERVE_MODE=vite` starts
-the Vite development server and is intended for active source development.
-Stable local, internal, and demo installs should use `static`.
+The Nginx gateway serves the built React client and proxies `/api/app` to the
+FastAPI service. Active frontend development can still use the Vite dev server
+from `client/`, but the local install path serves the production bundle.
 
 Public demo deployments generated by the installer bind to an unprivileged
 local port. Configure an external proxy to terminate TLS and forward to the
@@ -318,10 +274,10 @@ Profile-specific examples are provided in `.env.example` and
 Useful runtime commands:
 
 ```bash
-./scripts/apptainer/images.sh preflight
-./scripts/apptainer/status.sh
-./scripts/apptainer/logs.sh -f
-./scripts/apptainer/down.sh
+./scripts/compose/images.sh
+./scripts/compose/status.sh
+./scripts/compose/logs.sh -f
+./scripts/compose/down.sh
 ```
 
 ## Local Python/Test Setup
@@ -345,15 +301,17 @@ pyright
 ## Tool Index Setup
 
 The assistant searches and routes installed container tools through the local
-runtime index. The generated files are local runtime data and are not committed:
+runtime index. Docker Compose startup generates a pinned core index for the
+supported v1 runtime images. The generated files are local runtime data and are
+not committed:
 
 - `llm-data/tool-catalog/installed_containers.json`
 - `llm-data/tool-catalog/installed_tools.jsonl`
 
-Refresh them after container installs or removals:
+Regenerate them after image changes with:
 
 ```bash
-./scripts/containers.sh refresh-index
+./scripts/compose/images.sh
 ```
 
 ## Application Services
@@ -363,8 +321,10 @@ The local stack runs these core services:
 - `postgres`: application metadata, authorization, workflow/thread mapping
 - `api-service`: browser-facing API boundary under `/api/app`, plus in-process assistant/runtime orchestration under `api_service/assistant/` and `api_service/runtime/`
 - `api-worker`: Celery worker for workspace batch and FastSurfer queues
+- `runtime-runner`: internal Docker runtime launcher for pinned neuroimaging tool containers
+- `gateway`: Nginx gateway serving the React bundle and proxying `/api/app`
 - `backend_common`: shared settings, auth, database, provider, storage, and sample-seeding utilities
-- `packages/neurocade-runtime-tools`: local runtime container management, installed-tool index generation, and Apptainer routing package
+- `packages/neurocade-runtime-tools`: local runtime container request builders and installed-tool index generation
 - `migrations`: Alembic migration history used during database bootstrap
 
 Additional environment variables:
@@ -374,7 +334,6 @@ POSTGRES_USER=neurocade_user
 POSTGRES_PASSWORD=CHANGE_ME
 POSTGRES_DB=neurocade_db
 DEPLOYMENT_PROFILE=local
-CLIENT_SERVE_MODE=static
 LOCAL_AUTH_ENABLED=true
 VITE_CLERK_PUBLISHABLE_KEY=
 VITE_CLERK_JWT_TEMPLATE=
@@ -387,10 +346,9 @@ WORKFLOW_DEFAULT_PROVIDER=openai-compatible
 ```
 
 In `DEPLOYMENT_PROFILE=local`, the app can use local auth so local work is not
-blocked. `CLIENT_SERVE_MODE=static` serves the built frontend and
-`CLIENT_SERVE_MODE=vite` runs the Vite development server. `internal` and
-`demo` deployments must use `LOCAL_AUTH_ENABLED=false` and a complete Clerk
-configuration.
+blocked. Compose serves the built React client through the Nginx gateway.
+`internal` and `demo` deployments must use `LOCAL_AUTH_ENABLED=false` and a
+complete Clerk configuration.
 
 ## Runtime Architecture
 

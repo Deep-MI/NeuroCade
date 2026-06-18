@@ -9,7 +9,7 @@ Flow:
   5. Verify the response is NOT a text explanation
 
 Prerequisites:
-  ./scripts/apptainer/up.sh -d
+  ./scripts/compose/up.sh -d
   a processed demo case must exist under the configured test outputs directory
 
 Usage:
@@ -33,7 +33,7 @@ from conftest import (
 
 @pytest.fixture(autouse=True)
 def require_services(services_up):
-    """Skip all tests in this module if Apptainer is not running."""
+    """Skip all tests in this module if local NeuroCade stack is not running."""
     pass
 
 

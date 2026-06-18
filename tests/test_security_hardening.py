@@ -93,26 +93,27 @@ def test_deployment_policy_profiles_expose_expected_flags(monkeypatch):
     assert policy.feature_flags(clerk_configured=True)["demo_mode"] is True
 
 
-def test_assistant_runtime_commands_are_no_network(tmp_path):
+def test_assistant_runtime_commands_are_no_network(monkeypatch, tmp_path):
     from api_service.runtime_tools import container_commands as container_commands_module
 
     case_dir = tmp_path / "case"
     case_dir.mkdir()
-    image = tmp_path / "runtime.sif"
-    image.write_text("image", encoding="utf-8")
-
-    command = container_commands_module._apptainer_run_workspace_case_bash(
+    monkeypatch.setattr(container_commands_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(container_commands_module, "HOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
+    command = container_commands_module._docker_run_workspace_case_bash(
         "curl https://example.org",
         case_dir=str(case_dir),
-        image=str(image),
+        image="neurocade-runtime-bash:test",
     )
 
-    assert Path(command[0]).name == "apptainer"
-    assert command[1:5] == ["exec", "--net", "--network", "none"]
-    assert "--cleanenv" in command
-    assert "LLM_BACKEND_API_KEY" not in " ".join(command)
-    assert ":/data:" not in " ".join(command)
-    assert ":/output:" not in " ".join(command)
+    assert command.network_disabled is True
+    assert command.image == "neurocade-runtime-bash:test"
+    assert command.command == ["/bin/bash", "-lc", "curl https://example.org"]
+    assert command.env == {}
+    assert [(str(bind.host_path), bind.container_path, bind.mode) for bind in command.binds] == [
+        (str(case_dir), "/case", "rw")
+    ]
 
 
 def test_workspace_command_binds_selected_cases_without_data_root(monkeypatch, tmp_path):
@@ -122,11 +123,9 @@ def test_workspace_command_binds_selected_cases_without_data_root(monkeypatch, t
     cases_dir = data_root / ".workspace-inputs" / "analysis-1" / "cases"
     case_dir = data_root / "output" / "workspaces" / "workspace-1" / "cases" / "case-1"
     workspace_dir = data_root / "output" / "workspaces" / "workspace-1" / "workspace-analyses" / "analysis-1"
-    image = tmp_path / "runtime.sif"
     cases_dir.mkdir(parents=True)
     case_dir.mkdir(parents=True)
     workspace_dir.mkdir(parents=True)
-    image.write_text("image", encoding="utf-8")
     (cases_dir / "cases.json").write_text(
         json.dumps(
             [
@@ -145,18 +144,18 @@ def test_workspace_command_binds_selected_cases_without_data_root(monkeypatch, t
     monkeypatch.setattr(container_commands_module, "LOCAL_DATA_ROOT", str(data_root))
     monkeypatch.setattr(container_commands_module, "LOCAL_OUTPUT_ROOT", str(data_root / "output"))
 
-    command = container_commands_module._apptainer_run_workspace_bash(
+    command = container_commands_module._docker_run_workspace_bash(
         "find /cases -type f > /workspace/files.txt",
         cases_dir=str(cases_dir),
         workspace_dir=str(workspace_dir),
-        image=str(image),
+        image="neurocade-runtime-bash:test",
     )
-    command_text = " ".join(command)
+    binds = {(str(bind.host_path), bind.container_path, bind.mode) for bind in command.binds}
 
-    assert f"{case_dir.resolve()}:/cases/case-1:ro" in command
-    assert f"{workspace_dir.resolve()}:/workspace:rw" in command
-    assert f"{data_root.resolve()}:/data:" not in command_text
-    assert f"{(data_root / 'output').resolve()}:/output:" not in command_text
+    assert command.network_disabled is True
+    assert (str(case_dir.resolve()), "/cases/case-1", "ro") in binds
+    assert (str(workspace_dir.resolve()), "/workspace", "rw") in binds
+    assert all(bind.container_path not in {"/data", "/output"} for bind in command.binds)
 
 
 def test_workspace_runtime_commands_reject_legacy_data_paths():

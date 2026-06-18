@@ -1,26 +1,12 @@
-"""Managed container specifications for NeuroCade runtime tools."""
+"""Docker container specifications for NeuroCade runtime tools."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 import re
 
 
-GITHUB_RELEASE_CONTAINER_BASE_URL = "https://github.com/Deep-MI/NeuroCade/releases"
-NEUROCONTAINERS_SINGULARITY_BASE_URL = "https://neurocontainers.neurodesk.workers.dev"
-DOCKER_HUB_API_BASE = "https://hub.docker.com"
 NEUROCONTAINERS_NAMESPACE = "vnmd"
-NEUROCONTAINER_BUILD_TAG_PATTERN = r"\d{8}"
-
-
-def github_release_asset_url(filename: str) -> str:
-    """Return the GitHub release asset URL for a managed NeuroCade container."""
-    tag = os.environ.get("NEUROCADE_CONTAINER_RELEASE_TAG", "latest").strip() or "latest"
-    base_url = GITHUB_RELEASE_CONTAINER_BASE_URL.rstrip("/")
-    if tag == "latest":
-        return f"{base_url}/latest/download/{filename}"
-    return f"{base_url}/download/{tag}/{filename}"
 
 FREESURFER_COMMANDS = (
     "mri_info",
@@ -40,18 +26,9 @@ class ContainerSpec:
     app: str
     runtime_version: str
     build_date: str | None
-    image_name: str
     command_names: tuple[str, ...]
-    fileshare_url: str | None = None
-    fileshare_sha256: str | None = None
     docker_uri: str | None = None
-    build_file: str | None = None
     requires_license: bool = False
-
-    @property
-    def directory_name(self) -> str:
-        """Return the image directory name without its container suffix."""
-        return self.image_name.removesuffix(".sif").removesuffix(".simg")
 
 
 def _valid_container_command(name: str) -> bool:
@@ -77,7 +54,6 @@ def _neurocontainer_spec(
 ) -> ContainerSpec:
     """Build a managed container spec from NeuroContainers metadata."""
     app, runtime_version = _parse_neurocontainer_repo(repo_name)
-    image_name = f"{repo_name}_{build_date}.simg"
     inferred_commands = tuple(dict.fromkeys(candidate for candidate in (app, name or "") if _valid_container_command(candidate)))
     return ContainerSpec(
         name=name or app,
@@ -85,9 +61,7 @@ def _neurocontainer_spec(
         app=app,
         runtime_version=runtime_version,
         build_date=build_date,
-        image_name=image_name,
         command_names=command_names or inferred_commands or (app,),
-        fileshare_url=f"{NEUROCONTAINERS_SINGULARITY_BASE_URL}/{image_name}",
         docker_uri=f"docker://{NEUROCONTAINERS_NAMESPACE}/{repo_name}:{build_date}",
         requires_license=requires_license,
     )
@@ -100,9 +74,7 @@ CORE_SPECS: dict[str, ContainerSpec] = {
         app="fastsurfer",
         runtime_version="2.4.2",
         build_date="20260115",
-        image_name="fastsurfer_2.4.2_20260115.simg",
         command_names=FASTSURFER_FREESURFER_COMMANDS,
-        fileshare_url=f"{NEUROCONTAINERS_SINGULARITY_BASE_URL}/fastsurfer_2.4.2_20260115.simg",
         docker_uri="docker://vnmd/fastsurfer_2.4.2:20260115",
     ),
     "bash_image": ContainerSpec(
@@ -111,10 +83,8 @@ CORE_SPECS: dict[str, ContainerSpec] = {
         app="bash_image",
         runtime_version="python-3.12",
         build_date=None,
-        image_name="bash-image-python-3.12.sif",
         command_names=("bash", "python3.12"),
-        fileshare_url=github_release_asset_url("bash-image-python-3.12.sif"),
-        build_file="packages/neurocade-runtime-tools/src/neurocade_runtime_tools/bash_python_image/Buildfile",
+        docker_uri="neurocade-runtime-bash:local",
     ),
     "dcm2niix": _neurocontainer_spec(
         "dcm2niix_v1.0.20240202",

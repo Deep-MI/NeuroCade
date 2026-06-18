@@ -35,35 +35,17 @@ doctor_check_uv() {
   fi
 }
 
-doctor_check_apptainer() {
-  local root="$1"
-  prepend_local_lima "$root"
-  local configured_apptainer
-  configured_apptainer="$(env_file_value "$root" APPTAINER_BIN)"
-  if [[ -n "$configured_apptainer" && -x "$configured_apptainer" ]]; then
-    APPTAINER_BIN="$configured_apptainer"
-  fi
-  if command -v "${APPTAINER_BIN:-apptainer}" >/dev/null 2>&1; then
-    printf '  [ok]   %-18s %s\n' "Apptainer" "$(command -v "${APPTAINER_BIN:-apptainer}")"
+doctor_check_docker_compose() {
+  if ! command -v docker >/dev/null 2>&1; then
+    printf '  [miss] %-18s Docker not found\n' "Docker"
     return
   fi
-  case "$(uname -s 2>/dev/null || true)" in
-    Linux)
-      printf '  [plan] %-18s repo-local unprivileged Apptainer install\n' "Apptainer"
-      ;;
-    Darwin)
-      if command -v limactl >/dev/null 2>&1; then
-        printf '  [plan] %-18s Lima-backed Apptainer wrapper using existing limactl\n' "Apptainer"
-      elif command -v brew >/dev/null 2>&1; then
-        printf '  [plan] %-18s install Lima with Homebrew, then Apptainer in Lima\n' "Apptainer"
-      else
-        printf '  [plan] %-18s repo-local Lima binary, then Apptainer in Lima\n' "Apptainer"
-      fi
-      ;;
-    *)
-      printf '  [miss] %-18s unsupported OS\n' "Apptainer"
-      ;;
-  esac
+  printf '  [ok]   %-18s %s\n' "Docker" "$(command -v docker)"
+  if docker compose version >/dev/null 2>&1; then
+    printf '  [ok]   %-18s %s\n' "Docker Compose" "$(docker compose version 2>/dev/null | head -n 1)"
+  else
+    printf '  [miss] %-18s Compose plugin not found\n' "Docker Compose"
+  fi
 }
 
 doctor_check_env_secret() {
@@ -127,7 +109,7 @@ run_doctor() {
   doctor_check_command "curl" curl
   doctor_check_uv "$root"
   doctor_check_node "$root"
-  doctor_check_apptainer "$root"
+  doctor_check_docker_compose
   echo
   echo "Deployment checks"
   printf '  [info] %-22s %s\n' "Profile" "$mode"
@@ -169,7 +151,8 @@ run_doctor() {
   echo "  - write install log to $root/.runtime/logs/install.log"
   echo "  - create $root/neurocade-data/output"
   echo "  - install uv under $root/.runtime/uv, then create $root/.venv from pyproject.toml"
-  echo "  - download Apptainer/Lima/Node only when missing and --no-prereqs is not set"
+  echo "  - download Node only when missing and --no-prereqs is not set"
+  echo "  - verify Docker Compose is available"
   echo "  - attempt the release demo/sample case download in the background"
   echo "  - warn and continue when no release demo/sample case artifact is available"
   if [[ -n "${NEUROCADE_VERSION_CHECK_URL:-}" ]]; then

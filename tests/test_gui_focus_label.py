@@ -17,7 +17,7 @@ Flow:
   9. Screenshot the result
 
 Prerequisites:
-  ./scripts/apptainer/up.sh -d
+  ./scripts/compose/up.sh -d
   pip install playwright && playwright install chromium
   The current workspace must contain at least one processed case with MRI outputs
 

@@ -6,11 +6,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CLIENT_DIR="$ROOT_DIR/client"
-source "$ROOT_DIR/scripts/runtime_cache_env.sh"
 if [[ -x "$ROOT_DIR/.node/bin/node" && -x "$ROOT_DIR/.node/bin/npm" ]]; then
   export PATH="$ROOT_DIR/.node/bin:$PATH"
 fi
-configure_node_runtime_cache "$ROOT_DIR"
+mkdir -p "$ROOT_DIR/.runtime/npm-cache"
+export npm_config_cache="$ROOT_DIR/.runtime/npm-cache"
 
 if [[ ! -f "$ROOT_DIR/.env" ]]; then
   cat >&2 <<EOF

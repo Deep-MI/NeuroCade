@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import Sequence
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -30,10 +29,9 @@ from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import build_case_id  # noqa: E402
 from backend_common.db import AssistantMessage, Base, Case, RoleEnum, User, Workspace, WorkspaceMembership  # noqa: E402
 from backend_common import providers as provider_module  # noqa: E402
-from neurocade_runtime_tools import containers as containers_module  # noqa: E402
+from neurocade_runtime_tools.docker_catalog import generate_core_docker_catalog  # noqa: E402
 from neurocade_runtime_tools import execution as runtime_execution_module  # noqa: E402
-from neurocade_runtime_tools.containers import refresh_index  # noqa: E402
-from neurocade_runtime_tools.apptainer_command import RuntimeBind  # noqa: E402
+from neurocade_runtime_tools.docker_command import RuntimeBind  # noqa: E402
 
 
 class FakeModel:
@@ -150,42 +148,25 @@ def seeded_context(db_session, tmp_path, monkeypatch):
 
 
 def _install_managed_bash_image(tmp_path: Path, monkeypatch) -> Path:
-    """Create a fake managed bash image and refresh the tool index."""
-    container_root = tmp_path / "containers"
-    image = container_root / "core" / "bash-image-python-3.12" / "bash-image-python-3.12.sif"
-    image.parent.mkdir(parents=True)
-    image.write_text("sif", encoding="utf-8")
-    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(container_root))
+    """Generate a Docker catalog that includes the managed bash image."""
+    image = tmp_path / "runtime-bash-image-marker"
+    image.write_text("docker", encoding="utf-8")
+    monkeypatch.setenv("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:test")
     monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
     monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
     monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
-    refresh_index(root=tmp_path)
+    generate_core_docker_catalog(tmp_path / "tool-catalog")
     return image
 
 
 def _install_dcm2niix_image(tmp_path: Path, monkeypatch) -> Path:
-    """Create a fake dcm2niix image and refresh the tool index."""
-    container_root = tmp_path / "containers"
-    image = container_root / "neurocontainer" / "dcm2niix_v1.0.20240202_20260512" / "dcm2niix_v1.0.20240202_20260512.simg"
-    image.parent.mkdir(parents=True)
-    image.write_text("sif", encoding="utf-8")
-    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(container_root))
+    """Generate a Docker catalog that includes dcm2niix."""
+    image = tmp_path / "dcm2niix-image-marker"
+    image.write_text("docker", encoding="utf-8")
     monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
     monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
     monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
-
-    def fake_container_text(_image: Path, command: list[str], *, timeout_s: int):
-        if command[:2] == ["sh", "-lc"]:
-            return subprocess.CompletedProcess(command, 0, stdout="/usr/bin/dcm2niix\n", stderr="")
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout="Usage: dcm2niix [options] <DICOM folder>\nOptions:\n -o output directory\n -f filename pattern\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(containers_module, "_run_container_text", fake_container_text)
-    refresh_index(root=tmp_path)
+    generate_core_docker_catalog(tmp_path / "tool-catalog")
     return image
 
 
@@ -430,10 +411,8 @@ def test_catalog_tool_search_help_text_is_bounded():
     )
 
 
-def test_catalog_tool_call_delegates_execution_to_host_runtime_runner(tmp_path, monkeypatch):
+def test_catalog_tool_call_delegates_execution_to_runtime_runner(tmp_path, monkeypatch):
     records_path = tmp_path / "tools.jsonl"
-    image_path = tmp_path / "runtime.sif"
-    image_path.write_text("fake image", encoding="utf-8")
     records_path.write_text(
         json.dumps(
             {
@@ -442,7 +421,8 @@ def test_catalog_tool_call_delegates_execution_to_host_runtime_runner(tmp_path, 
                 "app": "freesurfer",
                 "runtime_version": "8.2.0",
                 "build_date": "20260331",
-                "image_path": str(image_path),
+                "image_path": "neurocade/freesurfer:test",
+                "docker_uri": "neurocade/freesurfer:test",
                 "container_command": "mri_binarize",
                 "aliases": [],
             }
@@ -452,8 +432,8 @@ def test_catalog_tool_call_delegates_execution_to_host_runtime_runner(tmp_path, 
     )
     runtime = AssistantRuntime(FakeRuntimeService())
     monkeypatch.setattr(runtime.tools.catalog_executor, "catalog_records_path", lambda _arguments: records_path)
-    monkeypatch.setattr(assistant_runtime_module.settings, "host_runtime_runner_url", "http://127.0.0.1:58081")
-    monkeypatch.setattr(assistant_runtime_module.settings, "host_runtime_runner_token", "secret")
+    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://127.0.0.1:58081")
+    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_token", "secret")
     captured = {}
 
     class FakeResponse:
@@ -486,13 +466,14 @@ def test_catalog_tool_call_delegates_execution_to_host_runtime_runner(tmp_path, 
 
     assert captured["url"] == "http://127.0.0.1:58081/run"
     assert captured["headers"]["Authorization"] == "Bearer secret"
-    assert Path(captured["payload"]["command"][0]).name == "apptainer"
-    assert captured["payload"]["command"][1:3] == ["exec", "--net"]
-    assert captured["payload"]["command"][-5:] == ["mri_binarize", "--i", "/case/in.mgz", "--o", "/case/out.mgz"]
+    assert captured["payload"]["command"] == ["docker:catalog-tool"]
+    assert captured["payload"]["container_run"]["image"] == "neurocade/freesurfer:test"
+    assert captured["payload"]["container_run"]["command"] == ["mri_binarize", "--i", "/case/in.mgz", "--o", "/case/out.mgz"]
+    assert captured["payload"]["container_run"]["network_disabled"] is True
     assert captured["payload"]["cwd"] == str(assistant_runtime_module.ROOT_DIR)
     assert captured["payload"]["timeout_s"] == 300
     assert captured["payload"]["runtime_policy"] == {
-        "runtime": "apptainer",
+        "runtime": "docker",
         "network_disabled": True,
         "gpu_enabled": False,
     }
@@ -503,8 +484,8 @@ def test_catalog_tool_call_delegates_execution_to_host_runtime_runner(tmp_path, 
     assert payload["execution"]["command"] == ["mri_binarize", "--i", "/case/in.mgz", "--o", "/case/out.mgz"]
 
 
-def test_agent_catalog_sees_dcm2niix_but_not_bash_when_only_dcm2niix_installed(monkeypatch, tmp_path):
-    image = _install_dcm2niix_image(tmp_path, monkeypatch)
+def test_agent_catalog_sees_dcm2niix_in_core_docker_catalog(monkeypatch, tmp_path):
+    _install_dcm2niix_image(tmp_path, monkeypatch)
     records_jsonl = tmp_path / "tool-catalog" / "installed_tools.jsonl"
     runtime = AssistantRuntime(FakeRuntimeService())
 
@@ -518,7 +499,7 @@ def test_agent_catalog_sees_dcm2niix_but_not_bash_when_only_dcm2niix_installed(m
         )
     )
 
-    assert [row["name"] for row in search_payload] == ["dcm2niix"]
+    assert "dcm2niix" in [row["name"] for row in search_payload]
     assert all(row["name"] != "bash" for row in search_payload)
 
     captured = {}
@@ -542,13 +523,13 @@ def test_agent_catalog_sees_dcm2niix_but_not_bash_when_only_dcm2niix_installed(m
 
     assert call_payload["returncode"] == 0
     assert call_payload["execution"]["command"] == ["dcm2niix", "--version"]
-    assert str(image.resolve()) in captured["command"]
-    assert captured["command"][-2:] == ["dcm2niix", "--version"]
+    assert captured["command"].image
+    assert captured["command"].command == ["dcm2niix", "--version"]
 
 
 def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_path, seeded_context):
     db_session, context, workspace, case_a, _case_b = seeded_context
-    image = _install_dcm2niix_image(tmp_path, monkeypatch)
+    _install_dcm2niix_image(tmp_path, monkeypatch)
     records_jsonl = tmp_path / "tool-catalog" / "installed_tools.jsonl"
     runtime = AssistantRuntime(FakeRuntimeService())
     captured = {}
@@ -561,6 +542,7 @@ def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_pa
 
     monkeypatch.setattr(assistant_catalog_execution_module, "execute_runtime_request", fake_execute)
     monkeypatch.setenv("NEUROCADE_INSTALLED_TOOLS_JSONL", str(records_jsonl))
+    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     payload = json.loads(
         runtime.tools.catalog_tools.call(
@@ -588,25 +570,29 @@ def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_pa
     assert target.workspace_id == workspace.id
     assert target.case_id == case_a.id
     assert target.case_title == case_a.title
-    assert str(image.resolve()) in request.command
+    assert request.container_run is not None
+    assert request.container_run.command == ["dcm2niix", "--version"]
 
 
-def test_host_runtime_runner_execution_requires_token(monkeypatch):
+def test_runtime_runner_execution_requires_token(monkeypatch):
     runtime = AssistantRuntime(FakeRuntimeService())
-    monkeypatch.setattr(assistant_runtime_module.settings, "host_runtime_runner_url", "http://127.0.0.1:58081")
-    monkeypatch.setattr(assistant_runtime_module.settings, "host_runtime_runner_token", None)
+    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://127.0.0.1:58081")
+    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_token", None)
 
-    with pytest.raises(RuntimeError, match="HOST_RUNTIME_RUNNER_TOKEN is required"):
-        runtime.tools.catalog_executor.execute_runtime_command(["singularity", "--version"], timeout_s=1)
+    with pytest.raises(RuntimeError, match="RUNTIME_RUNNER_TOKEN is required"):
+        runtime.tools.catalog_executor.execute_runtime_command(
+            runtime_execution_module.RuntimeContainerRunRequest(image="neurocade-runtime-bash:test", command=["true"]),
+            timeout_s=1,
+        )
 
 
 def test_catalog_tool_call_bash_requires_installed_index(monkeypatch, tmp_path):
     runtime = AssistantRuntime(FakeRuntimeService())
-    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
     monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
     monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
     monkeypatch.setenv("NEUROCADE_INSTALLED_TOOLS_JSONL", str(tmp_path / "tool-catalog" / "installed_tools.jsonl"))
-    refresh_index(root=tmp_path)
+    (tmp_path / "tool-catalog").mkdir()
+    (tmp_path / "tool-catalog" / "installed_tools.jsonl").write_text("", encoding="utf-8")
 
     result = runtime.tools.catalog_executor.catalog_tool_call(
         {
@@ -624,8 +610,6 @@ def test_catalog_tool_call_ignores_caller_supplied_records_path(monkeypatch, tmp
     runtime = AssistantRuntime(FakeRuntimeService())
     managed_records = tmp_path / "managed.jsonl"
     caller_records = tmp_path / "caller.jsonl"
-    image_path = tmp_path / "runtime.sif"
-    image_path.write_text("fake image", encoding="utf-8")
     managed_records.write_text(
         json.dumps(
             {
@@ -634,7 +618,8 @@ def test_catalog_tool_call_ignores_caller_supplied_records_path(monkeypatch, tmp
                 "app": "managed",
                 "runtime_version": "1",
                 "build_date": "20260101",
-                "image_path": str(image_path),
+                "image_path": "neurocade/safe:test",
+                "docker_uri": "neurocade/safe:test",
                 "container_command": "safe_tool",
                 "aliases": [],
             }
@@ -650,7 +635,8 @@ def test_catalog_tool_call_ignores_caller_supplied_records_path(monkeypatch, tmp
                 "app": "caller",
                 "runtime_version": "1",
                 "build_date": "20260101",
-                "image_path": str(image_path),
+                "image_path": "neurocade/unsafe:test",
+                "docker_uri": "neurocade/unsafe:test",
                 "container_command": "unsafe_tool",
                 "aliases": [],
             }
@@ -1193,13 +1179,9 @@ def test_workspace_file_tools_do_not_advertise_case_mount(seeded_context):
     assert "active case mount at /case" not in description
 
 
-def test_workspace_tools_hide_bash_when_bash_image_missing(monkeypatch, tmp_path, seeded_context):
+def test_workspace_tools_expose_bash_with_configured_docker_image(monkeypatch, tmp_path, seeded_context):
     db_session, context, workspace, _case_a, _case_b = seeded_context
-    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
-    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
-    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
-    monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
-    refresh_index(root=tmp_path)
+    monkeypatch.setenv("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:test")
     runtime = AssistantRuntime(FakeRuntimeService())
 
     _definitions, tools = asyncio.run(
@@ -1214,9 +1196,9 @@ def test_workspace_tools_hide_bash_when_bash_image_missing(monkeypatch, tmp_path
     )
     tool_names = {tool["function"]["name"] for tool in tools}
 
-    assert "workspace_batch_bash" not in tool_names
-    assert "workspace_bash" not in tool_names
-    assert "workspace_probe_bash" not in tool_names
+    assert "workspace_batch_bash" in tool_names
+    assert "workspace_bash" in tool_names
+    assert "workspace_probe_bash" in tool_names
     assert "workspace_case_file_tree" in tool_names
     assert "workspace_file_tree" in tool_names
 
@@ -1259,13 +1241,9 @@ def test_case_scope_includes_python_and_bash_tools_when_bash_image_installed(mon
     assert "Bash" not in tool_names
 
 
-def test_case_scope_hides_python_and_bash_tools_when_bash_image_missing(monkeypatch, tmp_path, seeded_context):
+def test_case_scope_exposes_python_and_bash_tools_with_default_docker_image(monkeypatch, tmp_path, seeded_context):
     db_session, context, workspace, case_a, _case_b = seeded_context
-    monkeypatch.setenv("NEUROCADE_CONTAINER_ROOT", str(tmp_path / "containers"))
-    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
-    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
-    monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
-    refresh_index(root=tmp_path)
+    monkeypatch.delenv("NEUROCADE_BASH_IMAGE", raising=False)
     runtime = AssistantRuntime(FakeRuntimeService())
 
     _definitions, tool_specs = asyncio.run(
@@ -1281,15 +1259,15 @@ def test_case_scope_hides_python_and_bash_tools_when_bash_image_missing(monkeypa
     )
     tool_names = {tool["function"]["name"] for tool in tool_specs}
 
-    assert "python_run" not in tool_names
-    assert "bash" not in tool_names
+    assert "python_run" in tool_names
+    assert "bash" in tool_names
     assert "tool_search" in tool_names
     assert "tool_call" in tool_names
 
 
 def test_case_python_run_uses_managed_bash_image_and_case_mount(monkeypatch, tmp_path, seeded_context):
     db_session, context, workspace, case_a, _case_b = seeded_context
-    image = _install_managed_bash_image(tmp_path, monkeypatch)
+    _install_managed_bash_image(tmp_path, monkeypatch)
     runtime = AssistantRuntime(FakeRuntimeService())
     state = {
         "db": db_session,
@@ -1317,16 +1295,18 @@ def test_case_python_run_uses_managed_bash_image_and_case_mount(monkeypatch, tmp
         )
 
     monkeypatch.setattr(assistant_catalog_execution_module, "execute_runtime_request", fake_execute)
+    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     result = runtime.tools.case_tools.case_python_run_tool(state, {"script_path": "/case/scripts/demo.py", "args": ["--flag"]})
 
     assert json.loads(result)["stdout"] == "ok\n"
     request = captured["request"]
-    command = request.command
-    assert "--bind" in command
-    assert f"{case_dir.resolve()}:/case:rw" in command
-    assert str(image.resolve()) in command
-    assert "python3.12 /case/scripts/demo.py --flag" in command[-1]
+    assert request.container_run is not None
+    assert any(
+        str(bind.host_path) == str(case_dir.resolve()) and bind.container_path == "/case" and bind.mode == "rw"
+        for bind in request.container_run.binds
+    )
+    assert "python3.12 /case/scripts/demo.py --flag" in request.container_run.command[-1]
     assert request.timeout_s == 300
     assert captured["db"] is db_session
     assert request.artifact_index_targets
@@ -1352,6 +1332,7 @@ def test_case_bash_passes_artifact_index_target(monkeypatch, tmp_path, seeded_co
         return runtime_execution_module.RuntimeExecutionResult(request=request, returncode=1, stdout="", stderr="failed\n")
 
     monkeypatch.setattr(assistant_catalog_execution_module, "execute_runtime_request", fake_execute)
+    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     result = runtime.tools.case_tools.case_bash_tool(state, {"command": "touch /case/qc.txt && false"})
 
@@ -1360,7 +1341,8 @@ def test_case_bash_passes_artifact_index_target(monkeypatch, tmp_path, seeded_co
     assert captured["db"] is db_session
     assert request.artifact_index_targets
     assert request.artifact_index_targets[0].case_id == case_a.id
-    assert "touch /case/qc.txt && false" in request.command[-1]
+    assert request.container_run is not None
+    assert "touch /case/qc.txt && false" in request.container_run.command[-1]
 
 
 def test_catalog_tool_binds_active_case_without_output_alias(monkeypatch, seeded_context):
@@ -1378,11 +1360,8 @@ def test_catalog_tool_binds_active_case_without_output_alias(monkeypatch, seeded
             "case_id": case_a.id,
         }
     )
-    bind_args = {bind.as_argument() for bind in binds}
-
-    assert not any(argument.endswith(":/data:ro") for argument in bind_args)
-    assert not any(argument.endswith(":/output:rw") for argument in bind_args)
-    assert any(argument.endswith(":/case:rw") for argument in bind_args)
+    assert not any(bind.container_path in {"/data", "/output"} for bind in binds)
+    assert any(bind.container_path == "/case" and bind.mode == "rw" for bind in binds)
 
 
 def test_catalog_tool_binds_workspace_output_for_workspace_scope(monkeypatch, seeded_context):
@@ -1399,12 +1378,12 @@ def test_catalog_tool_binds_workspace_output_for_workspace_scope(monkeypatch, se
             "workspace_id": workspace.id,
         }
     )
-    bind_args = {bind.as_argument() for bind in binds}
+    assert [(bind.host_path, bind.container_path, bind.mode) for bind in binds] == [
+        ((fs_root / "output" / "workspaces" / workspace.id).resolve(), "/workspace", "rw")
+    ]
 
-    assert bind_args == {f"{(fs_root / 'output' / 'workspaces' / workspace.id).resolve()}:/workspace:rw"}
 
-
-def test_catalog_public_execution_hides_singularity_wrapper():
+def test_catalog_public_execution_hides_container_image_reference():
     runtime = AssistantRuntime(FakeRuntimeService())
 
     public_execution = runtime.tools.catalog_executor.public_catalog_execution(
@@ -1414,7 +1393,8 @@ def test_catalog_public_execution_hides_singularity_wrapper():
             "app": "freesurfer",
             "runtime_version": "8.2.0",
             "build_date": "20260331",
-            "image_path": "/containers/freesurfer.simg",
+            "image_path": "neurocade/freesurfer:test",
+            "docker_uri": "neurocade/freesurfer:test",
             "container_command": "mri_binarize",
         },
         "mri_binarize",

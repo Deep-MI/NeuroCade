@@ -21,6 +21,7 @@ from api_service.runtime_tools import read_stats as read_stats_module  # noqa: E
 from api_service.runtime_tools.types import ToolTextContent  # noqa: E402
 from neurocade_runtime_tools.container_paths import license_path  # noqa: E402
 from neurocade_runtime_tools.execution import (  # noqa: E402
+    RuntimeContainerRunRequest,
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
     RuntimeWorkspaceArtifactSyncTarget,
@@ -60,8 +61,6 @@ def runtime_case(tmp_path, monkeypatch):
     monkeypatch.setattr(handler_module, "HOST_DATA_DIR", str(data_root), raising=False)
     monkeypatch.setattr(handler_module, "LOCAL_OUTPUT_ROOT", str(output_dir), raising=False)
     monkeypatch.setattr(read_stats_module, "_OUTPUT_DIR", str(output_dir))
-    monkeypatch.setattr(container_commands_module, "_managed_image", lambda _name: str(tmp_path / "fastsurfer.sif"))
-    monkeypatch.setattr(handler_module, "_managed_image", lambda _name: str(tmp_path / "fastsurfer.sif"))
 
     state = {
         "current_workspace_id": workspace_id,
@@ -73,25 +72,6 @@ def runtime_case(tmp_path, monkeypatch):
         "is_job_running": False,
     }
     return RuntimeService(), state
-
-
-def test_gui_run_fastsurfer_requires_installed_container(runtime_case, monkeypatch):
-    service, state = runtime_case
-
-    def missing_image(_name):
-        raise FileNotFoundError("missing")
-
-    monkeypatch.setattr(handler_module, "_managed_image", missing_image)
-
-    result = asyncio.run(
-        service.call_tool(
-            "gui_run_fastsurfer",
-            {"case_name": "case-a", "seg_only": True},
-            gui_state_override=state,
-        )
-    )
-
-    assert "FastSurfer container is not installed" in result
 
 
 def test_gui_run_fastsurfer_without_selected_input_requests_frontend_selector(runtime_case):
@@ -121,19 +101,6 @@ def test_gui_run_fastsurfer_without_selected_input_requests_frontend_selector(ru
     assert gui_state["is_job_running"] is False
 
 
-def test_start_run_requires_installed_fastsurfer_container(monkeypatch):
-    def missing_image(*_args, **_kwargs):
-        raise FileNotFoundError("missing")
-
-    monkeypatch.setattr(runtime_module, "resolve_core_image", missing_image)
-
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(RuntimeService().start_run({"case_id": "workspace-1__case-a", "workspace_id": "workspace-1", "input_path": "/tmp/input.mgz"}))
-
-    assert exc.value.status_code == 500
-    assert "FastSurfer container is not installed" in exc.value.detail
-
-
 def test_start_run_submits_fastsurfer_runtime_request(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     data_root = tmp_path / "neurocade-data"
@@ -142,7 +109,6 @@ def test_start_run_submits_fastsurfer_runtime_request(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_module, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(runtime_module.settings, "fs_data_root", data_root)
     monkeypatch.setattr(runtime_module.settings, "outputs_dir_override", output_dir)
-    monkeypatch.setattr(runtime_module, "resolve_core_image", lambda *_args, **_kwargs: tmp_path / "fastsurfer.sif")
 
     def fake_submit_runtime_request(task, request, *, kwargs=None):
         captured["task"] = task
@@ -191,7 +157,6 @@ def test_start_run_uses_local_case_slug_for_storage(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_module, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(runtime_module.settings, "fs_data_root", data_root)
     monkeypatch.setattr(runtime_module.settings, "outputs_dir_override", output_dir)
-    monkeypatch.setattr(runtime_module, "resolve_core_image", lambda *_args, **_kwargs: tmp_path / "fastsurfer.sif")
 
     def fake_submit_runtime_request(task, request, *, kwargs=None):
         captured["request"] = request
@@ -230,11 +195,7 @@ def test_fastsurfer_worker_task_uses_fastsurfer_queue(monkeypatch, tmp_path):
     output_dir = tmp_path / "output"
 
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.setattr(
-        fastsurfer_tasks_module,
-        "_apptainer_fastsurfer_command",
-        lambda *_args, **_kwargs: ["apptainer", "exec", "fastsurfer.simg", "run_fastsurfer.sh"],
-    )
+    monkeypatch.setattr(fastsurfer_tasks_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     def fake_execute_runtime_request(request, *, run_completion_hooks=True):
         captured["request"] = request
@@ -255,6 +216,9 @@ def test_fastsurfer_worker_task_uses_fastsurfer_queue(monkeypatch, tmp_path):
     assert result["status"] == "completed"
     assert request.queue_name == fastsurfer_tasks_module.FASTSURFER_QUEUE
     assert request.queue_name == runtime_module.FASTSURFER_QUEUE
+    assert request.execution_mode == "host-runtime-runner"
+    assert request.container_run is not None
+    assert request.container_run.image
     assert captured["run_completion_hooks"] is False
 
 
@@ -263,11 +227,7 @@ def test_fastsurfer_worker_writes_to_local_case_slug(monkeypatch, tmp_path):
     output_dir = tmp_path / "output"
 
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.setattr(
-        fastsurfer_tasks_module,
-        "_apptainer_fastsurfer_command",
-        lambda fastsurfer_args, *_args, **_kwargs: ["apptainer", "exec", "fastsurfer.simg", *fastsurfer_args],
-    )
+    monkeypatch.setattr(fastsurfer_tasks_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     def fake_execute_runtime_request(request, *, run_completion_hooks=True):
         captured["request"] = request
@@ -326,28 +286,28 @@ def test_workspace_case_bash_mounts_current_license(monkeypatch, tmp_path):
 
     monkeypatch.setattr(container_commands_module, "HOST_DATA_DIR", str(data_root))
     monkeypatch.setattr(container_commands_module, "ROOT_DIR", tmp_path)
-    monkeypatch.setattr(container_commands_module, "APPTAINER_BIN", "apptainer")
-    monkeypatch.setattr(container_commands_module, "_managed_image", lambda _name: str(tmp_path / "fastsurfer.sif"))
-    monkeypatch.setattr(container_commands_module, "_apptainer_nv_enabled", lambda: False)
     monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
 
-    cmd_without_license = container_commands_module._apptainer_run_workspace_case_bash(
+    cmd_without_license = container_commands_module._docker_run_workspace_case_bash(
         "echo ok",
         case_dir=str(case_dir),
     )
-    assert "/fs_license.txt" not in cmd_without_license
-    assert cmd_without_license[-1] == "echo ok"
+    assert all(bind.container_path != "/fs_license.txt" for bind in cmd_without_license.binds)
+    assert cmd_without_license.command[-1] == "echo ok"
 
     runtime_license.write_text("runtime-license", encoding="utf-8")
-    cmd_with_license = container_commands_module._apptainer_run_workspace_case_bash(
+    cmd_with_license = container_commands_module._docker_run_workspace_case_bash(
         "echo ok",
         case_dir=str(case_dir),
     )
 
-    assert f"{runtime_license.resolve()}:/fs_license.txt:ro" in cmd_with_license
-    assert "FS_LICENSE=/fs_license.txt" in cmd_with_license
-    assert "base64 -d" not in cmd_with_license
-    assert cmd_with_license[-1] == "echo ok"
+    assert any(
+        str(bind.host_path) == str(runtime_license.resolve()) and bind.container_path == "/fs_license.txt" and bind.mode == "ro"
+        for bind in cmd_with_license.binds
+    )
+    assert cmd_with_license.env is not None
+    assert cmd_with_license.env["FS_LICENSE"] == "/fs_license.txt"
+    assert cmd_with_license.command[-1] == "echo ok"
 
 
 def test_fastsurfer_worker_binds_and_passes_freesurfer_license(monkeypatch, tmp_path):
@@ -359,9 +319,8 @@ def test_fastsurfer_worker_binds_and_passes_freesurfer_license(monkeypatch, tmp_
     license_path.write_text("license", encoding="utf-8")
 
     monkeypatch.setattr(fastsurfer_tasks_module, "HOST_DATA_DIR", str(data_root))
-    monkeypatch.setattr(fastsurfer_tasks_module, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.setattr(fastsurfer_tasks_module, "resolve_core_image", lambda *_args, **_kwargs: tmp_path / "fastsurfer.sif")
+    monkeypatch.setattr(fastsurfer_tasks_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
     monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
 
     def fake_execute_runtime_request(request, *, run_completion_hooks=True):
@@ -380,10 +339,15 @@ def test_fastsurfer_worker_binds_and_passes_freesurfer_license(monkeypatch, tmp_
 
     request = cast(RuntimeExecutionRequest, captured["request"])
     assert result["status"] == "completed"
-    assert f"{license_path.resolve()}:/fs_license.txt:ro" in request.argv
-    assert "FS_LICENSE=/fs_license.txt" in request.argv
-    assert "--fs_license" in request.argv
-    assert request.argv[request.argv.index("--fs_license") + 1] == "/fs_license.txt"
+    assert request.container_run is not None
+    assert any(
+        str(bind.host_path) == str(license_path.resolve()) and bind.container_path == "/fs_license.txt" and bind.mode == "ro"
+        for bind in request.container_run.binds
+    )
+    assert request.container_run.env is not None
+    assert request.container_run.env["FS_LICENSE"] == "/fs_license.txt"
+    assert "--fs_license" in request.container_run.command
+    assert request.container_run.command[request.container_run.command.index("--fs_license") + 1] == "/fs_license.txt"
 
 
 @pytest.mark.parametrize(("seg_only", "surf_only"), [(False, False), (True, True)])
@@ -393,12 +357,12 @@ def test_fastsurfer_worker_fails_surface_pipeline_without_license(monkeypatch, t
     data_root.mkdir()
 
     monkeypatch.setattr(fastsurfer_tasks_module, "HOST_DATA_DIR", str(data_root))
-    monkeypatch.setattr(fastsurfer_tasks_module, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
+    monkeypatch.setattr(fastsurfer_tasks_module, "freesurfer_license_bind_env", lambda **_kwargs: None)
     monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
 
     def fail_execute_runtime_request(*_args, **_kwargs):
-        raise AssertionError("FastSurfer should fail before Apptainer execution")
+        raise AssertionError("FastSurfer should fail before Docker execution")
 
     monkeypatch.setattr(fastsurfer_tasks_module, "execute_runtime_request", fail_execute_runtime_request)
 
@@ -462,16 +426,16 @@ def test_workspace_command_passes_runtime_metadata(monkeypatch, tmp_path):
 
     def fake_execute_workspace_bash(arguments):
         captured["arguments"] = arguments
-        return ["apptainer", "exec", "--net", "--network", "none", str(tmp_path / "bash.sif"), "bash", "-lc", "echo ok"]
+        return RuntimeContainerRunRequest(image="neurocade-runtime-bash:test", command=["/bin/bash", "-lc", "echo ok"])
 
-    def fake_run_synchronous_apptainer_task(name, cmd, **kwargs):
+    def fake_run_synchronous_runtime_task(name, cmd, **kwargs):
         captured["task_name"] = name
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
         return [ToolTextContent(type="text", text="ok")]
 
     monkeypatch.setattr(runtime_module, "execute_workspace_bash", fake_execute_workspace_bash)
-    monkeypatch.setattr(runtime_module, "run_synchronous_apptainer_task", fake_run_synchronous_apptainer_task)
+    monkeypatch.setattr(runtime_module, "run_synchronous_runtime_task", fake_run_synchronous_runtime_task)
 
     result = asyncio.run(
         RuntimeService().run_workspace_command(
@@ -515,7 +479,7 @@ def test_case_dir_resolution_requires_workspace_id(monkeypatch, tmp_path):
     assert runtime_module._case_dir_for_id("workspace-a__case-1", "workspace-a") != wrong_case_dir
 
 
-def test_synchronous_apptainer_task_threads_workspace_sync_metadata(monkeypatch, tmp_path):
+def test_synchronous_runtime_task_threads_workspace_sync_metadata(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     db = object()
     sync_target = RuntimeWorkspaceArtifactSyncTarget(
@@ -529,10 +493,11 @@ def test_synchronous_apptainer_task_threads_workspace_sync_metadata(monkeypatch,
         return RuntimeExecutionResult(request=request, returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(container_commands_module, "execute_runtime_request", fake_execute_runtime_request)
+    monkeypatch.setattr(container_commands_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
-    result = container_commands_module.run_synchronous_apptainer_task(
+    result = container_commands_module.run_synchronous_runtime_task(
         "workspace_bash",
-        ["apptainer", "exec", "--net", "--network", "none", str(tmp_path / "bash.sif"), "bash", "-lc", "echo ok"],
+        RuntimeContainerRunRequest(image="neurocade-runtime-bash:test", command=["/bin/bash", "-lc", "echo ok"]),
         db=db,
         workspace_artifact_sync_targets=(sync_target,),
         queue_name="workspace_batch",

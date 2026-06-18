@@ -1,10 +1,10 @@
 """
 Shared pytest fixtures for NeuroCade end-to-end tests.
 
-These fixtures talk to a running Apptainer stack (gateway on port 8005).
+These fixtures talk to a running local NeuroCade stack (gateway on port 8005).
 Start the stack before running tests:
 
-    ./scripts/apptainer/up.sh -d
+    ./scripts/compose/up.sh -d
     pytest tests/ -v
 """
 
@@ -39,7 +39,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 from backend_common.case_storage import UPLOAD_SUFFIXES, case_slug_from_id, upload_extension  # noqa: E402
 
-DATA_ROOT = Path(os.environ.get("HOST_DATA_DIR", REPO_ROOT / "neurocade-data"))
+_host_data_dir = os.environ.get("NEUROCADE_HOST_DATA_DIR") or os.environ.get("HOST_DATA_DIR")
+if not _host_data_dir or _host_data_dir == "/data":
+    _host_data_dir = str(REPO_ROOT / "neurocade-data")
+DATA_ROOT = Path(_host_data_dir)
 UPLOAD_FIXTURES_DIR = Path(
     os.environ.get("NEUROCADE_UPLOAD_FIXTURES_DIR", REPO_ROOT / "tests" / "fixtures" / "uploads")
 )
@@ -195,7 +198,7 @@ ADNI2_GUI_STATE = {
 
 @pytest.fixture(scope="session")
 def gateway_url():
-    """Base URL of the Traefik gateway."""
+    """Base URL of the local app gateway."""
     return GATEWAY_URL
 
 
@@ -245,13 +248,13 @@ def demo_run_upload_filename():
 
 @pytest.fixture(scope="session")
 def services_up(gateway_url):
-    """Verify the Apptainer stack is reachable (session-scoped, runs once)."""
+    """Verify the local stack is reachable (session-scoped, runs once)."""
     try:
-        r = requests.get(f"{gateway_url}/healthz", timeout=5)
+        r = requests.get(f"{gateway_url}/api/app/healthz", timeout=5)
         r.raise_for_status()
     except Exception as exc:
         pytest.skip(
-            f"Apptainer stack not reachable at {gateway_url}: {exc}"
+            f"NeuroCade stack not reachable at {gateway_url}: {exc}"
         )
 
 
@@ -742,8 +745,11 @@ def docker_logs_since(
     service: str = PROXY_SERVICE,
     since: str | None = None,
 ) -> str:
-    """Fetch Apptainer launcher service logs."""
-    cmd = [str(REPO_ROOT / "scripts" / "apptainer" / "logs.sh"), service]
+    """Fetch local stack service logs."""
+    cmd = [str(REPO_ROOT / "scripts" / "compose" / "logs.sh")]
+    if since:
+        cmd.extend(["--since", since])
+    cmd.append(service)
     try:
         out = subprocess.check_output(
             cmd, stderr=subprocess.STDOUT, timeout=10
@@ -799,29 +805,3 @@ def get_response_content(result: dict) -> str:
     """Extract assistant content from a assistant turn response."""
     return result.get("message", {}).get("content", "")
 
-
-def check_command_available(command: str, gateway_url: str = GATEWAY_URL) -> bool:
-    """Check if a FreeSurfer command is available in the configured Apptainer tool image."""
-    image = REPO_ROOT / ".apptainer" / "containers" / "core" / "fastsurfer_2.4.2_20260115" / "fastsurfer_2.4.2_20260115.simg"
-    for attempt in range(3):
-        try:
-            out = subprocess.check_output(
-                [
-                    os.environ.get("APPTAINER_BIN", "apptainer"),
-                    "exec",
-                    "--cleanenv",
-                    os.environ.get("NEUROCADE_TEST_TOOL_IMAGE", str(image)),
-                    "bash",
-                    "-lc",
-                    f"command -v {command}",
-                ],
-                stderr=subprocess.STDOUT,
-                timeout=30,
-            )
-            if command in out.decode(errors="replace"):
-                return True
-        except Exception:
-            pass
-        if attempt < 2:
-            time.sleep(2)
-    return False

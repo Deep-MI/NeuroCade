@@ -43,15 +43,13 @@ Full Python checks:
 ```bash
 source .venv/bin/activate
 pytest tests -q
-pytest packages/neurocade-runtime-tools/tests -q
 ```
 
-Local Apptainer checks:
+Local Compose checks:
 
 ```bash
-./scripts/apptainer/images.sh preflight
-./scripts/containers.sh refresh-index
-./scripts/apptainer/up.sh -d
+./scripts/compose/images.sh
+./scripts/compose/up.sh -d
 ```
 
 ## Project Boundaries
@@ -105,8 +103,8 @@ Do not reintroduce MCP server dependencies for assistant tools.
 Runtime container status and the generated installed-tool index are managed locally:
 
 ```bash
-./scripts/containers.sh status --json
-./scripts/containers.sh refresh-index
+./scripts/compose/status.sh
+./scripts/compose/images.sh
 ```
 
 ## Release Checklist
@@ -120,15 +118,14 @@ Before tagging or publishing a release:
 - Confirm `APP_BASE_URL`, `APP_PUBLIC_URL`, and `APP_ALLOWED_HOSTS` match the
   deployed origin.
 - Confirm `LOCAL_AUTH_ENABLED=false` for `internal` and `demo`.
-- Confirm Clerk, Postgres, Redis, LLM, managed container, and monitoring settings are correct
+- Confirm Clerk, Postgres, Redis, LLM, Docker runtime, and monitoring settings are correct
   for the deployment profile.
 - Run frontend lint/build and focused backend/runtime tests.
-- Run the full Python and runtime-tools test suites when release time allows.
-- Confirm Apptainer preflight passes without sudo or Docker socket access.
-- Confirm runtime commands use no-network Apptainer/Singularity execution.
+- Run the full Python test suite when release time allows.
+- Confirm Docker Compose config renders and the runtime runner is token-protected.
+- Confirm runtime commands use no-network Docker execution unless GPU/runtime settings explicitly require otherwise.
 - Confirm artifact download routes require authorization.
-- Build or fetch infrastructure SIF images and verify release checksums.
-- Install managed runtime containers and refresh the installed-tool index.
+- Build Docker images and refresh the installed-tool index.
 
 Smoke tests:
 
@@ -154,17 +151,14 @@ Install/update flow:
 
 ```bash
 ./scripts/install.sh --doctor --mode <profile> --yes
-./scripts/apptainer/images.sh preflight
-./scripts/containers.sh refresh-index
-./scripts/apptainer/up.sh -d
+./scripts/compose/images.sh
+./scripts/compose/up.sh -d
 ```
 
 Useful logs:
 
-- `./scripts/apptainer/logs.sh -f`
-- `.runtime/logs/api-service.log`
-- `.runtime/logs/api-worker.log`
-- `.runtime/logs/traefik.log`
+- `./scripts/compose/logs.sh -f`
+- Docker Compose service logs for `api-service`, `api-worker`, and `gateway`
 
 Backups should include Postgres, `.env`, `.runtime`, and `neurocade-data`.
 

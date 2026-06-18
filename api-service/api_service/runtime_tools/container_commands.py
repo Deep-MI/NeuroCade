@@ -12,15 +12,11 @@ from dotenv import load_dotenv
 from api_service.runtime.execution import execute_runtime_request
 from backend_common.case_storage import case_slug_from_id
 from backend_common.settings import ROOT_DIR, get_settings
-from neurocade_runtime_tools.apptainer_command import (
-    RuntimeBind,
-    apptainer_nv_enabled,
-    build_apptainer_exec_command,
-    freesurfer_license_bind_env,
-)
-from neurocade_runtime_tools.containers import resolve_core_image
+from neurocade_runtime_tools.container_specs import CORE_SPECS
+from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request, freesurfer_license_bind_env
 from neurocade_runtime_tools.execution import (
     RuntimeArtifactIndexTarget,
+    RuntimeContainerRunRequest,
     RuntimeExecutionPolicy,
     RuntimeExecutionRequest,
     RuntimeWorkspaceArtifactSyncTarget,
@@ -36,8 +32,7 @@ from .types import ToolTextContent, error_response, text_response
 load_dotenv(ROOT_DIR / ".env")
 settings = get_settings()
 
-# Rootless Apptainer execution for runtime tools.
-APPTAINER_BIN = os.environ.get("APPTAINER_BIN", "apptainer")
+# Docker runtime execution for runtime tools.
 HOST_DATA_DIR = os.environ.get("HOST_DATA_DIR") or str(settings.fs_data_root)
 
 LOCAL_DATA_ROOT = HOST_DATA_DIR
@@ -56,17 +51,22 @@ _SEGMENTATION_FILENAME_HINTS = (
 )
 _VOLUME_FILE_SUFFIXES = (".mgz", ".mgh", ".nii", ".nii.gz")
 
-APPTAINER_NV = os.environ.get("APPTAINER_NV", "auto").strip().lower()
+def _docker_core_image(name: str) -> str:
+    """Return the pinned Docker image for a core runtime container."""
+    override = os.environ.get(f"NEUROCADE_{name.upper()}_IMAGE")
+    if override:
+        return override.removeprefix("docker://")
+    if name == "bash_image":
+        return os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local")
+    spec = CORE_SPECS[name]
+    if not spec.docker_uri:
+        raise ValueError(f"Core container {name} does not define a Docker image")
+    return spec.docker_uri.removeprefix("docker://")
 
 
-def _apptainer_nv_enabled() -> bool:
-    """Return whether spawned Apptainer commands should request NVIDIA support."""
-    return apptainer_nv_enabled(APPTAINER_NV)
-
-
-def _managed_image(name: str) -> str:
-    """Resolve a managed runtime image name to its local image path."""
-    return str(resolve_core_image(name, root=ROOT_DIR))
+def _docker_gpu_enabled() -> bool:
+    """Return whether Docker runtime requests should ask for NVIDIA GPUs."""
+    return os.environ.get("NEUROCADE_DOCKER_GPU", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_workspace_bash_mount_path(host_path: str) -> tuple[str, tuple[str, ...]]:
@@ -233,40 +233,37 @@ def _resolve_case_mount_local_dir(gui_state: dict | None) -> str | None:
     return str(resolved) if resolved is not None else None
 
 
-def _apptainer_run_workspace_bash(
+def _docker_run_workspace_bash(
     bash_cmd: str,
     *,
     cases_dir: str,
     workspace_dir: str,
     image: str | None = None,
-) -> list[str]:
-    """Build an Apptainer command for a workspace-scoped bash command."""
+) -> RuntimeContainerRunRequest:
+    """Build a Docker request for a workspace-scoped bash command."""
     binds, _host_workspace_dir = _resolve_workspace_bash_mounts(cases_dir, workspace_dir)
     license_bind_env = freesurfer_license_bind_env(root=ROOT_DIR, data_root=HOST_DATA_DIR)
     env = None
     if license_bind_env is not None:
         license_bind, env = license_bind_env
         binds.append(license_bind)
-    return build_apptainer_exec_command(
-        runtime_bin=APPTAINER_BIN,
-        image=image or _managed_image("fastsurfer"),
+    return build_docker_container_request(
+        image=image or _docker_core_image("bash_image"),
         binds=binds,
         env=env,
         disable_network=True,
-        cleanenv=True,
-        no_home=True,
-        nv=_apptainer_nv_enabled(),
+        gpu=_docker_gpu_enabled(),
         command=["/bin/bash", "-lc", bash_cmd],
     )
 
 
-def _apptainer_run_workspace_case_bash(
+def _docker_run_workspace_case_bash(
     bash_cmd: str,
     *,
     case_dir: str,
     image: str | None = None,
-) -> list[str]:
-    """Build an Apptainer command for an internal workspace single-case command."""
+) -> RuntimeContainerRunRequest:
+    """Build a Docker request for an internal workspace single-case command."""
     binds = [
         RuntimeBind(case_dir, CONTAINER_CASE_ROOT, "rw"),
     ]
@@ -275,15 +272,12 @@ def _apptainer_run_workspace_case_bash(
     if license_bind_env is not None:
         license_bind, env = license_bind_env
         binds.append(license_bind)
-    return build_apptainer_exec_command(
-        runtime_bin=APPTAINER_BIN,
-        image=image or _managed_image("fastsurfer"),
+    return build_docker_container_request(
+        image=image or _docker_core_image("bash_image"),
         binds=binds,
         env=env,
         disable_network=True,
-        cleanenv=True,
-        no_home=True,
-        nv=_apptainer_nv_enabled(),
+        gpu=_docker_gpu_enabled(),
         command=["/bin/bash", "-lc", bash_cmd],
     )
 
@@ -303,8 +297,8 @@ def _reject_legacy_runtime_paths(command: str) -> None:
         raise ValueError("workspace runtime commands may use /case, /cases, and /workspace only; /data and /output are not mounted.")
 
 
-def execute_workspace_bash(arguments: dict) -> list[str]:
-    """Build a workspace-scoped Apptainer bash command from tool arguments."""
+def execute_workspace_bash(arguments: dict) -> RuntimeContainerRunRequest:
+    """Build a workspace-scoped runtime bash command from tool arguments."""
     command = str(arguments.get("command", "") or "").strip()
     cases_dir = str(arguments.get("cases_dir", "") or "").strip()
     workspace_dir = str(arguments.get("workspace_dir", "") or "").strip()
@@ -313,35 +307,26 @@ def execute_workspace_bash(arguments: dict) -> list[str]:
     _reject_legacy_runtime_paths(command)
     _binds, host_workspace_dir = _resolve_workspace_bash_mounts(cases_dir, workspace_dir)
     os.makedirs(host_workspace_dir, exist_ok=True)
-    return _apptainer_run_workspace_bash(
-        command,
-        cases_dir=cases_dir,
-        workspace_dir=host_workspace_dir,
-        image=_managed_image("bash_image"),
-    )
+    return _docker_run_workspace_bash(command, cases_dir=cases_dir, workspace_dir=host_workspace_dir)
 
 
-def execute_workspace_case_bash(arguments: dict) -> list[str]:
-    """Build an Apptainer bash command scoped to one workspace case."""
+def execute_workspace_case_bash(arguments: dict) -> RuntimeContainerRunRequest:
+    """Build a runtime bash command scoped to one workspace case."""
     command = str(arguments.get("command", "") or "").strip()
     case_dir = str(arguments.get("case_dir", "") or "").strip()
     if not command:
         raise ValueError("workspace case bash requires a command")
     _reject_legacy_runtime_paths(command)
     host_case_dir = _validate_workspace_case_bash_case_dir(case_dir)
-    return _apptainer_run_workspace_case_bash(
-        command,
-        case_dir=host_case_dir,
-        image=_managed_image("bash_image"),
-    )
+    return _docker_run_workspace_case_bash(command, case_dir=host_case_dir)
 
 
-APPTAINER_TASK_TIMEOUT = int(os.environ.get("APPTAINER_TASK_TIMEOUT", "3600"))
+RUNTIME_TASK_TIMEOUT = int(os.environ.get("RUNTIME_TASK_TIMEOUT", "3600"))
 
 
-def run_synchronous_apptainer_task(
+def run_synchronous_runtime_task(
     name: str,
-    cmd: list[str],
+    cmd: RuntimeContainerRunRequest,
     *,
     db=None,
     artifact_index_targets: list[RuntimeArtifactIndexTarget] | tuple[RuntimeArtifactIndexTarget, ...] = (),
@@ -349,20 +334,27 @@ def run_synchronous_apptainer_task(
     queue_name: str | None = None,
     task_id: str | None = None,
 ) -> list[ToolTextContent]:
-    """Execute an Apptainer-backed tool command and return text content."""
+    """Execute a runtime-backed tool command and return text content."""
     try:
+        runtime_policy = RuntimeExecutionPolicy(
+            runtime="docker",
+            network_disabled=True,
+            gpu_enabled=cmd.gpu_enabled,
+        )
+        runner_url = (settings.runtime_runner_url or "").strip().rstrip("/")
+        if not runner_url:
+            raise RuntimeError("RUNTIME_RUNNER_URL is required for Docker runtime execution")
         result = execute_runtime_request(
             RuntimeExecutionRequest(
-                argv=cmd,
-                timeout_s=APPTAINER_TASK_TIMEOUT,
-                execution_mode="local-subprocess",
+                argv=[f"docker:{name}"],
+                timeout_s=RUNTIME_TASK_TIMEOUT,
+                execution_mode="host-runtime-runner",
                 queue_name=queue_name,
                 task_id=task_id,
-                require_rootless_apptainer=True,
-                runtime_policy=RuntimeExecutionPolicy(
-                    network_disabled=True,
-                    gpu_enabled="--nv" in cmd or "--nvccli" in cmd,
-                ),
+                runtime_policy=runtime_policy,
+                runtime_runner_url=runner_url or None,
+                runtime_runner_token=(settings.runtime_runner_token or None),
+                container_run=cmd,
                 artifact_index_targets=tuple(artifact_index_targets),
                 workspace_artifact_sync_targets=tuple(workspace_artifact_sync_targets),
             ),
@@ -374,7 +366,7 @@ def run_synchronous_apptainer_task(
             )
         return text_response(f"Successfully executed {name}.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
     except TimeoutError:
-        return error_response(f"{name} timed out after {APPTAINER_TASK_TIMEOUT}s.")
+        return error_response(f"{name} timed out after {RUNTIME_TASK_TIMEOUT}s.")
     except Exception as e:
         return error_response(f"An unexpected error occurred: {str(e)}")
 

@@ -3,7 +3,7 @@
 This module exposes the case-scoped ``python_run`` and ``bash`` tools used by
 the assistant runtime. Both tools resolve the active case through the persisted
 workspace and case context, mount that case read-write at ``/case`` inside the
-managed bash container, and execute with a constrained Apptainer command.
+managed bash container, and execute through the configured container runtime.
 """
 
 from __future__ import annotations
@@ -24,9 +24,8 @@ from api_service.assistant.tools.registration import CASE_ONLY, ScopedToolRegist
 from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.runtime.execution import case_artifact_index_target
 from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT, resolve_case_mount_from_db
-from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget
-from neurocade_runtime_tools.apptainer_command import RuntimeBind, build_apptainer_exec_command
-from neurocade_runtime_tools.containers import missing_container_message, resolve_core_image
+from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest
+from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request
 
 
 class CasePythonRunArgs(BaseModel):
@@ -84,12 +83,8 @@ class AssistantCaseTools:
         self.command_executor = command_executor
 
     def managed_bash_available(self) -> bool:
-        """Return whether the managed bash container image is installed."""
-        try:
-            resolve_core_image("bash_image", root=self.root_dir)
-        except FileNotFoundError:
-            return False
-        return True
+        """Return whether the managed bash container image is configured."""
+        return bool(os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local").strip())
 
     def build_tools(self, state: dict[str, Any]) -> list[ToolDefinition]:
         """Return case container tool definitions for the current assistant state.
@@ -219,21 +214,9 @@ class AssistantCaseTools:
         dispatching the command through the catalog executor.
         """
         try:
-            image = resolve_core_image("bash_image", root=self.root_dir)
-        except FileNotFoundError:
-            return f"Error: {missing_container_message('bash_image')}"
-        runtime_command = build_apptainer_exec_command(
-            runtime_bin=os.environ.get("APPTAINER_BIN", "apptainer"),
-            image=image,
-            command=command,
-            binds=[RuntimeBind(case_dir, CONTAINER_CASE_ROOT, "rw")],
-            cwd=CONTAINER_CASE_ROOT,
-            disable_network=True,
-            no_mounts=("cwd",),
-            cleanenv=True,
-            no_home=True,
-            quiet=True,
-        )
+            runtime_command = self.build_case_runtime_command(case_dir, command)
+        except Exception as exc:
+            return f"Error preparing {tool_name}: {exc}"
         timeout_s = int(os.environ.get("PYTHON_TOOLS_TIMEOUT", os.environ.get("NEURO_CLI_TOOL_TIMEOUT", "300")))
         try:
             completed = self.command_executor.execute_runtime_command(
@@ -254,6 +237,17 @@ class AssistantCaseTools:
         if completed["returncode"] != 0:
             return f"Error: {tool_name} exited with code {completed['returncode']}.\n{rendered}"
         return rendered
+
+    def build_case_runtime_command(self, case_dir: Path, command: list[str]) -> RuntimeContainerRunRequest:
+        """Build a case-scoped Docker runtime request."""
+        binds = [RuntimeBind(case_dir, CONTAINER_CASE_ROOT, "rw")]
+        return build_docker_container_request(
+            image=os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local"),
+            command=command,
+            binds=binds,
+            cwd=CONTAINER_CASE_ROOT,
+            disable_network=True,
+        )
 
     @staticmethod
     def case_relative_path(raw_path: str) -> str:

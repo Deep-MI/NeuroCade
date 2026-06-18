@@ -1,10 +1,10 @@
 """
 Playwright fixtures and helpers for NeuroCade GUI end-to-end tests.
 
-These tests drive a real Chromium browser against the running Apptainer stack.
+These tests drive a real Chromium browser against the running local stack.
 
 Prerequisites:
-    ./scripts/apptainer/up.sh -d
+    ./scripts/compose/up.sh -d
     pip install playwright && playwright install chromium
 
 Usage:

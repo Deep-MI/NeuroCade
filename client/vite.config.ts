@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   cacheDir: '/tmp/vite-cache',
   server: {
-    allowedHosts: ['kronecker.dzne.ds', 'hopper.dzne.de', 'hopper.dzne.ds', 'germain.dzne.de', 'gateway', 'client', 'host.lima.internal'],
+    allowedHosts: ['kronecker.dzne.ds', 'hopper.dzne.de', 'hopper.dzne.ds', 'germain.dzne.de', 'gateway', 'client'],
     proxy: {
       '/api/app': {
         target: 'http://api-service:8000',

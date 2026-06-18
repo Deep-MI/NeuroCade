@@ -20,12 +20,11 @@ from api_service.runtime.tool_dispatcher import RuntimeToolDispatcher, text_resu
 from api_service.runtime_tools import (
     execute_workspace_bash,
     execute_workspace_case_bash,
-    run_synchronous_apptainer_task,
+    run_synchronous_runtime_task,
 )
 from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeExecutionRequest, RuntimeWorkspaceArtifactSyncTarget
 from backend_common.case_storage import case_slug_from_id, case_storage_dir
 from backend_common.settings import ROOT_DIR, get_settings
-from neurocade_runtime_tools.containers import missing_container_message, resolve_core_image
 
 settings = get_settings()
 
@@ -124,7 +123,7 @@ class RuntimeService:
             }
         )
         return text_result(
-            run_synchronous_apptainer_task(
+            run_synchronous_runtime_task(
                 "workspace_bash",
                 cmd,
                 db=db,
@@ -147,7 +146,7 @@ class RuntimeService:
         """Execute a case-scoped shell command in the runtime container."""
         cmd = execute_workspace_case_bash({"command": command, "case_dir": case_dir})
         return text_result(
-            run_synchronous_apptainer_task(
+            run_synchronous_runtime_task(
                 "workspace_case_bash",
                 cmd,
                 db=db,
@@ -159,14 +158,6 @@ class RuntimeService:
 
     async def start_run(self, payload: dict) -> dict[str, Any]:
         """Queue a FastSurfer run from the supplied case configuration."""
-        try:
-            resolve_core_image("fastsurfer", root=ROOT_DIR)
-        except FileNotFoundError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=missing_container_message("fastsurfer"),
-            ) from exc
-
         case_id = str(payload.get("case_id") or "").strip()
         subject_name = str(payload.get("subject_name") or "").strip() or None
         input_path = str(payload.get("input_path") or "").strip() or None

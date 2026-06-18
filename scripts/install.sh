@@ -10,9 +10,6 @@ DEFAULT_INSTALL_DIR="${NEUROCADE_INSTALL_DIR:-$HOME/NeuroCade}"
 DEFAULT_RELEASE_CHANNEL="${NEUROCADE_INSTALL_CHANNEL:-stable}"
 RELEASE_CONTAINER_BASE_URL="https://github.com/Deep-MI/NeuroCade/releases"
 SAMPLE_CASE_ARTIFACT_NAME="${NEUROCADE_SAMPLE_CASE_ARTIFACT_NAME:-neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz}"
-REQUIRED_RUNTIME_ASSET_NAME="${NEUROCADE_REQUIRED_RUNTIME_ASSET_NAME:-bash-image-python-3.12.sif}"
-LOCAL_APPTAINER_DIR_REL=".apptainer/runtime"
-LOCAL_LIMA_DIR_REL=".lima"
 LOCAL_NODE_DIR_REL=".node"
 FREESURFER_LICENSE_URL="https://surfer.nmr.mgh.harvard.edu/registration.html"
 SCRIPT_NAME="$(basename "$0")"
@@ -37,8 +34,8 @@ Options:
   --dev                           Clone the repository default branch for fresh one-line installs.
   --mode local|internal|demo      Deployment profile. If omitted, prompts interactively.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
-  --no-start                      Write configuration but do not start the Apptainer stack.
-  --no-prereqs                    Do not install missing prerequisites such as uv, Node.js, Lima, or Apptainer.
+  --no-start                      Write configuration but do not start the Docker Compose stack.
+  --no-prereqs                    Do not install missing prerequisites such as uv, Node.js, or Docker Compose.
   --desktop                       Prepare the local Electron desktop launcher.
   --no-desktop                    Skip Electron desktop setup.
   --with-freesurfer               Download and install the full licensed FreeSurfer runtime image.
@@ -95,33 +92,12 @@ release_asset_url_available() {
   curl -fsIL "$url" >/dev/null 2>&1
 }
 
-required_release_asset_available_for_tag() {
-  local tag="$1"
-  local filename="${2:-$REQUIRED_RUNTIME_ASSET_NAME}"
-  release_asset_url_available "$(neurocade_release_asset_url_for_tag "$tag" "$filename")"
-}
-
-latest_release_tag_with_required_asset() {
-  local listing_function="$1"
-  local tag url
-  while IFS= read -r tag; do
-    [[ -n "$tag" ]] || continue
-    if required_release_asset_available_for_tag "$tag"; then
-      printf '%s\n' "$tag"
-      return 0
-    fi
-    url="$(neurocade_release_asset_url_for_tag "$tag" "$REQUIRED_RUNTIME_ASSET_NAME")"
-    echo "Skipping NeuroCade release $tag because required runtime asset is unavailable: $url" >&2
-  done < <("$listing_function" || true)
-  return 0
-}
-
 latest_stable_tag() {
-  latest_release_tag_with_required_asset stable_release_tags_desc
+  stable_release_tags_desc | head -n 1
 }
 
 latest_prerelease_tag() {
-  latest_release_tag_with_required_asset prerelease_tags_desc
+  prerelease_tags_desc | head -n 1
 }
 
 selected_release_ref() {
@@ -267,11 +243,8 @@ bootstrap_from_raw_script() {
 bootstrap_from_raw_script "$@"
 
 source "$INSTALL_LIB_DIR/common.sh"
-source "$SCRIPT_DIR/runtime_cache_env.sh"
 source "$INSTALL_LIB_DIR/python.sh"
 source "$INSTALL_LIB_DIR/node.sh"
-source "$INSTALL_LIB_DIR/lima.sh"
-source "$INSTALL_LIB_DIR/apptainer.sh"
 source "$INSTALL_LIB_DIR/env.sh"
 source "$INSTALL_LIB_DIR/doctor.sh"
 
@@ -286,8 +259,6 @@ DESKTOP_MODE=auto
 ASSUME_YES=0
 DRY_RUN=0
 DOCTOR=0
-IMAGE_PREFETCH_PID=""
-IMAGE_PREFETCH_LOG=""
 SAMPLE_CASE_PREFETCH_PID=""
 SAMPLE_CASE_PREFETCH_LOG=""
 
@@ -381,72 +352,27 @@ start_stack() {
     echo "Configuration written. Skipping stack startup because ${START_SKIP_REASON:-stack startup is disabled}."
     return
   fi
-  run_step "Starting NeuroCade stack" bash -lc "cd \"$root\" && ./scripts/apptainer/up.sh -d"
+  run_step "Starting NeuroCade stack" bash -lc "cd \"$root\" && ./scripts/compose/up.sh -d"
 }
 
-start_image_prefetch() {
-  local root="$1"
-  local container_root tool_catalog container_inventory installed_tools
-  container_root="$(env_file_value "$root" NEUROCADE_CONTAINER_ROOT)"
-  tool_catalog="$(env_file_value "$root" TOOL_CATALOG_DIR)"
-  container_inventory="$(env_file_value "$root" NEUROCADE_CONTAINER_INVENTORY)"
-  installed_tools="$(env_file_value "$root" NEUROCADE_INSTALLED_TOOLS_JSONL)"
-  container_root="${container_root:-$root/.apptainer/containers}"
-  tool_catalog="${tool_catalog:-$root/llm-data/tool-catalog}"
-  container_inventory="${container_inventory:-$tool_catalog/installed_containers.json}"
-  installed_tools="${installed_tools:-$tool_catalog/installed_tools.jsonl}"
+ensure_docker_compose() {
+  if ! command -v docker >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+Docker is required for the local NeuroCade install.
 
-  mkdir -p "$root/.runtime/logs"
-  local prefetch_command=("$root/scripts/containers.sh" prefetch core)
-  if [[ "$INSTALL_FREESURFER" -eq 1 ]] && freesurfer_license_available "$root"; then
-    prefetch_command+=(--with-freesurfer)
+Install Docker Desktop on macOS or Docker Engine with the Compose plugin on Linux,
+then rerun the installer.
+EOF
+    return 1
   fi
-  IMAGE_PREFETCH_LOG="$root/.runtime/logs/image-prefetch.log"
-  echo "Starting runtime image prefetch in the background. Log: $IMAGE_PREFETCH_LOG"
-  (
-    cd "$root"
-    export NEUROCADE_CONTAINER_ROOT="$container_root"
-    export TOOL_CATALOG_DIR="$tool_catalog"
-    export NEUROCADE_CONTAINER_INVENTORY="$container_inventory"
-    export NEUROCADE_INSTALLED_TOOLS_JSONL="$installed_tools"
-    "${prefetch_command[@]}"
-  ) >"$IMAGE_PREFETCH_LOG" 2>&1 &
-  IMAGE_PREFETCH_PID="$!"
-}
+  if ! docker compose version >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+Docker Compose is required for the local NeuroCade install.
 
-wait_image_prefetch() {
-  [[ -n "$IMAGE_PREFETCH_PID" ]] || return 0
-  local started_at="$SECONDS"
-  local spinner='|/-\'
-  local spinner_index=0
-  echo "Waiting for runtime image prefetch to finish. Log: $IMAGE_PREFETCH_LOG"
-  while kill -0 "$IMAGE_PREFETCH_PID" 2>/dev/null; do
-    local elapsed=$((SECONDS - started_at))
-    if is_tty; then
-      printf '\rRuntime image prefetch still running %s (%ss). Log: %s' "${spinner:$((spinner_index % ${#spinner})):1}" "$elapsed" "$IMAGE_PREFETCH_LOG"
-      spinner_index=$((spinner_index + 1))
-    elif (( elapsed % 15 == 0 )); then
-      echo "Runtime image prefetch still running (${elapsed}s). Log: $IMAGE_PREFETCH_LOG"
-    fi
-    sleep 1
-  done
-  if is_tty; then
-    printf '\n'
+Install the Docker Compose plugin, then rerun the installer.
+EOF
+    return 1
   fi
-  if wait "$IMAGE_PREFETCH_PID"; then
-    echo "Runtime image prefetch complete."
-  else
-    echo "Runtime image prefetch did not complete; the normal install step will fetch or fall back as needed."
-    echo "Prefetch log: $IMAGE_PREFETCH_LOG"
-  fi
-  IMAGE_PREFETCH_PID=""
-}
-
-cleanup_image_prefetch() {
-  [[ -n "$IMAGE_PREFETCH_PID" ]] || return 0
-  kill "$IMAGE_PREFETCH_PID" 2>/dev/null || true
-  wait "$IMAGE_PREFETCH_PID" 2>/dev/null || true
-  IMAGE_PREFETCH_PID=""
 }
 
 start_sample_case_prefetch() {
@@ -495,11 +421,7 @@ cleanup_sample_case_prefetch() {
   SAMPLE_CASE_PREFETCH_PID=""
 }
 
-cleanup_prefetches() {
-  cleanup_image_prefetch
-  cleanup_sample_case_prefetch
-}
-trap cleanup_prefetches EXIT
+trap cleanup_sample_case_prefetch EXIT
 
 should_setup_desktop() {
   local mode="$1"
@@ -753,8 +675,8 @@ Install log: $root/.runtime/logs/install.log
 Useful commands:
   cd "$root"
   ./scripts/desktop/run.sh
-  ./scripts/apptainer/up.sh -d
-  ./scripts/apptainer/status.sh
+  ./scripts/compose/up.sh -d
+  ./scripts/compose/status.sh
 EOF
 }
 
@@ -812,18 +734,11 @@ main() {
 
   setup_install_logging "$root"
   run_step "Preparing Python runtime" ensure_python_runtime "$root"
-  start_image_prefetch "$root"
   start_sample_case_prefetch "$root"
   run_step "Preparing local Node.js runtime" ensure_node "$root"
-  run_step "Preparing Apptainer runtime" ensure_apptainer "$root"
+  run_step "Checking Docker Compose runtime" ensure_docker_compose
   run_step "Writing configuration" write_env "$root" "$MODE" "$LLM_PROVIDER"
-  run_step "Installing infrastructure images" "$root/scripts/apptainer/images.sh" infra
-  wait_image_prefetch
-  local install_command=("$root/scripts/containers.sh" install core --source auto)
-  if [[ "$INSTALL_FREESURFER" -eq 1 ]]; then
-    install_command+=(--with-freesurfer)
-  fi
-  run_step "Installing core runtime containers" "${install_command[@]}"
+  run_step "Building Docker Compose images" "$root/scripts/compose/images.sh"
   wait_sample_case_prefetch
   if should_setup_desktop "$MODE"; then
     setup_desktop_launcher "$root"

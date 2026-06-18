@@ -1,12 +1,12 @@
 # NeuroCade Tests
 
-Unit, integration, API E2E, and browser E2E tests that validate the full NeuroCade stack: API runtime → Apptainer-backed tools → GUI.
+Unit, integration, API E2E, and browser E2E tests that validate the full NeuroCade stack: API runtime → Docker-backed tools → GUI.
 
 ## Prerequisites
 
-1. **Apptainer stack running** (for API E2E and GUI tests):
+1. **Compose stack running** (for API E2E and GUI tests):
    ```bash
-   ./scripts/apptainer/up.sh -d
+   ./scripts/compose/up.sh -d
    ```
 
 2. **Seed test data present:**
@@ -44,19 +44,10 @@ rg --files tests -g 'test_*.py' | sort
 Current coverage is organized around these areas:
 
 - Backend architecture, settings, auth, security, monitoring, and install policy: `test_app_architecture.py`, `test_security_hardening.py`, `test_monitoring_routes.py`, `test_install_scripts.py`, `test_chat_limits.py`
-- Assistant orchestration, streamed turns, persisted history, file tools, runtime tools, LUT lookup, and host runtime handoff: `test_assistant_runtime.py`, `test_assistant_turn_streaming_routes.py`, `test_assistant_history.py`, `test_assistant_file_tools.py`, `test_runtime_service_tools.py`, `test_lut_lookup.py`, `test_host_runtime_runner.py`
+- Assistant orchestration, streamed turns, persisted history, file tools, runtime tools, LUT lookup, and Docker runtime handoff: `test_assistant_runtime.py`, `test_assistant_turn_streaming_routes.py`, `test_assistant_history.py`, `test_assistant_file_tools.py`, `test_runtime_service_tools.py`, `test_lut_lookup.py`, `test_docker_runtime.py`
 - Workspaces, cases, artifacts, scan indexing, sample seeding, admin reset, and app runtime routes: `test_workspace_routes.py`, `test_workspace_batch.py`, `test_artifact_routes.py`, `test_case_resolver.py`, `test_scan_indexing.py`, `test_bootstrap_seed.py`, `test_admin_reset.py`, `test_app_runtime_routes.py`
-- Demo helper scripts: `test_demo_case_script.py`
-- API E2E tests against the running stack: `test_chat_simple.py`, `test_agent_run_e2e.py`, `test_fastsurfer_run_e2e.py`, `test_mri_info_e2e.py`, `test_synthstrip_e2e.py`, `test_synthseg_e2e.py`
+- API E2E tests against the running stack: `test_chat_simple.py`, `test_agent_run_e2e.py`, `test_fastsurfer_run_e2e.py`, `test_mri_info_e2e.py`
 - Browser E2E tests with Playwright: `test_gui_upload_run.py`, `test_gui_agent_run.py`, `test_gui_focus_label.py`, `test_gui_dicom_upload.py`, `test_gui_mri_header_alignment.py`
-
-Runtime-tools package tests live outside `tests/`:
-
-```bash
-pytest packages/neurocade-runtime-tools/tests -q
-```
-
----
 
 ## Running Tests
 
@@ -67,13 +58,13 @@ pytest tests/test_runtime_service_tools.py tests/test_assistant_file_tools.py te
 pyright
 ```
 
-### Smoke tests (requires Apptainer stack)
+### Smoke tests (requires Compose stack)
 ```bash
 source .venv/bin/activate
 pytest tests/test_chat_simple.py -v
 ```
 
-### API E2E tests (requires Apptainer stack)
+### API E2E tests (requires Compose stack)
 ```bash
 source .venv/bin/activate
 pytest tests/test_agent_run_e2e.py tests/test_fastsurfer_run_e2e.py tests/test_mri_info_e2e.py -v
@@ -101,20 +92,11 @@ pytest tests/ -v
 
 | Variable | Default | Description |
 |---|---|---|
-| `GATEWAY_URL` | `http://localhost:8005` | Traefik gateway URL |
+| `GATEWAY_URL` | `http://localhost:8005` | Local app gateway URL |
 | `API_TOKEN` | `static-token-12345` | Bearer token for API requests |
-| `PROXY_SERVICE` | `api-service` | Apptainer service name for API log capture |
+| `PROXY_SERVICE` | `api-service` | Compose service name for API log capture |
 | `HEADED` | (unset) | Set to `1` or `true` to show the Playwright browser |
 | `FREESURFER_LICENSE` | (unset) | Path to a valid FreeSurfer license file |
-
-## FreeSurfer Commands (synthstrip / synthseg)
-
-The `mri_synthstrip` and `mri_synthseg` commands require an Apptainer image that contains those tools. They are not bundled in the default FastSurfer Apptainer image.
-
-To enable these tests, configure a tool image that contains the commands and restart Apptainer:
-   ```bash
-   ./scripts/apptainer/down.sh && ./scripts/apptainer/up.sh -d
-   ```
 
 ## Screenshots
 
@@ -122,9 +104,9 @@ GUI tests save screenshots to `tests/screenshots/`. These are useful for debuggi
 
 ## Troubleshooting
 
-1. **Tests skip with "Apptainer stack not reachable":**
+1. **Tests skip with "NeuroCade stack not reachable":**
    ```bash
-   ./scripts/apptainer/status.sh   # check services are running
+   ./scripts/compose/status.sh   # check services are running
    curl http://localhost:8005/api/app/healthz  # check gateway
    ```
 
@@ -135,8 +117,5 @@ GUI tests save screenshots to `tests/screenshots/`. These are useful for debuggi
    ```
 
 3. **LLM gives text explanation instead of calling a tool:**
-   - Check API and runtime logs: `./scripts/apptainer/logs.sh api-service`
-   - Restart the stack after code changes: `./scripts/apptainer/down.sh && ./scripts/apptainer/up.sh -d`
-
-4. **synthstrip/synthseg tests skip:**
-   - Configure an Apptainer tool image that contains those commands and restart Apptainer
+   - Check API and runtime logs: `./scripts/compose/logs.sh api-service`
+   - Restart the stack after code changes: `./scripts/compose/down.sh && ./scripts/compose/up.sh -d`

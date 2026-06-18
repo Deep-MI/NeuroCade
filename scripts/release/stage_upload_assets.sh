@@ -11,22 +11,24 @@ ASSET_LIMIT_BYTES="${GITHUB_RELEASE_ASSET_LIMIT_BYTES:-2147483648}"
 SPLIT_SIZE="${RELEASE_SPLIT_SIZE:-1900M}"
 SHA_FILE_NAME="SHA256SUMS.txt"
 REASSEMBLE_FILE_NAME="REASSEMBLE-LARGE-ASSETS.txt"
-REQUIRED_RUNTIME_ASSET_NAME="${NEUROCADE_REQUIRED_RUNTIME_ASSET_NAME:-bash-image-python-3.12.sif}"
+REQUIRED_RELEASE_ASSET_NAME="${NEUROCADE_REQUIRED_RELEASE_ASSET_NAME:-}"
 
 if [[ ! -d "$ARTIFACT_ROOT" ]]; then
   echo "Release artifact directory is missing: $ARTIFACT_ROOT" >&2
   exit 1
 fi
 
-if [[ ! -f "$ARTIFACT_ROOT/$REQUIRED_RUNTIME_ASSET_NAME" ]]; then
-  echo "Required runtime release asset is missing: $ARTIFACT_ROOT/$REQUIRED_RUNTIME_ASSET_NAME" >&2
-  exit 1
-fi
-required_runtime_asset_size="$(wc -c <"$ARTIFACT_ROOT/$REQUIRED_RUNTIME_ASSET_NAME" | tr -d '[:space:]')"
-if (( required_runtime_asset_size >= ASSET_LIMIT_BYTES )); then
-  echo "Required runtime release asset is too large for direct GitHub upload: $ARTIFACT_ROOT/$REQUIRED_RUNTIME_ASSET_NAME" >&2
-  echo "The installer expects this asset at its exact filename, not split into .part-* files." >&2
-  exit 1
+if [[ -n "$REQUIRED_RELEASE_ASSET_NAME" ]]; then
+  if [[ ! -f "$ARTIFACT_ROOT/$REQUIRED_RELEASE_ASSET_NAME" ]]; then
+    echo "Required release asset is missing: $ARTIFACT_ROOT/$REQUIRED_RELEASE_ASSET_NAME" >&2
+    exit 1
+  fi
+  required_release_asset_size="$(wc -c <"$ARTIFACT_ROOT/$REQUIRED_RELEASE_ASSET_NAME" | tr -d '[:space:]')"
+  if (( required_release_asset_size >= ASSET_LIMIT_BYTES )); then
+    echo "Required release asset is too large for direct GitHub upload: $ARTIFACT_ROOT/$REQUIRED_RELEASE_ASSET_NAME" >&2
+    echo "Required assets must be uploaded at their exact filename, not split into .part-* files." >&2
+    exit 1
+  fi
 fi
 
 rm -rf "$UPLOAD_ROOT"

@@ -116,7 +116,7 @@ class AssistantCatalogTools:
         if not records_jsonl.exists():
             return (
                 f"Error: installed tool index not found at {records_jsonl}. "
-                "Run ./scripts/containers.sh refresh-index after installing containers."
+                "Run ./scripts/compose/images.sh or restart the Compose stack."
             )
         try:
             from neurocade_runtime_tools.retrieval import hybrid_rank, load_jsonl_records

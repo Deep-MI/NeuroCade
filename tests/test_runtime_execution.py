@@ -52,66 +52,16 @@ def test_runtime_execution_rejects_uncontained_log_path(tmp_path):
         )
 
 
-def test_runtime_execution_requires_structured_policy_for_apptainer():
-    with pytest.raises(ValueError, match="Structured runtime policy is required"):
-        execute_runtime_request(
-            RuntimeExecutionRequest(
-                argv=["apptainer", "exec", "--net", "--network", "none", "image.sif", "echo"],
-                require_rootless_apptainer=True,
-            )
-        )
-
-
-def test_runtime_execution_rejects_elevated_apptainer_options():
-    with pytest.raises(ValueError, match="Refusing elevated Apptainer options"):
-        execute_runtime_request(
-            RuntimeExecutionRequest(
-                argv=["apptainer", "exec", "--net", "--network", "none", "--fakeroot", "image.sif", "echo"],
-                require_rootless_apptainer=True,
-                runtime_policy=RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False),
-            )
-        )
-
-
-def test_runtime_execution_rejects_network_policy_mismatch():
-    with pytest.raises(ValueError, match="network policy does not match"):
-        execute_runtime_request(
-            RuntimeExecutionRequest(
-                argv=["apptainer", "exec", "image.sif", "echo", "--net", "--network", "none"],
-                require_rootless_apptainer=True,
-                runtime_policy=RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False),
-            )
-        )
-
-
-def test_runtime_execution_rejects_gpu_policy_mismatch():
-    with pytest.raises(ValueError, match="GPU policy does not match"):
-        execute_runtime_request(
-            RuntimeExecutionRequest(
-                argv=["apptainer", "exec", "--net", "--network", "none", "--nv", "image.sif", "echo"],
-                require_rootless_apptainer=True,
-                runtime_policy=RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False),
-            )
-        )
-
-
 def test_dicom_conversion_uses_shared_runtime_execution(monkeypatch, tmp_path):
     input_dir = tmp_path / "dicom-input"
     output_dir = tmp_path / "dicom-output"
     input_dir.mkdir()
     output_dir.mkdir()
-    image_path = tmp_path / "dcm2niix.sif"
-    image_path.write_text("image", encoding="utf-8")
     captured: dict[str, RuntimeExecutionRequest] = {}
 
-    monkeypatch.setattr(
-        uploads_module,
-        "resolve_tool",
-        lambda *_args, **_kwargs: {"image_path": str(image_path)},
-    )
-    monkeypatch.setattr(uploads_module, "ensure_image_exists", lambda _row: None)
-    monkeypatch.setattr(uploads_module, "installed_tools_path", lambda: tmp_path / "installed_tools.jsonl")
     monkeypatch.setattr(uploads_module.settings, "dicom_conversion_timeout_seconds", 17)
+    monkeypatch.setattr(uploads_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
+    monkeypatch.setattr(uploads_module.settings, "runtime_runner_token", "secret")
 
     def fake_execute(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
         captured["request"] = request
@@ -126,10 +76,14 @@ def test_dicom_conversion_uses_shared_runtime_execution(monkeypatch, tmp_path):
     assert request.output_root == output_dir
     assert request.workdir_root == output_dir
     assert request.timeout_s == 17
-    assert request.require_rootless_apptainer is True
     assert request.runtime_policy == RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False)
-    assert "dcm2niix" in request.command
-    assert str(image_path) in request.command
+    assert request.execution_mode == "host-runtime-runner"
+    assert request.runtime_runner_url == "http://runtime-runner:58081"
+    assert request.runtime_runner_token == "secret"
+    assert request.container_run is not None
+    assert request.container_run.command[:2] == ["dcm2niix", "-z"]
+    assert request.container_run.network_disabled is True
+    assert request.container_run.gpu_enabled is False
 
 
 def test_api_runtime_submission_uses_request_queue_metadata():

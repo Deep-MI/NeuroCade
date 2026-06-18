@@ -13,7 +13,7 @@ This test validates the full round-trip:
   7. GUI updates: terminal panel opens, status transitions, case list refreshes
 
 Prerequisites:
-  ./scripts/apptainer/up.sh -d
+  ./scripts/compose/up.sh -d
   pip install playwright && playwright install chromium
   A fixture MRI must exist under NEUROCADE_UPLOAD_FIXTURES_DIR
 

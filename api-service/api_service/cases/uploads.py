@@ -23,10 +23,9 @@ from backend_common.case_storage import (
 )
 from backend_common.db import Artifact, ArtifactKind, Case, Workspace
 from backend_common.scan import classify_volume_metadata
-from neurocade_runtime_tools.apptainer_command import RuntimeBind, build_apptainer_exec_command
-from neurocade_runtime_tools.containers import installed_tools_path, missing_container_message
+from neurocade_runtime_tools.container_specs import CORE_SPECS
+from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request
 from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest
-from neurocade_runtime_tools.runtime_router import ensure_image_exists, resolve_tool
 
 DIRECT_VOLUME_SUFFIXES = (".nii.gz", ".nii", ".mgz")
 DICOM_UPLOAD_SUFFIXES = (".dcm", ".dicom", ".ima")
@@ -311,42 +310,44 @@ def _select_converted_input_volume(volume_paths: list[Path]) -> tuple[Path, str]
 
 def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
     """Convert staged DICOM files with the configured dcm2niix container."""
-    apptainer_bin = os.environ.get("APPTAINER_BIN", "apptainer")
-    try:
-        row = resolve_tool("dcm2niix", records_jsonl=installed_tools_path())
-        ensure_image_exists(row)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=missing_container_message("dcm2niix", stale_index=True),
-        ) from exc
-    cmd = build_apptainer_exec_command(
-        runtime_bin=apptainer_bin,
-        image=row["image_path"],
-        binds=[
-            RuntimeBind(input_dir, "/input", "ro"),
-            RuntimeBind(output_dir, "/output", "rw"),
-        ],
+    command = ["dcm2niix", "-z", "y", "-b", "y", "-ba", "y", "-o", "/output", "-f", "%p_%s", "/input"]
+    binds = [
+        RuntimeBind(input_dir, "/input", "ro"),
+        RuntimeBind(output_dir, "/output", "rw"),
+    ]
+    docker_uri = CORE_SPECS["dcm2niix"].docker_uri
+    if not docker_uri:
+        raise HTTPException(status_code=500, detail="dcm2niix Docker image is not configured")
+    cmd = build_docker_container_request(
+        image=docker_uri,
+        binds=binds,
         disable_network=True,
-        cleanenv=True,
-        no_home=True,
-        command=["dcm2niix", "-z", "y", "-b", "y", "-ba", "y", "-o", "/output", "-f", "%p_%s", "/input"],
+        command=command,
     )
     try:
+        runner_url = (settings.runtime_runner_url or "").strip().rstrip("/")
+        if not runner_url:
+            raise RuntimeError("RUNTIME_RUNNER_URL is required for Docker DICOM conversion")
         result = execute_runtime_request(
             RuntimeExecutionRequest(
-                argv=cmd,
+                argv=["docker:dcm2niix"],
                 cwd=output_dir,
                 timeout_s=settings.dicom_conversion_timeout_seconds,
-                execution_mode="local-subprocess",
+                execution_mode="host-runtime-runner",
                 output_root=output_dir,
                 workdir_root=output_dir,
-                require_rootless_apptainer=True,
-                runtime_policy=RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False),
+                runtime_policy=RuntimeExecutionPolicy(
+                    runtime="docker",
+                    network_disabled=True,
+                    gpu_enabled=False,
+                ),
+                runtime_runner_url=runner_url or None,
+                runtime_runner_token=(settings.runtime_runner_token or None),
+                container_run=cmd,
             )
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail="Apptainer is not installed or not on PATH") from exc
+        raise HTTPException(status_code=500, detail="Docker is not installed or not on PATH") from exc
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail="DICOM conversion timed out") from exc
     if result.returncode != 0:

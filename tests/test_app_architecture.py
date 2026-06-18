@@ -130,22 +130,20 @@ def test_classify_volume_metadata_distinguishes_segmentation_and_intensity():
     assert mask["lut"] == "binary"
 
 
-def test_apptainer_launcher_exposes_clerk_audience_to_backend_services():
-    launcher_text = Path("scripts/apptainer/up.sh").read_text()
-    assert "CLERK_AUDIENCE=${CLERK_AUDIENCE:-}" in launcher_text
-    assert "VITE_CLERK_JWT_TEMPLATE=${VITE_CLERK_JWT_TEMPLATE:-}" in launcher_text
+def test_compose_stack_exposes_clerk_audience_to_backend_services():
+    compose_text = Path("compose.yaml").read_text()
+    assert "CLERK_AUDIENCE" in compose_text
+    assert "VITE_CLERK_JWT_TEMPLATE" in compose_text
 
 
-def test_apptainer_launcher_pins_project_python_version():
-    launcher_text = Path("scripts/apptainer/up.sh").read_text()
-    launcher_lib_text = Path("scripts/apptainer/lib.sh").read_text()
+def test_compose_stack_pins_project_python_version():
+    backend_dockerfile = Path("docker/backend.Dockerfile").read_text()
     installer_text = Path("scripts/install/python.sh").read_text()
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
     assert pyproject["project"]["requires-python"] == ">=3.12,<3.13"
     assert pyproject["tool"]["uv"]["package"] is False
     assert pyproject["tool"]["pyright"]["pythonVersion"] == "3.12"
     assert not Path("pyrightconfig.json").exists()
-    assert "NEUROCADE_PYTHON_VERSION" not in launcher_lib_text
     assert "NEUROCADE_PYTHON_VERSION" not in installer_text
     assert "ensure_uv_state_dir" in installer_text
     assert "XDG_CONFIG_HOME" in installer_text
@@ -153,9 +151,8 @@ def test_apptainer_launcher_pins_project_python_version():
     assert "UV_INSTALL_DIR" in installer_text
     assert "INSTALLER_NO_MODIFY_PATH=1" in installer_text
     assert ".runtime/uv/bin" in installer_text
-    assert "PYTHON_BIN=\"$(python_bin)\"" in launcher_text
-    assert 'uv venv --project "$ROOT_DIR" "$ROOT_DIR/.venv"' in launcher_lib_text
-    assert '-r "$ROOT_DIR/pyproject.toml"' in launcher_text
+    assert "python:3.12-slim" in backend_dockerfile
+    assert "uv pip install" in backend_dockerfile
 
 
 def test_pyproject_is_python_dependency_source_of_truth():
@@ -174,16 +171,16 @@ def test_pyproject_is_python_dependency_source_of_truth():
     }
 
 
-def test_apptainer_launcher_does_not_inject_dead_proxy_url_into_backend_services():
-    launcher_text = Path("scripts/apptainer/up.sh").read_text()
-    assert "LLM_PROXY_URL=" not in launcher_text
+def test_compose_stack_does_not_inject_dead_proxy_url_into_backend_services():
+    compose_text = Path("compose.yaml").read_text()
+    assert "LLM_PROXY_URL" not in compose_text
 
 
-def test_apptainer_launcher_uses_single_data_root_variable():
-    launcher_text = Path("scripts/apptainer/up.sh").read_text()
-    assert "HOST_DATA_DIR=$HOST_DATA_DIR" in launcher_text
-    assert "NEUROCADE_DATA_ROOT" not in launcher_text
-    assert "FASTSURFER_DATA_ROOT" not in launcher_text
+def test_compose_stack_uses_single_data_root_variable():
+    compose_text = Path("compose.yaml").read_text()
+    assert "HOST_DATA_DIR" in compose_text
+    assert "NEUROCADE_DATA_ROOT" not in compose_text
+    assert "FASTSURFER_DATA_ROOT" not in compose_text
 
 
 def test_env_example_documents_clerk_audience():

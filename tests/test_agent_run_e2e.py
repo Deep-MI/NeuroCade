@@ -11,7 +11,7 @@ This test exercises the full backend round-trip without a browser:
   7. Verify job status transitions
 
 Prerequisites:
-  ./scripts/apptainer/up.sh -d
+  ./scripts/compose/up.sh -d
   a demo upload fixture and processed case must be configured
 
 Usage:
@@ -40,7 +40,7 @@ from conftest import (
 
 @pytest.fixture(autouse=True)
 def require_services(services_up):
-    """Skip all tests in this module if Apptainer is not running."""
+    """Skip all tests in this module if local NeuroCade stack is not running."""
     pass
 
 

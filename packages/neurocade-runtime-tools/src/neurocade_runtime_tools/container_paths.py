@@ -1,4 +1,4 @@
-"""Filesystem paths used by NeuroCade runtime container management."""
+"""Filesystem paths used by NeuroCade runtime catalog helpers."""
 
 from __future__ import annotations
 
@@ -6,10 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .container_specs import ContainerSpec
 
-
-DEFAULT_CONTAINER_ROOT = Path(".apptainer/containers")
 DEFAULT_CATALOG_DIR = Path("llm-data/tool-catalog")
 DEFAULT_INVENTORY_JSON = DEFAULT_CATALOG_DIR / "installed_containers.json"
 DEFAULT_INSTALLED_TOOLS_JSONL = DEFAULT_CATALOG_DIR / "installed_tools.jsonl"
@@ -32,12 +29,6 @@ def find_repo_root(start: Path | None = None) -> Path:
         if (candidate / "scripts").is_dir() and (candidate / "packages" / "neurocade-runtime-tools").is_dir():
             return candidate
     return current
-
-
-def container_root(root: Path | None = None) -> Path:
-    """Return the managed container storage directory."""
-    base = os.environ.get("NEUROCADE_CONTAINER_ROOT")
-    return Path(base).expanduser().resolve() if base else (find_repo_root(root) / DEFAULT_CONTAINER_ROOT).resolve()
 
 
 def catalog_dir(root: Path | None = None) -> Path:
@@ -86,16 +77,6 @@ def container_ignored_commands_path(container: dict[str, Any]) -> Path:
 def container_index_meta_path(container: dict[str, Any]) -> Path:
     """Return the per-container index metadata sidecar path."""
     return Path(str(container["image_path"])).parent / CONTAINER_INDEX_META_JSON
-
-
-def apptainer_bin() -> str:
-    """Return the Apptainer executable name or configured override."""
-    return os.environ.get("APPTAINER_BIN", "apptainer")
-
-
-def default_image_path(spec: ContainerSpec, root: Path | None = None) -> Path:
-    """Return the expected image path for a managed container spec."""
-    return container_root(root) / spec.kind / spec.directory_name / spec.image_name
 
 
 def license_path(root: Path | None = None, data_root: Path | str | None = None) -> Path | None:

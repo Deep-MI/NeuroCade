@@ -44,7 +44,6 @@ include = [
   "backend_common",
   "api-service/api_service",
   "packages/neurocade-runtime-tools/src",
-  "packages/neurocade-runtime-tools/tests",
   "tests",
   "scripts",
   "migrations",
