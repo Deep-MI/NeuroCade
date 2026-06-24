@@ -24,7 +24,7 @@ import requests
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8005")
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8000")
 API_TOKEN = os.environ.get("API_TOKEN", "static-token-12345")
 PROXY_SERVICE = os.environ.get("PROXY_SERVICE", "api-service")
 DEFAULT_STORAGE_STATE_PATH = Path(
@@ -194,6 +194,20 @@ ADNI2_GUI_STATE = {
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_job_manager():
+    """Keep the in-process job worker singleton from leaking state across tests."""
+    yield
+    try:
+        from api_service.jobs import job_manager
+
+        job_manager.shutdown(wait=False)
+        with job_manager._lock:
+            job_manager._handles.clear()
+    except Exception:
+        pass
 
 
 @pytest.fixture(scope="session")

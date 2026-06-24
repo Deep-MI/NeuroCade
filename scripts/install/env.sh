@@ -315,11 +315,8 @@ write_env() {
     freesurfer_license_label="FreeSurfer license file path (press Enter to add the license later)"
   fi
   freesurfer_license="$(prompt_config_value "$root" FREESURFER_LICENSE "$freesurfer_license_label" "$freesurfer_license_default")"
-  local redis_password postgres_password llm_api_token runtime_runner_token
-  redis_password="$(env_config_value "$root" REDIS_PASSWORD "$(random_secret)")"
-  postgres_password="$(env_config_value "$root" POSTGRES_PASSWORD "$(random_secret)")"
+  local llm_api_token
   llm_api_token="$(env_config_value "$root" LLM_API_TOKEN "$(random_secret)")"
-  runtime_runner_token="$(env_config_value "$root" RUNTIME_RUNNER_TOKEN "$(random_secret)")"
 
   if [[ -f "$env_path" ]]; then
     local backup="$env_path.backup.$(date +%Y%m%d%H%M%S)"
@@ -348,10 +345,11 @@ write_env() {
     echo
     env_line_configured "$root" UID "$(id -u)"
     env_line_configured "$root" GID "$(id -g)"
-    env_line HOST_DATA_DIR "/data"
+    env_line HOST_DATA_DIR "$host_data_dir"
     env_line_configured "$root" NEUROCADE_HOST_DATA_DIR "$host_data_dir"
     env_line TOOL_CATALOG_DIR "$root/llm-data/tool-catalog"
     env_line NEUROCADE_BASH_IMAGE "neurocade-runtime-bash:local"
+    env_line_configured "$root" NEUROCADE_SIF_DIR "$host_data_dir/sif"
     env_line_configured "$root" NEUROCADE_DOCKER_GPU "false"
     env_line_configured "$root" NEUROCADE_CONTAINER_RELEASE_TAG "${NEUROCADE_CONTAINER_RELEASE_TAG:-latest}"
     env_line NEUROCADE_CONTAINER_INVENTORY "$root/llm-data/tool-catalog/installed_containers.json"
@@ -368,21 +366,10 @@ write_env() {
     env_line APP_HTTP_BIND "$http_bind"
     env_line APP_HTTP_PORT "$http_port"
     echo
-    env_line_configured "$root" POSTGRES_USER "neurocade_user"
-    env_line POSTGRES_PASSWORD "$postgres_password"
-    env_line_configured "$root" POSTGRES_DB "neurocade_db"
-    env_line_configured "$root" POSTGRES_HOST "postgres"
-    env_line_configured "$root" POSTGRES_PORT "5432"
-    env_line_configured "$root" REDIS_HOST "redis"
-    env_line_configured "$root" REDIS_PORT "6379"
-    env_line_configured "$root" API_SERVICE_HOST "api-service"
-    env_line_configured "$root" API_SERVICE_PORT "8000"
-    env_line REDIS_PASSWORD "$redis_password"
-    env_line RUNTIME_RUNNER_TOKEN "$runtime_runner_token"
-    env_line_configured "$root" RUNTIME_RUNNER_URL "http://runtime-runner:58081"
-    env_line_configured "$root" REDIS_URL "redis://:$redis_password@redis:6379/0"
-    env_line_configured "$root" DATABASE_URL "postgresql+psycopg://neurocade_user:$postgres_password@postgres:5432/neurocade_db"
-    env_line_configured "$root" API_SERVICE_URL "http://api-service:8000"
+    # SQLite is the only database; default to a file under the data dir.
+    env_line_configured "$root" DATABASE_URL "sqlite+pysqlite:///$host_data_dir/neurocade.db"
+    # Tool runtime: apptainer (default) or docker (native dev).
+    env_line_configured "$root" NEUROCADE_RUNTIME_BACKEND "apptainer"
     echo
     env_line LOCAL_AUTH_ENABLED "$local_auth"
     env_line_configured "$root" LOCAL_AUTH_USER_ID "local-user"

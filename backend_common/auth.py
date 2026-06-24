@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from hashlib import blake2b
 import json
 import logging
 import threading
@@ -13,7 +12,6 @@ import jwt
 from fastapi import HTTPException
 from jwt import PyJWKClient
 from jwt.exceptions import PyJWTError
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend_common.deployment_policy import get_deployment_policy
@@ -36,33 +34,12 @@ class AuthContext:
     auth_mode: str
 
 
-def _bootstrap_lock_key(user_id: str) -> int:
-    """Return a signed advisory lock key for a user's bootstrap work."""
-    digest = blake2b(user_id.encode("utf-8"), digest_size=8, person=b"authboot").digest()
-    value = int.from_bytes(digest, byteorder="big", signed=False)
-    if value >= 2**63:
-        value -= 2**64
-    return value
-
-
 @contextmanager
-def _local_bootstrap_lock(user_id: str):
-    """Serialize bootstrap work for a user within this process."""
+def _user_bootstrap_lock(_db: Session, user_id: str):
+    """Serialize a user's bootstrap work within this single-process monolith."""
     with _BOOTSTRAP_LOCKS_GUARD:
         lock = _BOOTSTRAP_LOCKS.setdefault(user_id, threading.RLock())
     with lock:
-        yield
-
-
-@contextmanager
-def _user_bootstrap_lock(db: Session, user_id: str):
-    """Serialize user bootstrap work across workers when possible."""
-    bind = db.get_bind()
-    if bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": _bootstrap_lock_key(user_id)})
-        yield
-        return
-    with _local_bootstrap_lock(user_id):
         yield
 
 

@@ -1,168 +1,83 @@
 name: neurocade
 
-x-backend-env: &backend-env
-  DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-local}
-  APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8005}
-  APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:8005}
-  APP_ALLOWED_HOSTS: ${APP_ALLOWED_HOSTS:-localhost,127.0.0.1}
-  HOST_DATA_DIR: /data
-  NEUROCADE_CONFIG_DIR: /app/config
-  REDIS_URL: redis://:${REDIS_PASSWORD:-fastsurfer-dev-redis}@redis:6379/0
-  DATABASE_URL: postgresql+psycopg://neurocade_user:${POSTGRES_PASSWORD:-fastsurfer}@postgres:5432/neurocade_db
-  POSTGRES_USER: neurocade_user
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fastsurfer}
-  POSTGRES_DB: neurocade_db
-  POSTGRES_HOST: postgres
-  POSTGRES_PORT: "5432"
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-fastsurfer-dev-redis}
-  RUNTIME_RUNNER_URL: http://runtime-runner:58081
-  RUNTIME_RUNNER_TOKEN: ${RUNTIME_RUNNER_TOKEN:-dev-runtime-runner-token}
-  NEUROCADE_BASH_IMAGE: ${NEUROCADE_BASH_IMAGE:-neurocade-runtime-bash:local}
-  LOCAL_AUTH_ENABLED: ${LOCAL_AUTH_ENABLED:-true}
-  VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
-  VITE_CLERK_JWT_TEMPLATE: ${VITE_CLERK_JWT_TEMPLATE:-}
-  CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
-  CLERK_JWKS_URL: ${CLERK_JWKS_URL:-}
-  CLERK_ISSUER: ${CLERK_ISSUER:-}
-  CLERK_AUDIENCE: ${CLERK_AUDIENCE:-}
-  FREESURFER_LICENSE: ${FREESURFER_LICENSE:-}
-  FASTSURFER_DEVICE_MODE: ${FASTSURFER_DEVICE_MODE:-auto}
-  NEUROCADE_DOCKER_GPU: ${NEUROCADE_DOCKER_GPU:-false}
-  LLM_API_TOKEN: ${LLM_API_TOKEN:-CHANGE_ME}
-  LLM_PROVIDER_DEFAULT: ${LLM_PROVIDER_DEFAULT:-openai-compatible}
-  WORKFLOW_DEFAULT_PROVIDER: ${WORKFLOW_DEFAULT_PROVIDER:-openai-compatible}
-  LLM_NATIVE_TOOL_CALLING: ${LLM_NATIVE_TOOL_CALLING:-false}
-  LLM_JSON_MODE: ${LLM_JSON_MODE:-true}
-  LLM_BACKEND_URL: ${LLM_BACKEND_URL:-}
-  LLM_BACKEND_API_KEY: ${LLM_BACKEND_API_KEY:-}
-  LLM_BACKEND_MODEL: ${LLM_BACKEND_MODEL:-Qwen/Qwen3.6-35B-A3B}
-  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-  OLLAMA_MODEL: ${OLLAMA_MODEL:-}
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
-  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-  GOOGLE_MODEL: ${GOOGLE_MODEL:-}
-  MONITORING_ADMIN_USER_IDS: ${MONITORING_ADMIN_USER_IDS:-demo-user}
-  DICOM_RAW_RETENTION: ${DICOM_RAW_RETENTION:-discard}
-  DICOM_CONVERSION_TIMEOUT_SECONDS: ${DICOM_CONVERSION_TIMEOUT_SECONDS:-300}
-  MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-2147483648}
-  DICOM_ZIP_MAX_ENTRIES: ${DICOM_ZIP_MAX_ENTRIES:-5000}
-  DICOM_ZIP_MAX_EXPANDED_BYTES: ${DICOM_ZIP_MAX_EXPANDED_BYTES:-4294967296}
-
-x-backend-service: &backend-service
-  build:
-    context: .
-    dockerfile: docker/backend.Dockerfile
-  image: neurocade-backend:local
-  volumes:
-    - ${NEUROCADE_HOST_DATA_DIR:-./neurocade-data}:/data
-    - ./llm-data/tool-catalog:/app/llm-data/tool-catalog
-  extra_hosts:
-    - host.docker.internal:host-gateway
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
+# Single-process monolith (see MONOLITH_REFACTOR_PLAN.md). One `app` service
+# serves the API + built SPA, runs background jobs in-process, and launches
+# tools via Apptainer. Postgres, Redis, Celery, the runtime-runner sidecar and
+# the nginx gateway are all gone.
+#
+# Compose isn't required to run a single container (see scripts/run_container.sh
+# for a plain `docker run`); it is kept as the lifecycle entry point the
+# installer/admin scripts use (detached run, restart policy, logs, status).
+#
+# Apptainer-in-container needs an elevated container (Neurodesk precedent): the
+# service runs `privileged` with /dev/fuse. Prefer the native install for hosts
+# that cannot grant that.
 
 services:
-  gateway:
+  app:
     build:
       context: .
-      dockerfile: docker/gateway.Dockerfile
-      args:
-        VITE_API_URL: /api/app
-        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
-        VITE_CLERK_JWT_TEMPLATE: ${VITE_CLERK_JWT_TEMPLATE:-}
-        VITE_LOCAL_AUTH_ENABLED: ${LOCAL_AUTH_ENABLED:-true}
-    image: neurocade-gateway:local
-    ports:
-      - "${APP_HTTP_BIND:-127.0.0.1}:${APP_HTTP_PORT:-8005}:80"
-    depends_on:
-      api-service:
-        condition: service_healthy
-
-  api-service:
-    <<: *backend-service
+      dockerfile: docker/backend.Dockerfile
+    image: neurocade:local
     environment:
-      <<: *backend-env
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-local}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:8000}
+      APP_ALLOWED_HOSTS: ${APP_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      HOST_DATA_DIR: /data
+      NEUROCADE_CONFIG_DIR: /app/config
+      # Native installs write host SQLite paths to DATABASE_URL. Containers must
+      # use the mounted data path unless an explicit container URL is supplied.
+      DATABASE_URL: ${NEUROCADE_CONTAINER_DATABASE_URL:-sqlite+pysqlite:////data/neurocade.db}
+      NEUROCADE_RUNTIME_BACKEND: ${NEUROCADE_RUNTIME_BACKEND:-apptainer}
+      NEUROCADE_SIF_DIR: /data/sif
+      APPTAINER_CACHEDIR: ${APPTAINER_CACHEDIR:-/data/apptainer-cache}
       TOOL_CATALOG_DIR: /app/llm-data/tool-catalog
       NEUROCADE_CONTAINER_INVENTORY: /app/llm-data/tool-catalog/installed_containers.json
       NEUROCADE_INSTALLED_TOOLS_JSONL: /app/llm-data/tool-catalog/installed_tools.jsonl
-    command: ["sh", "-lc", "python -m neurocade_runtime_tools.docker_catalog && exec python -m uvicorn api_service.main:app --host 0.0.0.0 --port 8000"]
+      LOCAL_AUTH_ENABLED: ${LOCAL_AUTH_ENABLED:-true}
+      VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
+      VITE_CLERK_JWT_TEMPLATE: ${VITE_CLERK_JWT_TEMPLATE:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_JWKS_URL: ${CLERK_JWKS_URL:-}
+      CLERK_ISSUER: ${CLERK_ISSUER:-}
+      CLERK_AUDIENCE: ${CLERK_AUDIENCE:-}
+      FREESURFER_LICENSE: ${FREESURFER_LICENSE:-}
+      FASTSURFER_DEVICE_MODE: ${FASTSURFER_DEVICE_MODE:-auto}
+      LLM_API_TOKEN: ${LLM_API_TOKEN:-CHANGE_ME}
+      LLM_PROVIDER_DEFAULT: ${LLM_PROVIDER_DEFAULT:-openai-compatible}
+      WORKFLOW_DEFAULT_PROVIDER: ${WORKFLOW_DEFAULT_PROVIDER:-openai-compatible}
+      LLM_NATIVE_TOOL_CALLING: ${LLM_NATIVE_TOOL_CALLING:-false}
+      LLM_JSON_MODE: ${LLM_JSON_MODE:-true}
+      LLM_BACKEND_URL: ${LLM_BACKEND_URL:-}
+      LLM_BACKEND_API_KEY: ${LLM_BACKEND_API_KEY:-}
+      LLM_BACKEND_MODEL: ${LLM_BACKEND_MODEL:-Qwen/Qwen3.6-35B-A3B}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-}
+      MONITORING_ADMIN_USER_IDS: ${MONITORING_ADMIN_USER_IDS:-demo-user}
+      DICOM_RAW_RETENTION: ${DICOM_RAW_RETENTION:-discard}
+      DICOM_CONVERSION_TIMEOUT_SECONDS: ${DICOM_CONVERSION_TIMEOUT_SECONDS:-300}
+      MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-2147483648}
+      DICOM_ZIP_MAX_ENTRIES: ${DICOM_ZIP_MAX_ENTRIES:-5000}
+      DICOM_ZIP_MAX_EXPANDED_BYTES: ${DICOM_ZIP_MAX_EXPANDED_BYTES:-4294967296}
+    volumes:
+      - ${NEUROCADE_HOST_DATA_DIR:-./neurocade-data}:/data
+      - ./llm-data/tool-catalog:/app/llm-data/tool-catalog
+    ports:
+      - "${APP_HTTP_BIND:-127.0.0.1}:${APP_HTTP_PORT:-8000}:8000"
+    restart: unless-stopped
+    # Required to run Apptainer inside the container (rootless SIF execution).
+    privileged: true
+    devices:
+      - /dev/fuse
+    extra_hosts:
+      - host.docker.internal:host-gateway
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/app/healthz', timeout=2).read()"]
       interval: 10s
       timeout: 5s
       retries: 30
-
-  api-worker:
-    <<: *backend-service
-    environment:
-      <<: *backend-env
-      TOOL_CATALOG_DIR: /app/llm-data/tool-catalog
-      NEUROCADE_CONTAINER_INVENTORY: /app/llm-data/tool-catalog/installed_containers.json
-      NEUROCADE_INSTALLED_TOOLS_JSONL: /app/llm-data/tool-catalog/installed_tools.jsonl
-    command: ["sh", "-lc", "python -m neurocade_runtime_tools.docker_catalog && exec python -m celery --workdir /app/api-service -A api_service.celery_app worker --loglevel=info --concurrency=${API_WORKER_CONCURRENCY:-2} -Q api,workspace_batch,fastsurfer -n api-worker@%h"]
-
-  runtime-runner:
-    build:
-      context: .
-      dockerfile: docker/backend.Dockerfile
-    image: neurocade-backend:local
-    environment:
-      HOST_DATA_DIR: /data
-      NEUROCADE_HOST_DATA_DIR: ${NEUROCADE_HOST_DATA_DIR:-${PWD}/neurocade-data}
-      RUNTIME_RUNNER_TOKEN: ${RUNTIME_RUNNER_TOKEN:-dev-runtime-runner-token}
-      RUNTIME_RUNNER_ALLOWED_BIND_ROOTS: /data
-    volumes:
-      - ${NEUROCADE_HOST_DATA_DIR:-${PWD}/neurocade-data}:/data
-      - /var/run/docker.sock:/var/run/docker.sock
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    command: ["python", "-m", "uvicorn", "api_service.runtime_runner:app", "--host", "0.0.0.0", "--port", "58081"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:58081/healthz', timeout=2).read()"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-
-  runtime-bash-image:
-    build:
-      context: .
-      dockerfile: docker/runtime-bash.Dockerfile
-    image: neurocade-runtime-bash:local
-    profiles: ["images"]
-    command: ["true"]
-
-  update-checker:
-    <<: *backend-service
-    environment:
-      <<: *backend-env
-      ENV_FILE: /app/.env
-    command: ["python", "/app/scripts/update_checker.py"]
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: neurocade_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fastsurfer}
-      POSTGRES_DB: neurocade_db
-    volumes:
-      - ./.runtime/docker/postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U neurocade_user -d neurocade_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 60
-
-  redis:
-    image: redis:7.2.4-alpine
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-fastsurfer-dev-redis}", "--appendonly", "yes"]
-    volumes:
-      - ./.runtime/docker/redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-fastsurfer-dev-redis}", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 60

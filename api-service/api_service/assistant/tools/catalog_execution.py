@@ -3,8 +3,8 @@
 This module turns assistant ``tool_call`` requests into concrete runtime
 commands from the NeuroCade installed-tool catalog. It resolves the catalog
 record, prepares workspace or case mounts, builds the container command through
-the runtime tools package, and executes it either locally or through the host
-runtime runner service.
+the runtime tools package, and executes it in-process via the selected runtime
+backend (Apptainer or Docker).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT, resolve
 from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope
 from neurocade_runtime_tools.container_specs import CORE_SPECS
-from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request
+from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request
 from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest, RuntimeExecutionPolicy, RuntimeExecutionRequest
 
 
@@ -95,7 +95,7 @@ class AssistantCatalogExecutor:
         try:
             row = self.resolve_tool(parsed.tool, records_jsonl=records_jsonl)
             docker_image = self.docker_image_for_row(row)
-            command = build_docker_container_request(
+            command = build_container_request(
                 image=docker_image,
                 command=[row["container_command"], *parsed.tool_args],
                 binds=binds or [],
@@ -144,24 +144,18 @@ class AssistantCatalogExecutor:
         db=None,
         artifact_index_targets: tuple[RuntimeArtifactIndexTarget, ...] = (),
     ) -> dict[str, Any]:
-        """Execute a prepared Docker runtime command through runtime-runner."""
-        runner_url = (self.settings.runtime_runner_url or "").strip().rstrip("/")
-        if not runner_url:
-            raise RuntimeError("RUNTIME_RUNNER_URL is required for Docker runtime execution")
+        """Execute a prepared container runtime command in-process."""
         result = execute_runtime_request(
             RuntimeExecutionRequest(
-                argv=["docker:catalog-tool"],
+                argv=[],
                 cwd=self.root_dir,
                 timeout_s=timeout_s,
-                execution_mode="host-runtime-runner",
+                execution_mode="container",
                 runtime_policy=RuntimeExecutionPolicy(
-                    runtime="docker",
                     network_disabled=True,
                     gpu_enabled=command.gpu_enabled,
                 ),
                 artifact_index_targets=artifact_index_targets,
-                runtime_runner_url=runner_url or None,
-                runtime_runner_token=(self.settings.runtime_runner_token or None),
                 container_run=command,
             ),
             db=db,

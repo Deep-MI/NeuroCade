@@ -1,23 +1,50 @@
-"""Build structured Docker runtime requests for NeuroCade tools."""
+"""Build structured, backend-agnostic container runtime requests for NeuroCade tools."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from .container_paths import FREESURFER_LICENSE_CONTAINER_PATH, license_path
+from .container_specs import CORE_SPECS
 from .execution import RuntimeBind, RuntimeContainerRunRequest
 
+_GPU_REQUEST_ENV = "NEUROCADE_DOCKER_GPU"
+_TRUTHY = {"1", "true", "yes", "on"}
 
-def docker_image_name(value: str) -> str:
-    """Normalize a Docker image reference from existing NeuroCade specs."""
+
+def container_image_name(value: str) -> str:
+    """Normalize a container image reference from existing NeuroCade specs."""
     image = str(value or "").strip().removeprefix("docker://")
     if not image or image.startswith("-") or any(ch.isspace() for ch in image):
-        raise ValueError("Invalid Docker image reference")
+        raise ValueError("Invalid container image reference")
     return image
 
 
-def _validate_docker_path(value: str, *, label: str) -> str:
+def core_container_image(name: str) -> str:
+    """Resolve the pinned image for a core runtime container.
+
+    Honors a ``NEUROCADE_<NAME>_IMAGE`` override, then the core spec's
+    ``docker_uri``, stripping any ``docker://`` prefix.
+    """
+    override = os.environ.get(f"NEUROCADE_{name.upper()}_IMAGE")
+    if override:
+        return override.removeprefix("docker://")
+    if name == "bash_image":
+        return os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local")
+    spec = CORE_SPECS[name]
+    if not spec.docker_uri:
+        raise ValueError(f"Core container {name} does not define an image")
+    return spec.docker_uri.removeprefix("docker://")
+
+
+def container_gpu_enabled() -> bool:
+    """Return whether container runtime requests should ask for NVIDIA GPUs."""
+    return os.environ.get(_GPU_REQUEST_ENV, "").strip().lower() in _TRUTHY
+
+
+def _validate_container_path(value: str, *, label: str) -> str:
     cleaned = str(value or "").strip()
     if not cleaned.startswith("/"):
         raise ValueError(f"{label} must be absolute")
@@ -38,7 +65,7 @@ def freesurfer_license_bind_env(
     return RuntimeBind(resolved, FREESURFER_LICENSE_CONTAINER_PATH, "ro"), {"FS_LICENSE": FREESURFER_LICENSE_CONTAINER_PATH}
 
 
-def build_docker_container_request(
+def build_container_request(
     *,
     image: str,
     command: Sequence[str],
@@ -48,10 +75,10 @@ def build_docker_container_request(
     disable_network: bool = True,
     gpu: bool = False,
 ) -> RuntimeContainerRunRequest:
-    """Build a structured Docker container execution request.
+    """Build a structured, backend-agnostic container execution request.
 
-    Callers provide structured bind/env/cwd values. Runtime-runner owns Docker
-    socket access, host path remapping, and final Docker command construction.
+    Callers provide structured bind/env/cwd values; the selected runtime backend
+    (``runtime_backends.py``) turns this request into the final ``argv``.
     """
     if not command:
         raise ValueError("Container command cannot be empty")
@@ -59,7 +86,7 @@ def build_docker_container_request(
     for bind in binds:
         if bind.mode not in {"ro", "rw"}:
             raise ValueError(f"Unsupported bind mode: {bind.mode}")
-        container_path = _validate_docker_path(bind.container_path, label="Container bind path")
+        container_path = _validate_container_path(bind.container_path, label="Container bind path")
         normalized_binds.append(
             RuntimeBind(
                 host_path=str(Path(bind.host_path).expanduser().resolve()),
@@ -68,10 +95,10 @@ def build_docker_container_request(
             )
         )
     return RuntimeContainerRunRequest(
-        image=docker_image_name(image),
+        image=container_image_name(image),
         command=[str(part) for part in command],
         binds=tuple(normalized_binds),
-        cwd=_validate_docker_path(cwd, label="Container working directory") if cwd else None,
+        cwd=_validate_container_path(cwd, label="Container working directory") if cwd else None,
         env=dict(env or {}),
         network_disabled=disable_network,
         gpu_enabled=gpu,

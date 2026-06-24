@@ -17,7 +17,7 @@ for arg in "$@"; do
   esac
 done
 
-compose --profile images build runtime-bash-image runtime-runner api-service gateway
+"$ROOT_DIR/scripts/build_image.sh"
 if [[ "$detach" -eq 1 ]]; then
   if [[ "${#args[@]}" -gt 0 ]]; then
     compose up -d "${args[@]}"

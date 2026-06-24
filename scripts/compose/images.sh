@@ -4,4 +4,4 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
-compose --profile images build runtime-bash-image runtime-runner api-service gateway
+"$ROOT_DIR/scripts/build_image.sh"

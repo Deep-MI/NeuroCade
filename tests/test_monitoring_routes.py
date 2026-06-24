@@ -68,18 +68,10 @@ def _patch_monitoring_checks(monkeypatch):
     monkeypatch.setattr(monitoring_module.settings, "monitoring_active_window_minutes", 15)
     monkeypatch.setattr(
         monitoring_module,
-        "_check_redis",
+        "_check_job_worker",
         lambda: (
-            monitoring_module._service_status("Redis", "ok", details={"status": "ok", "connected_clients": 1}),
-            {"status": "ok", "connected_clients": 1},
-        ),
-    )
-    monkeypatch.setattr(
-        monitoring_module,
-        "_check_api_celery",
-        lambda: (
-            monitoring_module._service_status("API worker", "ok", details={"active": 0, "queued": 0, "workers": ["worker-1"]}),
-            {"status": "ok", "active": 0, "queued": 0, "workers": ["worker-1"]},
+            monitoring_module._service_status("Background jobs", "ok", details={"active": 0, "queued": 0, "total": 0}),
+            {"status": "ok", "active": 0, "queued": 0, "total": 0},
         ),
     )
 
@@ -113,7 +105,7 @@ def test_monitoring_summary_counts_recent_session_bootstraps(seeded_monitoring_c
     assert summary.totals["artifacts"] == 1
     assert summary.totals["recently_active_users"] == 1
     assert summary.active_users[0].id == "admin-user"
-    assert summary.celery["fastsurfer_worker"]["total"] == 3
+    assert summary.jobs["fastsurfer_queue"]["total"] == 3
     assert summary.recent_errors[0].message == "failed"
 
 
@@ -137,13 +129,12 @@ def test_monitoring_health_returns_service_status_without_summary_counts(seeded_
     assert health.status == "ok"
     assert [service.name for service in health.services] == [
         "API service",
-        "Postgres",
-        "Redis",
-        "API worker",
+        "Database",
+        "Background jobs",
         "NeuroCade FastSurfer queue",
     ]
-    assert health.redis["status"] == "ok"
-    assert health.celery["fastsurfer_worker"]["total"] == 3
+    assert health.jobs["worker"]["status"] == "ok"
+    assert health.jobs["fastsurfer_queue"]["total"] == 3
     assert not hasattr(health, "totals")
 
 

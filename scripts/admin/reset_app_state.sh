@@ -29,7 +29,7 @@ done
 
 if [[ "$CONFIRMED" -ne 1 ]]; then
   echo "Refusing to run without --yes." >&2
-  echo "This command drops the application schema, flushes Redis, and wipes workspace data under HOST_DATA_DIR." >&2
+  echo "This command wipes the SQLite database and workspace data under HOST_DATA_DIR." >&2
   exit 2
 fi
 
@@ -57,7 +57,7 @@ require_repo_local_path "HOST_DATA_DIR" "$HOST_DATA_DIR"
 
 kill_repo_service_orphans() {
   local pids pid
-  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|api_service.main:app|api_service.runtime_runner:app|api_service.celery_app" || true)"
+  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|api_service.main:app" || true)"
   [[ -n "$pids" ]] || return 0
   for pid in $pids; do
     [[ "$pid" != "$$" ]] || continue
@@ -76,8 +76,8 @@ echo "Stopping Docker Compose services..."
 kill_repo_service_orphans
 
 echo "Removing local runtime state..."
-rm -rf "$RUNTIME_DIR/postgres" "$RUNTIME_DIR/redis" "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
-mkdir -p "$RUNTIME_DIR/postgres" "$RUNTIME_DIR/redis" "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
+rm -rf "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
+mkdir -p "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 
 echo "Wiping $HOST_DATA_DIR contents except license.txt..."
 find "$HOST_DATA_DIR" -mindepth 1 -maxdepth 1 ! -name 'license.txt' -exec rm -rf {} +

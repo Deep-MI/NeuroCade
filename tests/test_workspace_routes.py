@@ -1536,9 +1536,9 @@ def test_workspace_batch_routes_return_and_cancel_batch_run(seeded_context, monk
     listed = get_workspace_batch_runs(workspace.id, db=db_session, context=context)
     detail = get_workspace_batch_run(workspace.id, summary.run_id, db=db_session, context=context)
 
-    from api_service import celery_app as api_celery_module  # noqa: E402
+    from api_service.jobs import job_manager
 
-    monkeypatch.setattr(api_celery_module.celery_app.control, "revoke", lambda *args, **kwargs: None)
+    monkeypatch.setattr(job_manager, "cancel", lambda task_id: True)
     canceled = cancel_batch_run(workspace.id, summary.run_id, db=db_session, context=context)
 
     assert listed[0].run_id == summary.run_id

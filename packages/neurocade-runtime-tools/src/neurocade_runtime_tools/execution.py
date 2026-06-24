@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-import json
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 import logging
+import os
 from pathlib import Path
+import signal
 import subprocess
-from typing import Mapping, Sequence
-import urllib.error
-import urllib.request
+from typing import Callable, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 300
+TERMINATION_GRACE_SECONDS = 5.0
+
+# Optional observer invoked with the live ``Popen`` of a running runtime
+# subprocess. The in-process JobWorker sets this in its worker threads so it can
+# terminate the process group on cancellation (see ``api_service.jobs``).
+process_observer: ContextVar[Callable[[subprocess.Popen], None] | None] = ContextVar(
+    "runtime_process_observer", default=None
+)
 
 
 @dataclass(slots=True)
 class RuntimeExecutionPolicy:
     """Structured execution policy expected for a runtime command."""
 
-    runtime: str = "docker"
     network_disabled: bool = True
     gpu_enabled: bool = False
 
@@ -32,9 +39,6 @@ class RuntimeBind:
     host_path: Path | str
     container_path: str
     mode: str = "ro"
-
-
-RuntimeContainerBind = RuntimeBind
 
 
 @dataclass(slots=True)
@@ -97,7 +101,7 @@ class RuntimeExecutionRequest:
     argv: Sequence[str]
     cwd: Path | str | None = None
     env: Mapping[str, str] | None = None
-    timeout_s: int | None = DEFAULT_TIMEOUT_SECONDS
+    timeout_s: float | None = DEFAULT_TIMEOUT_SECONDS
     execution_mode: str = "local-subprocess"
     synchronous: bool = True
     queue_name: str | None = None
@@ -117,8 +121,6 @@ class RuntimeExecutionRequest:
     artifact_index_targets: Sequence[RuntimeArtifactIndexTarget] = field(default_factory=tuple)
     case_log_artifact_targets: Sequence[RuntimeCaseLogArtifactTarget] = field(default_factory=tuple)
     workspace_artifact_sync_targets: Sequence[RuntimeWorkspaceArtifactSyncTarget] = field(default_factory=tuple)
-    runtime_runner_url: str | None = None
-    runtime_runner_token: str | None = None
     container_run: RuntimeContainerRunRequest | None = None
 
     @property
@@ -221,61 +223,28 @@ def _log_request(request: RuntimeExecutionRequest) -> None:
 
 
 def execute_runtime_request(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
-    """Execute a runtime request through the requested execution backend."""
-    if request.execution_mode == "host-runtime-runner" or request.runtime_runner_url:
-        return execute_runtime_request_via_host_runner(request)
+    """Execute a runtime request as a local subprocess.
+
+    Structured container requests (``request.container_run``) are turned into a
+    concrete ``argv`` by the selected in-process runtime backend (Apptainer or
+    Docker) and then run like any other local command. Plain ``argv`` requests
+    run directly.
+    """
+    if request.container_run is not None:
+        from .runtime_backends import build_container_argv
+
+        request.argv = build_container_argv(request.container_run)
+        request.container_run = None
     return execute_local_runtime_request(request)
 
 
-def execute_runtime_request_via_host_runner(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
-    """Delegate a runtime command to a configured host runner service."""
-    runner_url = (request.runtime_runner_url or "").strip().rstrip("/")
-    if not runner_url:
-        raise RuntimeError("host runner URL is required for host-runtime-runner execution")
-    token = (request.runtime_runner_token or "").strip()
-    if not token:
-        raise RuntimeError("RUNTIME_RUNNER_TOKEN is required when RUNTIME_RUNNER_URL is configured")
-    timeout_s = request.timeout_s if request.timeout_s is not None else DEFAULT_TIMEOUT_SECONDS
-    payload = json.dumps(
-        {
-            "command": request.command,
-            "container_run": runtime_container_run_payload(request.container_run),
-            "cwd": str(request.cwd) if request.cwd is not None else None,
-            "timeout_s": timeout_s,
-            "runtime_policy": asdict(request.runtime_policy) if request.runtime_policy is not None else None,
-        }
-    ).encode("utf-8")
-    http_request = urllib.request.Request(
-        f"{runner_url}/run",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        method="POST",
-    )
-    _log_request(request)
-    try:
-        with urllib.request.urlopen(http_request, timeout=timeout_s + 5) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"host runtime runner returned HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"host runtime runner is unavailable at {runner_url}: {exc}") from exc
-
-    payload_result = json.loads(body)
-    return RuntimeExecutionResult(
-        request=request,
-        returncode=int(payload_result.get("returncode", 1)),
-        stdout=str(payload_result.get("stdout") or ""),
-        stderr=str(payload_result.get("stderr") or ""),
-        logs=list(request.log_lines),
-        execution_backend="host-runtime-runner",
-    )
-
-
 def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
-    """Execute a runtime request in a local subprocess."""
-    if request.container_run is not None:
-        raise RuntimeError("Structured container execution requires a configured runtime runner")
+    """Execute a runtime request in a local subprocess.
+
+    Uses ``Popen`` with a dedicated process group so the in-process JobWorker can
+    terminate a long-running tool (and its children) on cancellation. The current
+    :data:`process_observer`, if set, is notified with the live process handle.
+    """
     command = request.command
     if not command:
         raise ValueError("Runtime execution command cannot be empty")
@@ -304,19 +273,23 @@ def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeEx
             stderr_handle = stderr_path.open("w", encoding="utf-8")
             stderr_target = stderr_handle
 
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=dict(request.env) if request.env is not None else None,
+            text=True,
+            stdout=stdout_target,
+            stderr=stderr_target,
+            stdin=subprocess.DEVNULL if request.stdin_devnull else None,
+            start_new_session=True,
+        )
+        observer = process_observer.get()
+        if observer is not None:
+            observer(process)
         try:
-            completed = subprocess.run(
-                command,
-                cwd=cwd,
-                env=dict(request.env) if request.env is not None else None,
-                text=True,
-                stdout=stdout_target,
-                stderr=stderr_target,
-                stdin=subprocess.DEVNULL if request.stdin_devnull else None,
-                timeout=request.timeout_s,
-                check=request.check,
-            )
+            stdout_text, stderr_text = process.communicate(timeout=request.timeout_s)
         except subprocess.TimeoutExpired as exc:
+            _terminate_process_group(process)
             raise TimeoutError(f"Runtime command timed out after {request.timeout_s}s") from exc
     finally:
         if stdout_handle is not None:
@@ -324,11 +297,43 @@ def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeEx
         if stderr_handle is not None:
             stderr_handle.close()
 
+    returncode = process.returncode
+    if request.check and returncode != 0:
+        raise subprocess.CalledProcessError(returncode, command, stdout_text, stderr_text)
     return RuntimeExecutionResult(
         request=request,
-        returncode=completed.returncode,
-        stdout=completed.stdout or "",
-        stderr=completed.stderr or "",
+        returncode=returncode,
+        stdout=stdout_text or "",
+        stderr=stderr_text or "",
         logs=list(request.log_lines),
         execution_backend=request.execution_mode,
     )
+
+
+def _kill_process_group(process: subprocess.Popen, sig: signal.Signals) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        if sig == signal.SIGTERM:
+            process.terminate()
+        else:
+            process.kill()
+
+
+def _terminate_process_group(process: subprocess.Popen, *, grace_s: float | None = None) -> None:
+    """Terminate a process group, escalating to SIGKILL if TERM is ignored."""
+    grace_s = TERMINATION_GRACE_SECONDS if grace_s is None else grace_s
+    if process.poll() is not None:
+        return
+    _kill_process_group(process, signal.SIGTERM)
+    try:
+        process.wait(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        logger.warning("runtime_execution.terminate_escalated pid=%s grace_s=%s", process.pid, grace_s)
+
+    _kill_process_group(process, signal.SIGKILL)
+    try:
+        process.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        logger.error("runtime_execution.kill_timeout pid=%s grace_s=%s", process.pid, grace_s)

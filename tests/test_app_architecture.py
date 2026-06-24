@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api-service"))
 
 from backend_common import providers as provider_module
 from backend_common.providers import ProviderRole, provider_registry
@@ -88,9 +89,11 @@ def test_no_llm_provider_does_not_build_chat_model(monkeypatch):
         registry.build_chat_model(ProviderRole.chat)
 
 
-def test_settings_construct_sqlalchemy_url():
-    settings = get_settings()
-    assert settings.sqlalchemy_database_url.startswith("postgresql+psycopg://")
+def test_settings_default_to_sqlite(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    settings = _settings_without_env_file()
+    assert settings.sqlalchemy_database_url.startswith("sqlite+pysqlite:///")
+    assert settings.sqlalchemy_database_url.endswith("neurocade.db")
 
 
 def test_assistant_max_rounds_default_is_shared_limit():
@@ -134,6 +137,14 @@ def test_compose_stack_exposes_clerk_audience_to_backend_services():
     compose_text = Path("compose.yaml").read_text()
     assert "CLERK_AUDIENCE" in compose_text
     assert "VITE_CLERK_JWT_TEMPLATE" in compose_text
+
+
+def test_compose_stack_uses_container_database_url():
+    compose_text = Path("compose.yaml").read_text()
+
+    assert "NEUROCADE_CONTAINER_DATABASE_URL" in compose_text
+    assert "DATABASE_URL: ${DATABASE_URL" not in compose_text
+    assert "sqlite+pysqlite:////data/neurocade.db" in compose_text
 
 
 def test_compose_stack_pins_project_python_version():
@@ -194,3 +205,27 @@ def test_env_example_documents_monitoring_admin_allowlist():
     assert "ASSISTANT_MAX_ROUNDS=18" in env_example
     assert "MONITORING_ADMIN_USER_IDS=" in env_example
     assert "MONITORING_ACTIVE_WINDOW_MINUTES=" in env_example
+
+
+def test_spa_mount_serves_vite_public_files(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import backend_common.settings as settings_module
+    from api_service.main import _mount_client
+
+    dist_dir = tmp_path / "client" / "dist"
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+    (dist_dir / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+    monkeypatch.setattr(settings_module, "ROOT_DIR", tmp_path)
+
+    application = FastAPI()
+    _mount_client(application)
+    client = TestClient(application)
+
+    public_response = client.get("/favicon.svg?v=4")
+    assert public_response.status_code == 200
+    assert public_response.text == "<svg></svg>"
+    assert client.get("/workspace/demo").text == "<html>spa</html>"

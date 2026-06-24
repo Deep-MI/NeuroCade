@@ -5,7 +5,6 @@ from __future__ import annotations
 from uuid import uuid4
 
 from sqlalchemy import text
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -33,16 +32,9 @@ def insert_artifact_if_missing(db: Session, values: dict, *, case_scoped: bool) 
             Artifact.relative_path == artifact_values.get("relative_path"),
         )
 
-    dialect_name = db.get_bind().dialect.name
-    insert_factory = None
-    if dialect_name == "postgresql":
-        insert_factory = postgresql_insert
-    elif dialect_name == "sqlite":
-        insert_factory = sqlite_insert
-
-    if insert_factory is not None:
+    if db.get_bind().dialect.name == "sqlite":
         statement = (
-            insert_factory(Artifact)
+            sqlite_insert(Artifact)
             .values(**artifact_values)
             .on_conflict_do_nothing(index_elements=conflict_columns, index_where=conflict_where)
         )
@@ -51,6 +43,7 @@ def insert_artifact_if_missing(db: Session, values: dict, *, case_scoped: bool) 
             return db.get(Artifact, artifact_values["id"])
         return db.query(Artifact).filter(*lookup_filters).order_by(Artifact.created_at.desc()).first()
 
+    # Fallback for any non-SQLite engine (e.g. tests with a different dialect).
     artifact = db.query(Artifact).filter(*lookup_filters).order_by(Artifact.created_at.desc()).first()
     if artifact is not None:
         return artifact

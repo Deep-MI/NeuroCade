@@ -156,9 +156,9 @@ def process_workspace_batch_case(run_id: str, case_id: str, *, task_id: str, is_
                     if pending_run.case_id == case_id or pending_run.status in TERMINAL_CASE_RUN_STATUSES:
                         continue
                     if pending_run.external_task_id:
-                        from api_service.celery_app import celery_app
+                        from api_service.jobs import job_manager
 
-                        celery_app.control.revoke(pending_run.external_task_id, terminate=True)
+                        job_manager.cancel(pending_run.external_task_id)
                     pending_run.status = RunStatus.canceled
                     pending_run.error_message = "Canceled after the probe case failed."
 

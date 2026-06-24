@@ -251,8 +251,7 @@ export interface MonitoringSummary {
   totals: Record<string, number>;
   active_users: MonitoringUserSummary[];
   services: MonitoringStatusItem[];
-  redis: Record<string, unknown>;
-  celery: Record<string, unknown>;
+  jobs: Record<string, unknown>;
   recent_errors: MonitoringEventSummary[];
   recent_activity: MonitoringAuditEventSummary[];
 }

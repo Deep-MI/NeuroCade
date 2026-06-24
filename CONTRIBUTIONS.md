@@ -122,8 +122,8 @@ Before tagging or publishing a release:
   for the deployment profile.
 - Run frontend lint/build and focused backend/runtime tests.
 - Run the full Python test suite when release time allows.
-- Confirm Docker Compose config renders and the runtime runner is token-protected.
-- Confirm runtime commands use no-network Docker execution unless GPU/runtime settings explicitly require otherwise.
+- Confirm `docker compose config` renders and the image builds.
+- Confirm runtime commands run rootless (no `--fakeroot`/`--writable`) unless GPU/runtime settings explicitly require otherwise.
 - Confirm artifact download routes require authorization.
 - Build Docker images and refresh the installed-tool index.
 
@@ -157,8 +157,8 @@ Install/update flow:
 
 Useful logs:
 
-- `./scripts/compose/logs.sh -f`
-- Docker Compose service logs for `api-service`, `api-worker`, and `gateway`
+- `./scripts/compose/logs.sh -f` (or `docker logs -f neurocade`)
+- App container logs for the single `app` service
 
 Backups should include Postgres, `.env`, `.runtime`, and `neurocade-data`.
 

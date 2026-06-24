@@ -275,8 +275,7 @@ class MonitoringSummary(BaseModel):
     totals: dict[str, int]
     active_users: list[MonitoringUserSummary]
     services: list[MonitoringStatusItem]
-    redis: dict[str, Any]
-    celery: dict[str, Any]
+    jobs: dict[str, Any]
     recent_errors: list[MonitoringEventSummary]
     recent_activity: list[MonitoringAuditEventSummary]
 
@@ -285,8 +284,7 @@ class MonitoringHealth(BaseModel):
     generated_at: datetime
     status: Literal["ok", "degraded", "down"]
     services: list[MonitoringStatusItem]
-    redis: dict[str, Any]
-    celery: dict[str, Any]
+    jobs: dict[str, Any]
 
 
 class MonitoringEventsResponse(BaseModel):

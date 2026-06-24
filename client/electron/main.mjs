@@ -8,8 +8,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..');
 const envPath = path.join(repoRoot, '.env');
-const composeUpScript = path.join(repoRoot, 'scripts', 'compose', 'up.sh');
-const composeDownScript = path.join(repoRoot, 'scripts', 'compose', 'down.sh');
+const backendScript = path.join(repoRoot, 'scripts', 'desktop', 'run_backend.sh');
 const appIconPath = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 const electronRuntimeDir = path.join(repoRoot, '.runtime', 'electron');
 const healthPollMs = 1500;
@@ -47,6 +46,7 @@ let mainWindow = null;
 let startedStack = false;
 let quitting = false;
 let stopping = false;
+let backendChild = null;
 
 function setLocalAppPath(name, target) {
   mkdirSync(target, { recursive: true });
@@ -192,16 +192,6 @@ function healthUrlFor(appBaseUrl) {
   return new URL('/api/app/healthz', appBaseUrl).toString();
 }
 
-function apiServiceHealthUrlFor(env) {
-  const apiServiceUrl = env.API_SERVICE_URL;
-  if (!apiServiceUrl) return null;
-  try {
-    return new URL('/api/app/healthz', apiServiceUrl).toString();
-  } catch {
-    return null;
-  }
-}
-
 async function isHealthy(healthUrl) {
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2500) });
@@ -211,50 +201,23 @@ async function isHealthy(healthUrl) {
   }
 }
 
-function spawnLogged(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: repoRoot,
-      env: process.env,
-      shell: false,
-      ...options,
-    });
-    child.stdout?.on('data', (chunk) => appendLog(chunk.toString()));
-    child.stderr?.on('data', (chunk) => appendLog(chunk.toString()));
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`));
-      }
-    });
-  });
-}
-
-async function waitForGatewayHealth(gatewayHealthUrl, apiServiceHealthUrl) {
-  const finishTiming = timingLogger('Electron gateway health wait');
+async function waitForBackendHealth(healthUrl) {
+  const finishTiming = timingLogger('Electron backend health wait');
   const deadline = Date.now() + healthTimeoutMs;
-  let apiServiceWasHealthy = false;
   while (Date.now() < deadline) {
-    if (await isHealthy(gatewayHealthUrl)) {
+    if (await isHealthy(healthUrl)) {
       finishTiming();
       return;
     }
-    if (apiServiceHealthUrl && await isHealthy(apiServiceHealthUrl)) {
-      apiServiceWasHealthy = true;
+    if (backendChild && backendChild.exitCode !== null) {
+      throw new Error(`${appDisplayName} backend exited (code ${backendChild.exitCode}) before becoming healthy.`);
     }
     await sleep(healthPollMs);
   }
-  if (apiServiceWasHealthy) {
-    throw new Error(
-      `${appDisplayName} API is healthy at ${apiServiceHealthUrl}, but the app gateway is not responding at ${gatewayHealthUrl}. Check Docker Compose gateway logs and APP_BASE_URL.`,
-    );
-  }
-  throw new Error(`Timed out waiting for ${gatewayHealthUrl}`);
+  throw new Error(`Timed out waiting for ${healthUrl}`);
 }
 
-async function startBackendIfNeeded(healthUrl, apiServiceHealthUrl) {
+async function startBackendIfNeeded(healthUrl) {
   const finishInitialHealthTiming = timingLogger('Electron initial health check');
   appendLog(`Checking ${healthUrl}`);
   if (await isHealthy(healthUrl)) {
@@ -263,25 +226,40 @@ async function startBackendIfNeeded(healthUrl, apiServiceHealthUrl) {
     return false;
   }
   finishInitialHealthTiming();
-  appendLog('Starting local Docker Compose stack.');
+  appendLog('Starting local NeuroCade backend.');
   startedStack = true;
-  const finishUpTiming = timingLogger('scripts/compose/up.sh -d');
-  await spawnLogged(composeUpScript, ['-d']);
-  finishUpTiming();
-  appendLog(`Waiting for ${appDisplayName} gateway.`);
-  await waitForGatewayHealth(healthUrl, apiServiceHealthUrl);
-  appendLog(`${appDisplayName} gateway is ready.`);
+  // Spawn the monolith as a long-running child (own process group so we can
+  // terminate it and any tool subprocesses on quit).
+  backendChild = spawn('bash', [backendScript], {
+    cwd: repoRoot,
+    env: process.env,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  backendChild.stdout?.on('data', (chunk) => appendLog(chunk.toString()));
+  backendChild.stderr?.on('data', (chunk) => appendLog(chunk.toString()));
+  backendChild.on('exit', (code) => appendLog(`Backend process exited with code ${code}.`));
+  appendLog(`Waiting for ${appDisplayName} backend.`);
+  await waitForBackendHealth(healthUrl);
+  appendLog(`${appDisplayName} backend is ready.`);
   return true;
 }
 
 async function stopBackendIfOwned() {
   if (!startedStack || stopping) return;
   stopping = true;
-  appendLog('Stopping local Docker Compose stack.');
+  appendLog('Stopping local NeuroCade backend.');
   try {
-    await spawnLogged(composeDownScript, []);
+    if (backendChild && backendChild.pid && backendChild.exitCode === null) {
+      // Kill the whole process group (negative pid) so tool subprocesses stop too.
+      try {
+        process.kill(-backendChild.pid, 'SIGTERM');
+      } catch {
+        backendChild.kill('SIGTERM');
+      }
+    }
   } catch (error) {
-    appendLog(`Failed to stop Docker Compose stack: ${error.message}`);
+    appendLog(`Failed to stop backend: ${error.message}`);
   }
 }
 
@@ -322,11 +300,10 @@ async function boot() {
   const finishBackendReadyTiming = timingLogger('Electron backend-ready total');
   createWindow();
   const env = await readEnvFile();
-  const appBaseUrl = env.APP_BASE_URL || 'http://localhost:8005';
+  const appBaseUrl = env.APP_BASE_URL || 'http://localhost:8000';
   const healthUrl = healthUrlFor(appBaseUrl);
-  const apiServiceHealthUrl = apiServiceHealthUrlFor(env);
   try {
-    await startBackendIfNeeded(healthUrl, apiServiceHealthUrl);
+    await startBackendIfNeeded(healthUrl);
     finishBackendReadyTiming();
     await mainWindow?.loadURL(appBaseUrl);
   } catch (error) {
@@ -335,7 +312,7 @@ async function boot() {
       type: 'error',
       title: `${appDisplayName} could not start`,
       message: `The local ${appDisplayName} backend did not start.`,
-      detail: `${error.message}\n\nCheck Docker Compose and the service logs, then try ./scripts/desktop/run.sh from the repo root.`,
+      detail: `${error.message}\n\nRun ./scripts/desktop/run_backend.sh from the repo root to see backend logs.`,
     });
   }
 }

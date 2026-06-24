@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -23,8 +22,7 @@ from backend_common.case_storage import (
 )
 from backend_common.db import Artifact, ArtifactKind, Case, Workspace
 from backend_common.scan import classify_volume_metadata
-from neurocade_runtime_tools.container_specs import CORE_SPECS
-from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request
+from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request, core_container_image
 from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest
 
 DIRECT_VOLUME_SUFFIXES = (".nii.gz", ".nii", ".mgz")
@@ -315,34 +313,29 @@ def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
         RuntimeBind(input_dir, "/input", "ro"),
         RuntimeBind(output_dir, "/output", "rw"),
     ]
-    docker_uri = CORE_SPECS["dcm2niix"].docker_uri
-    if not docker_uri:
-        raise HTTPException(status_code=500, detail="dcm2niix Docker image is not configured")
-    cmd = build_docker_container_request(
-        image=docker_uri,
+    try:
+        image = core_container_image("dcm2niix")
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="dcm2niix container image is not configured") from exc
+    cmd = build_container_request(
+        image=image,
         binds=binds,
         disable_network=True,
         command=command,
     )
     try:
-        runner_url = (settings.runtime_runner_url or "").strip().rstrip("/")
-        if not runner_url:
-            raise RuntimeError("RUNTIME_RUNNER_URL is required for Docker DICOM conversion")
         result = execute_runtime_request(
             RuntimeExecutionRequest(
-                argv=["docker:dcm2niix"],
+                argv=[],
                 cwd=output_dir,
                 timeout_s=settings.dicom_conversion_timeout_seconds,
-                execution_mode="host-runtime-runner",
+                execution_mode="container",
                 output_root=output_dir,
                 workdir_root=output_dir,
                 runtime_policy=RuntimeExecutionPolicy(
-                    runtime="docker",
                     network_disabled=True,
                     gpu_enabled=False,
                 ),
-                runtime_runner_url=runner_url or None,
-                runtime_runner_token=(settings.runtime_runner_token or None),
                 container_run=cmd,
             )
         )

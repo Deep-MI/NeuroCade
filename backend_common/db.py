@@ -5,14 +5,77 @@ from datetime import datetime
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, func, text
+from sqlalchemy import JSON, Boolean, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event, func, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from backend_common.settings import get_settings
 
 
 settings = get_settings()
-engine = create_engine(settings.sqlalchemy_database_url, future=True)
+
+
+def _build_engine(url: str) -> Engine:
+    """Create the SQLAlchemy engine, tuned for SQLite/WAL single-node use.
+
+    The API request threads and the in-process JobWorker write concurrently, so
+    SQLite runs in WAL mode (concurrent readers + one serialized writer) with a
+    busy timeout to ride out brief write contention. ``check_same_thread=False``
+    lets a connection move between the worker and request threads.
+    """
+    if url.startswith("sqlite"):
+        return create_engine(
+            url,
+            future=True,
+            connect_args={"check_same_thread": False},
+        )
+    return create_engine(url, future=True)
+
+
+engine = _build_engine(settings.sqlalchemy_database_url)
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite_connection(dbapi_connection, _connection_record):  # noqa: ANN001
+    """Apply WAL/safety pragmas and hand transaction control to SQLAlchemy.
+
+    Setting ``isolation_level = None`` disables pysqlite's implicit ``BEGIN``
+    so we can emit ``BEGIN IMMEDIATE`` ourselves (see ``_sqlite_begin_immediate``).
+    Without that, pysqlite opens deferred transactions that take a read lock on
+    the first SELECT and try to upgrade to a write lock on the first write; two
+    such transactions racing the same rows deadlock and SQLite returns
+    ``SQLITE_BUSY`` immediately (the busy timeout does not cover lock upgrades).
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    dbapi_connection.isolation_level = None
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # Generous so a writer waits out another writer's short bookkeeping phase
+        # instead of failing; long tool/container runs never hold a transaction.
+        cursor.execute("PRAGMA busy_timeout=15000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
+@event.listens_for(engine, "begin")
+def _sqlite_begin_immediate(conn):  # noqa: ANN001
+    """Start every SQLite transaction with ``BEGIN IMMEDIATE``.
+
+    Acquiring the write lock up front serializes write transactions cleanly
+    (a second writer waits out the busy timeout instead of deadlocking), which
+    restores the read-modify-write safety the Postgres ``SELECT ... FOR UPDATE``
+    row locks used to provide now that everything shares one SQLite file. WAL
+    still allows external/out-of-engine readers to proceed concurrently.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 

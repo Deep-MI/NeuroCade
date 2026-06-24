@@ -31,7 +31,7 @@ from backend_common.db import AssistantMessage, Base, Case, RoleEnum, User, Work
 from backend_common import providers as provider_module  # noqa: E402
 from neurocade_runtime_tools.docker_catalog import generate_core_docker_catalog  # noqa: E402
 from neurocade_runtime_tools import execution as runtime_execution_module  # noqa: E402
-from neurocade_runtime_tools.docker_command import RuntimeBind  # noqa: E402
+from neurocade_runtime_tools.container_request import RuntimeBind  # noqa: E402
 
 
 class FakeModel:
@@ -432,28 +432,18 @@ def test_catalog_tool_call_delegates_execution_to_runtime_runner(tmp_path, monke
     )
     runtime = AssistantRuntime(FakeRuntimeService())
     monkeypatch.setattr(runtime.tools.catalog_executor, "catalog_records_path", lambda _arguments: records_path)
-    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://127.0.0.1:58081")
-    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_token", "secret")
     captured = {}
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
+    from api_service.assistant.tools import catalog_execution as catalog_execution_module
+    from neurocade_runtime_tools.execution import RuntimeExecutionResult
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+    def fake_execute(request, *, db=None):
+        captured["request"] = request
+        return RuntimeExecutionResult(
+            request=request, returncode=0, stdout="ok", stderr="", execution_backend=request.execution_mode
+        )
 
-        def read(self):
-            return json.dumps({"returncode": 0, "stdout": "ok", "stderr": ""}).encode("utf-8")
-
-    def fake_urlopen(request, *, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = dict(request.headers)
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        captured["timeout"] = timeout
-        return FakeResponse()
-
-    monkeypatch.setattr(runtime_execution_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(catalog_execution_module, "execute_runtime_request", fake_execute)
 
     payload = json.loads(
         runtime.tools.catalog_executor.catalog_tool_call(
@@ -464,24 +454,17 @@ def test_catalog_tool_call_delegates_execution_to_runtime_runner(tmp_path, monke
         )
     )
 
-    assert captured["url"] == "http://127.0.0.1:58081/run"
-    assert captured["headers"]["Authorization"] == "Bearer secret"
-    assert captured["payload"]["command"] == ["docker:catalog-tool"]
-    assert captured["payload"]["container_run"]["image"] == "neurocade/freesurfer:test"
-    assert captured["payload"]["container_run"]["command"] == ["mri_binarize", "--i", "/case/in.mgz", "--o", "/case/out.mgz"]
-    assert captured["payload"]["container_run"]["network_disabled"] is True
-    assert captured["payload"]["cwd"] == str(assistant_runtime_module.ROOT_DIR)
-    assert captured["payload"]["timeout_s"] == 300
-    assert captured["payload"]["runtime_policy"] == {
-        "runtime": "docker",
-        "network_disabled": True,
-        "gpu_enabled": False,
-    }
-    assert captured["timeout"] == 305
+    request = captured["request"]
+    # The catalog tool now runs in-process through the selected runtime backend.
+    assert request.execution_mode == "container"
+    assert request.container_run.image == "neurocade/freesurfer:test"
+    assert request.container_run.command == ["mri_binarize", "--i", "/case/in.mgz", "--o", "/case/out.mgz"]
+    assert request.container_run.network_disabled is True
+    assert str(request.cwd) == str(assistant_runtime_module.ROOT_DIR)
+    assert request.timeout_s == 300
     assert payload["returncode"] == 0
     assert payload["stdout"] == "ok"
-    assert payload["execution_backend"] == "host-runtime-runner"
-    assert payload["execution"]["command"] == ["mri_binarize", "--i", "/case/in.mgz", "--o", "/case/out.mgz"]
+    assert payload["execution_backend"] == "container"
 
 
 def test_agent_catalog_sees_dcm2niix_in_core_docker_catalog(monkeypatch, tmp_path):
@@ -542,7 +525,6 @@ def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_pa
 
     monkeypatch.setattr(assistant_catalog_execution_module, "execute_runtime_request", fake_execute)
     monkeypatch.setenv("NEUROCADE_INSTALLED_TOOLS_JSONL", str(records_jsonl))
-    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     payload = json.loads(
         runtime.tools.catalog_tools.call(
@@ -572,18 +554,6 @@ def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_pa
     assert target.case_title == case_a.title
     assert request.container_run is not None
     assert request.container_run.command == ["dcm2niix", "--version"]
-
-
-def test_runtime_runner_execution_requires_token(monkeypatch):
-    runtime = AssistantRuntime(FakeRuntimeService())
-    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://127.0.0.1:58081")
-    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_token", None)
-
-    with pytest.raises(RuntimeError, match="RUNTIME_RUNNER_TOKEN is required"):
-        runtime.tools.catalog_executor.execute_runtime_command(
-            runtime_execution_module.RuntimeContainerRunRequest(image="neurocade-runtime-bash:test", command=["true"]),
-            timeout_s=1,
-        )
 
 
 def test_catalog_tool_call_bash_requires_installed_index(monkeypatch, tmp_path):
@@ -1295,7 +1265,6 @@ def test_case_python_run_uses_managed_bash_image_and_case_mount(monkeypatch, tmp
         )
 
     monkeypatch.setattr(assistant_catalog_execution_module, "execute_runtime_request", fake_execute)
-    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     result = runtime.tools.case_tools.case_python_run_tool(state, {"script_path": "/case/scripts/demo.py", "args": ["--flag"]})
 
@@ -1332,7 +1301,6 @@ def test_case_bash_passes_artifact_index_target(monkeypatch, tmp_path, seeded_co
         return runtime_execution_module.RuntimeExecutionResult(request=request, returncode=1, stdout="", stderr="failed\n")
 
     monkeypatch.setattr(assistant_catalog_execution_module, "execute_runtime_request", fake_execute)
-    monkeypatch.setattr(assistant_runtime_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     result = runtime.tools.case_tools.case_bash_tool(state, {"command": "touch /case/qc.txt && false"})
 

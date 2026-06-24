@@ -60,8 +60,6 @@ def test_dicom_conversion_uses_shared_runtime_execution(monkeypatch, tmp_path):
     captured: dict[str, RuntimeExecutionRequest] = {}
 
     monkeypatch.setattr(uploads_module.settings, "dicom_conversion_timeout_seconds", 17)
-    monkeypatch.setattr(uploads_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
-    monkeypatch.setattr(uploads_module.settings, "runtime_runner_token", "secret")
 
     def fake_execute(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
         captured["request"] = request
@@ -77,55 +75,57 @@ def test_dicom_conversion_uses_shared_runtime_execution(monkeypatch, tmp_path):
     assert request.workdir_root == output_dir
     assert request.timeout_s == 17
     assert request.runtime_policy == RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False)
-    assert request.execution_mode == "host-runtime-runner"
-    assert request.runtime_runner_url == "http://runtime-runner:58081"
-    assert request.runtime_runner_token == "secret"
+    # dcm2niix now runs in-process through the selected runtime backend.
+    assert request.execution_mode == "container"
     assert request.container_run is not None
     assert request.container_run.command[:2] == ["dcm2niix", "-z"]
     assert request.container_run.network_disabled is True
     assert request.container_run.gpu_enabled is False
 
 
-def test_api_runtime_submission_uses_request_queue_metadata():
+def test_api_runtime_submission_enqueues_job_with_metadata():
+    import time
+
+    from api_service.jobs import job_manager
+
     captured: dict[str, object] = {}
 
-    class FakeAsyncResult:
-        id = "task-1"
-
-    class FakeTask:
-        def apply_async(self, **kwargs):
-            captured["kwargs"] = kwargs
-            return FakeAsyncResult()
+    @job_manager.task("api_service.example.task")
+    def _example_task(case_id: str) -> dict:
+        captured["case_id"] = case_id
+        return {"ok": case_id}
 
     request = RuntimeExecutionRequest(
         argv=["api_service.example.task"],
-        execution_mode="celery-submit",
+        execution_mode="job-submit",
         synchronous=False,
         queue_name="runtime-queue",
+        task_id="preset-task-id",
         user_id="user-1",
         workspace_id="workspace-1",
         case_id="workspace-1__case-1",
     )
 
     result = api_runtime_execution_module.submit_runtime_request(
-        FakeTask(),
+        "api_service.example.task",
         request,
         kwargs={"case_id": "workspace-1__case-1"},
     )
 
-    assert captured["kwargs"] == {
-        "kwargs": {"case_id": "workspace-1__case-1"},
-        "queue": "runtime-queue",
-    }
-    assert request.task_id == "task-1"
-    assert result.submitted_task_id == "task-1"
-    assert result.execution_backend == "celery-submit"
+    assert request.task_id == "preset-task-id"
+    assert result.submitted_task_id == "preset-task-id"
+    assert result.execution_backend == "job-submit"
+    # The job actually runs on the in-process worker.
+    deadline = time.time() + 5
+    while time.time() < deadline and not job_manager.status("preset-task-id")["ready"]:
+        time.sleep(0.02)
+    assert captured["case_id"] == "workspace-1__case-1"
 
 
 def test_api_runtime_submission_rejects_synchronous_request():
     with pytest.raises(ValueError, match="synchronous=False"):
         api_runtime_execution_module.submit_runtime_request(
-            object(),
+            "task",
             RuntimeExecutionRequest(argv=["task"], synchronous=True),
         )
 

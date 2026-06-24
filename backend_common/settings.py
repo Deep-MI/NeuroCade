@@ -19,22 +19,9 @@ class Settings(BaseSettings):
     app_public_url: str | None = Field(default=None, alias="APP_PUBLIC_URL")
     app_allowed_hosts: str = Field(default="", alias="APP_ALLOWED_HOSTS")
 
-    postgres_user: str = Field(default="fastsurfer", alias="POSTGRES_USER")
-    postgres_password: str = Field(default="fastsurfer", alias="POSTGRES_PASSWORD")
-    postgres_db: str = Field(default="fastsurfer_app", alias="POSTGRES_DB")
-    postgres_host: str = Field(default="127.0.0.1", alias="POSTGRES_HOST")
-    postgres_port: int = Field(default=55432, alias="POSTGRES_PORT")
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
-    redis_password: str = Field(default="fastsurfer-dev-redis", alias="REDIS_PASSWORD")
-    redis_url: str = Field(
-        default="redis://:fastsurfer-dev-redis@127.0.0.1:56379/0",
-        alias="REDIS_URL",
-    )
-
     api_service_url: str = Field(default="http://127.0.0.1:58080", alias="API_SERVICE_URL")
-    runtime_runner_url: str | None = Field(default=None, alias="RUNTIME_RUNNER_URL")
-    runtime_runner_token: str | None = Field(default=None, alias="RUNTIME_RUNNER_TOKEN")
     container_inventory: Path = Field(default=ROOT_DIR / "llm-data" / "tool-catalog" / "installed_containers.json", alias="NEUROCADE_CONTAINER_INVENTORY")
     installed_tools_jsonl: Path = Field(default=ROOT_DIR / "llm-data" / "tool-catalog" / "installed_tools.jsonl", alias="NEUROCADE_INSTALLED_TOOLS_JSONL")
 
@@ -96,13 +83,10 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_url(self) -> str:
-        """Return the configured SQLAlchemy URL or build one from Postgres settings."""
+        """Return the configured SQLAlchemy URL, defaulting to a local SQLite file."""
         if self.database_url:
             return self.database_url
-        return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return f"sqlite+pysqlite:///{self.fs_data_root / 'neurocade.db'}"
 
 
 @lru_cache(maxsize=1)

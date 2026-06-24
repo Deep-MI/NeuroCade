@@ -210,41 +210,10 @@ def test_validate_auth_configuration_requires_clerk_audience_for_shared_profiles
         validate_auth_configuration()
 
 
-def test_validate_auth_configuration_rejects_default_shared_profile_credentials(monkeypatch):
-    from backend_common import auth as auth_module
-
-    monkeypatch.setattr(auth_module.settings, "deployment_profile", "internal")
-    monkeypatch.setattr(auth_module.settings, "local_auth_enabled", False)
-    monkeypatch.setattr(auth_module.settings, "clerk_jwks_url", "https://example.test/jwks")
-    monkeypatch.setattr(auth_module.settings, "clerk_issuer", "https://clerk.example.test")
-    monkeypatch.setattr(auth_module.settings, "clerk_audience", "neurocade")
-    monkeypatch.setattr(auth_module.settings, "postgres_password", "fastsurfer")
-    monkeypatch.setattr(auth_module.settings, "redis_password", "strong-redis-secret")
-    monkeypatch.setattr(auth_module.settings, "database_url", None)
-    monkeypatch.setattr(auth_module.settings, "redis_url", "redis://:strong-redis-secret@127.0.0.1:56379/0")
-
-    with pytest.raises(RuntimeError, match="POSTGRES_PASSWORD must be set"):
-        validate_auth_configuration()
-
-
-def test_validate_auth_configuration_rejects_default_shared_profile_redis_credentials(monkeypatch):
-    from backend_common import auth as auth_module
-
-    monkeypatch.setattr(auth_module.settings, "deployment_profile", "internal")
-    monkeypatch.setattr(auth_module.settings, "local_auth_enabled", False)
-    monkeypatch.setattr(auth_module.settings, "clerk_jwks_url", "https://example.test/jwks")
-    monkeypatch.setattr(auth_module.settings, "clerk_issuer", "https://clerk.example.test")
-    monkeypatch.setattr(auth_module.settings, "clerk_audience", "neurocade")
-    monkeypatch.setattr(auth_module.settings, "postgres_password", "strong-postgres-secret")
-    monkeypatch.setattr(auth_module.settings, "redis_password", "fastsurfer-dev-redis")
-    monkeypatch.setattr(auth_module.settings, "database_url", None)
-    monkeypatch.setattr(auth_module.settings, "redis_url", "redis://:fastsurfer-dev-redis@127.0.0.1:56379/0")
-
-    with pytest.raises(RuntimeError, match="REDIS_PASSWORD must be set"):
-        validate_auth_configuration()
-
-
 def test_validate_auth_configuration_rejects_default_credentials_in_shared_profile_urls(monkeypatch):
+    # SQLite is the only database and carries no credentials, but an externally
+    # configured DATABASE_URL with embedded default credentials is still rejected
+    # in shared deployment profiles.
     from backend_common import auth as auth_module
 
     monkeypatch.setattr(auth_module.settings, "deployment_profile", "demo")
@@ -252,14 +221,11 @@ def test_validate_auth_configuration_rejects_default_credentials_in_shared_profi
     monkeypatch.setattr(auth_module.settings, "clerk_jwks_url", "https://example.test/jwks")
     monkeypatch.setattr(auth_module.settings, "clerk_issuer", "https://clerk.example.test")
     monkeypatch.setattr(auth_module.settings, "clerk_audience", "neurocade-demo")
-    monkeypatch.setattr(auth_module.settings, "postgres_password", "strong-postgres-secret")
-    monkeypatch.setattr(auth_module.settings, "redis_password", "strong-redis-secret")
     monkeypatch.setattr(
         auth_module.settings,
         "database_url",
         "postgresql+psycopg://neurocade_user:CHANGE_ME@127.0.0.1:55432/neurocade_db",
     )
-    monkeypatch.setattr(auth_module.settings, "redis_url", "redis://:strong-redis-secret@127.0.0.1:56379/0")
 
     with pytest.raises(RuntimeError, match="DATABASE_URL must not contain default"):
         validate_auth_configuration()

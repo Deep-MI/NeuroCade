@@ -53,7 +53,7 @@ doctor_check_env_secret() {
   local key="$2"
   local value
   value="$(env_file_value "$root" "$key")"
-  if [[ -n "$value" && "$value" != "CHANGE_ME" && "$value" != "fastsurfer-dev-redis" ]]; then
+  if [[ -n "$value" && "$value" != "CHANGE_ME" ]]; then
     printf '  [ok]   %-22s configured\n' "$key"
   else
     printf '  [warn] %-22s missing or default\n' "$key"
@@ -122,8 +122,6 @@ run_doctor() {
       fi
     done
   fi
-  doctor_check_env_secret "$root" POSTGRES_PASSWORD
-  doctor_check_env_secret "$root" REDIS_PASSWORD
   doctor_check_directory_writable "Data directory" "$root/neurocade-data"
   local tool_catalog_path container_inventory_path
   tool_catalog_path="$(env_file_value "$root" NEUROCADE_INSTALLED_TOOLS_JSONL)"
@@ -143,7 +141,7 @@ run_doctor() {
   echo
   echo "Runtime network containment"
   echo "  - container commands are built with --net --network none"
-  echo "  - deny host egress for api-worker with your firewall, then verify:"
+  echo "  - deny host egress for the app process with your firewall, then verify:"
   echo "    sudo -n true >/dev/null 2>&1 && sudo -u \"$(id -un)\" curl --max-time 3 https://example.org || true"
   echo
   echo "Actions the installer may take"

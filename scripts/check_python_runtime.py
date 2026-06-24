@@ -13,10 +13,7 @@ from pathlib import Path
 RUNTIME_MODULES = (
     "fastapi",
     "uvicorn",
-    "celery",
-    "redis",
     "sqlalchemy",
-    "psycopg",
     "pydantic_settings",
     "langgraph",
     "langchain_openai",

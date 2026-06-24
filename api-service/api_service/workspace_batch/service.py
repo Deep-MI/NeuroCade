@@ -168,8 +168,8 @@ def get_workspace_batch_run_or_404(db: Session, workspace_id: str, run_id: str) 
 
 
 def queue_workspace_batch_case(run_id: str, case_id: str, *, is_probe: bool) -> str:
-    """Queue a Celery task for one case in a workspace batch run."""
-    from api_service.workspace_batch.tasks import execute_workspace_batch_case_task
+    """Queue a background job for one case in a workspace batch run."""
+    from api_service.workspace_batch.tasks import EXECUTE_WORKSPACE_BATCH_CASE_TASK
 
     user_id: str | None = None
     workspace_id: str | None = None
@@ -187,21 +187,24 @@ def queue_workspace_batch_case(run_id: str, case_id: str, *, is_probe: bool) -> 
         if case is not None:
             artifact_index_targets = (case_artifact_index_target(case),)
 
+    # Pre-generate the job id so the runner can persist it as external_task_id.
+    task_id = str(uuid4())
     submission = submit_runtime_request(
-        execute_workspace_batch_case_task,
+        EXECUTE_WORKSPACE_BATCH_CASE_TASK,
         RuntimeExecutionRequest(
-            argv=["api_service.workspace_batch.execute_workspace_batch_case_task"],
-            execution_mode="celery-submit",
+            argv=[EXECUTE_WORKSPACE_BATCH_CASE_TASK],
+            execution_mode="job-submit",
             synchronous=False,
             queue_name=WORKSPACE_BATCH_QUEUE,
+            task_id=task_id,
             user_id=user_id,
             workspace_id=workspace_id,
             case_id=case_id,
             artifact_index_targets=artifact_index_targets,
         ),
-        kwargs={"run_id": run_id, "case_id": case_id, "is_probe": is_probe},
+        kwargs={"run_id": run_id, "case_id": case_id, "task_id": task_id, "is_probe": is_probe},
     )
-    return str(submission.submitted_task_id or submission.request.task_id or "")
+    return submission.submitted_task_id or ""
 
 
 def _new_workspace_run(
@@ -364,8 +367,8 @@ async def workspace_probe_bash(
 
 
 def queue_workspace_command_run(run_id: str) -> str:
-    """Queue the Celery task that executes a workspace-wide command run."""
-    from api_service.workspace_batch.tasks import execute_workspace_command_task
+    """Queue the background job that executes a workspace-wide command run."""
+    from api_service.workspace_batch.tasks import EXECUTE_WORKSPACE_COMMAND_TASK
 
     user_id: str | None = None
     workspace_id: str | None = None
@@ -387,20 +390,23 @@ def queue_workspace_command_run(run_id: str) -> str:
                 ),
             )
 
+    # Pre-generate the job id so the runner can persist it as external_task_id.
+    task_id = str(uuid4())
     submission = submit_runtime_request(
-        execute_workspace_command_task,
+        EXECUTE_WORKSPACE_COMMAND_TASK,
         RuntimeExecutionRequest(
-            argv=["api_service.workspace_batch.execute_workspace_command_task"],
-            execution_mode="celery-submit",
+            argv=[EXECUTE_WORKSPACE_COMMAND_TASK],
+            execution_mode="job-submit",
             synchronous=False,
             queue_name=WORKSPACE_BATCH_QUEUE,
+            task_id=task_id,
             user_id=user_id,
             workspace_id=workspace_id,
             workspace_artifact_sync_targets=workspace_artifact_sync_targets,
         ),
-        kwargs={"run_id": run_id},
+        kwargs={"run_id": run_id, "task_id": task_id},
     )
-    return str(submission.submitted_task_id or submission.request.task_id or "")
+    return submission.submitted_task_id or ""
 
 
 def create_workspace_command_run(
@@ -462,19 +468,19 @@ def create_workspace_command_run(
 
 
 def cancel_workspace_batch_run(db: Session, parent_run: Run) -> WorkspaceBatchRunDetail:
-    """Cancel active tasks for a workspace run and return updated details."""
-    from api_service.celery_app import celery_app
+    """Cancel active jobs for a workspace run and return updated details."""
+    from api_service.jobs import job_manager
 
     runs = _child_runs_for_run(db, parent_run.id)
     if is_workspace_wide_action(parent_run.run_type):
         task_id = str((parent_run.result_json or {}).get("external_task_id") or "").strip()
         if task_id:
-            celery_app.control.revoke(task_id, terminate=True)
+            job_manager.cancel(task_id)
     else:
         for run in runs:
             if run.status not in TERMINAL_CASE_RUN_STATUSES:
                 if run.external_task_id:
-                    celery_app.control.revoke(run.external_task_id, terminate=True)
+                    job_manager.cancel(run.external_task_id)
                 run.status = RunStatus.canceled
                 run.error_message = "Canceled by user."
 

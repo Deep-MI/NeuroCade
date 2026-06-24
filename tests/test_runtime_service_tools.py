@@ -136,7 +136,7 @@ def test_start_run_submits_fastsurfer_runtime_request(monkeypatch, tmp_path):
     kwargs = cast(dict[str, object], captured["kwargs"])
     assert result == {"case_id": "workspace-1__case-a", "task_id": "task-fastsurfer-1", "status": "queued"}
     assert request.synchronous is False
-    assert request.execution_mode == "celery-submit"
+    assert request.execution_mode == "job-submit"
     assert request.queue_name == runtime_module.FASTSURFER_QUEUE
     assert request.user_id == "user-1"
     assert request.workspace_id == "workspace-1"
@@ -195,7 +195,6 @@ def test_fastsurfer_worker_task_uses_fastsurfer_queue(monkeypatch, tmp_path):
     output_dir = tmp_path / "output"
 
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.setattr(fastsurfer_tasks_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     def fake_execute_runtime_request(request, *, run_completion_hooks=True):
         captured["request"] = request
@@ -204,7 +203,7 @@ def test_fastsurfer_worker_task_uses_fastsurfer_queue(monkeypatch, tmp_path):
 
     monkeypatch.setattr(fastsurfer_tasks_module, "execute_runtime_request", fake_execute_runtime_request)
 
-    result = fastsurfer_tasks_module.run_fastsurfer_task.run(
+    result = fastsurfer_tasks_module.run_fastsurfer_task(
         case_id="workspace-1__case-a",
         workspace_id="workspace-1",
         input_path="/data/input.mgz",
@@ -216,7 +215,7 @@ def test_fastsurfer_worker_task_uses_fastsurfer_queue(monkeypatch, tmp_path):
     assert result["status"] == "completed"
     assert request.queue_name == fastsurfer_tasks_module.FASTSURFER_QUEUE
     assert request.queue_name == runtime_module.FASTSURFER_QUEUE
-    assert request.execution_mode == "host-runtime-runner"
+    assert request.execution_mode == "container"
     assert request.container_run is not None
     assert request.container_run.image
     assert captured["run_completion_hooks"] is False
@@ -227,7 +226,6 @@ def test_fastsurfer_worker_writes_to_local_case_slug(monkeypatch, tmp_path):
     output_dir = tmp_path / "output"
 
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.setattr(fastsurfer_tasks_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     def fake_execute_runtime_request(request, *, run_completion_hooks=True):
         captured["request"] = request
@@ -235,7 +233,7 @@ def test_fastsurfer_worker_writes_to_local_case_slug(monkeypatch, tmp_path):
 
     monkeypatch.setattr(fastsurfer_tasks_module, "execute_runtime_request", fake_execute_runtime_request)
 
-    result = fastsurfer_tasks_module.run_fastsurfer_task.run(
+    result = fastsurfer_tasks_module.run_fastsurfer_task(
         case_id="workspace-1__case-a",
         workspace_id="workspace-1",
         input_path="/data/input.mgz",
@@ -320,7 +318,6 @@ def test_fastsurfer_worker_binds_and_passes_freesurfer_license(monkeypatch, tmp_
 
     monkeypatch.setattr(fastsurfer_tasks_module, "HOST_DATA_DIR", str(data_root))
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.setattr(fastsurfer_tasks_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
     monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
 
     def fake_execute_runtime_request(request, *, run_completion_hooks=True):
@@ -329,7 +326,7 @@ def test_fastsurfer_worker_binds_and_passes_freesurfer_license(monkeypatch, tmp_
 
     monkeypatch.setattr(fastsurfer_tasks_module, "execute_runtime_request", fake_execute_runtime_request)
 
-    result = fastsurfer_tasks_module.run_fastsurfer_task.run(
+    result = fastsurfer_tasks_module.run_fastsurfer_task(
         case_id="workspace-1__case-a",
         workspace_id="workspace-1",
         input_path="/data/input.mgz",
@@ -366,7 +363,7 @@ def test_fastsurfer_worker_fails_surface_pipeline_without_license(monkeypatch, t
 
     monkeypatch.setattr(fastsurfer_tasks_module, "execute_runtime_request", fail_execute_runtime_request)
 
-    result = fastsurfer_tasks_module.run_fastsurfer_task.run(
+    result = fastsurfer_tasks_module.run_fastsurfer_task(
         case_id="workspace-1__case-a",
         workspace_id="workspace-1",
         input_path="/data/input.mgz",
@@ -493,7 +490,6 @@ def test_synchronous_runtime_task_threads_workspace_sync_metadata(monkeypatch, t
         return RuntimeExecutionResult(request=request, returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(container_commands_module, "execute_runtime_request", fake_execute_runtime_request)
-    monkeypatch.setattr(container_commands_module.settings, "runtime_runner_url", "http://runtime-runner:58081")
 
     result = container_commands_module.run_synchronous_runtime_task(
         "workspace_bash",

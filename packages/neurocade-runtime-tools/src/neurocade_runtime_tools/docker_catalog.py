@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from .container_request import core_container_image
 from .container_specs import CORE_SPECS
 
 
@@ -31,12 +32,9 @@ def generate_core_docker_catalog(target_dir: Path | None = None) -> tuple[Path, 
     containers: list[dict[str, object]] = []
     tool_rows: list[dict[str, object]] = []
     for name, spec in CORE_SPECS.items():
-        docker_uri = spec.docker_uri
-        if name == "bash_image":
-            docker_uri = os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local")
-        if not docker_uri:
+        if not spec.docker_uri:
             continue
-        image = docker_uri.removeprefix("docker://")
+        image = core_container_image(name)
         container_row = {
             "name": name,
             "kind": spec.kind,

@@ -89,7 +89,7 @@ WORKSPACE_TOOL_REGISTRATIONS: tuple[ScopedToolRegistration, ...] = (
     ),
     ScopedToolRegistration(
         name="workspace_batch_bash",
-        description="Queue the same bash command across selected or all cases in the current workspace. Each case is mounted directly at /case inside its own Redis-backed worker task. Before using this, inspect help first with workspace_probe_bash.",
+        description="Queue the same bash command across selected or all cases in the current workspace. Each case is mounted directly at /case inside its own background worker job. Before using this, inspect help first with workspace_probe_bash.",
         parameters={
             "type": "object",
             "properties": {
@@ -105,7 +105,7 @@ WORKSPACE_TOOL_REGISTRATIONS: tuple[ScopedToolRegistration, ...] = (
     ),
     ScopedToolRegistration(
         name="workspace_list_batch_runs",
-        description="List recent Redis-backed workspace runs.",
+        description="List recent background workspace runs.",
         parameters={"type": "object", "properties": {}},
         handler_name="list_batch_runs",
         scopes=WORKSPACE_ONLY,

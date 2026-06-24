@@ -77,14 +77,14 @@ function BackendStartupScreen({
   const detail = timedOut
     ? 'The web UI loaded, but the API never became reachable. The most common cause is that the local Docker Compose stack is not running.'
     : devFrontendOnly
-      ? 'You are viewing the Vite frontend directly. Start the local stack, then open the gateway URL so the API, database, workers, and viewer are all connected.'
+      ? 'You are viewing the Vite frontend directly. Start the local NeuroCade backend, then open the app URL so the API and viewer are connected.'
       : local
-        ? 'The local Docker Compose services may still be starting. The workspace will open automatically when the API is healthy.'
+        ? 'The local NeuroCade backend may still be starting. The workspace will open automatically when the API is healthy.'
         : 'The workspace will open automatically when the API is healthy.'
   const gatewayUrl = localGatewayUrl()
   const recoveryCommand = devFrontendOnly
-    ? './scripts/install.sh --mode local\n./scripts/compose/up.sh -d\n# then open http://localhost:8005'
-    : './scripts/compose/status.sh\n./scripts/compose/logs.sh api-service\n./scripts/compose/up.sh -d'
+    ? './scripts/install.sh --mode local\n./scripts/desktop/run_backend.sh\n# then open http://localhost:8000'
+    : './scripts/desktop/run_backend.sh\n# or as a container: ./scripts/run_container.sh'
   const checks = [
     {
       label: 'Web UI',
@@ -101,9 +101,9 @@ function BackendStartupScreen({
       tone: timedOut ? 'nc-chip-yellow' : 'nc-chip-blue',
     },
     {
-      label: 'Docker Compose stack',
+      label: 'NeuroCade backend',
       state: devFrontendOnly || timedOut ? 'Needs a check' : 'Starting',
-      detail: './scripts/compose/status.sh',
+      detail: './scripts/desktop/run_backend.sh',
       icon: TerminalSquare,
       tone: '',
     },

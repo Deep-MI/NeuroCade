@@ -17,7 +17,6 @@ _INSECURE_CREDENTIAL_VALUES = frozenset(
         "CHANGE_ME_LONG_RANDOM",
         "NOTSET",
         "fastsurfer",
-        "fastsurfer-dev-redis",
     }
 )
 
@@ -101,17 +100,10 @@ class DeploymentPolicy:
         if not self.production_checks_required:
             return
 
-        postgres_password = _configured_secret(settings.postgres_password)
-        if postgres_password in _INSECURE_CREDENTIAL_VALUES:
-            raise RuntimeError("POSTGRES_PASSWORD must be set to a non-default secret for internal and demo deployments.")
+        # SQLite is a local file with no credentials; only an externally
+        # configured DATABASE_URL could carry insecure embedded credentials.
         if _url_contains_insecure_credential(settings.database_url):
             raise RuntimeError("DATABASE_URL must not contain default database credentials for internal and demo deployments.")
-
-        redis_password = _configured_secret(settings.redis_password)
-        if redis_password in _INSECURE_CREDENTIAL_VALUES:
-            raise RuntimeError("REDIS_PASSWORD must be set to a non-default secret for internal and demo deployments.")
-        if _url_contains_insecure_credential(settings.redis_url):
-            raise RuntimeError("REDIS_URL must not contain default Redis credentials for internal and demo deployments.")
 
 
 def deployment_profile(settings: Settings | None = None) -> DeploymentProfile:

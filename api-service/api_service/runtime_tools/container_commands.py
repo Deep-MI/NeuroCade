@@ -12,8 +12,13 @@ from dotenv import load_dotenv
 from api_service.runtime.execution import execute_runtime_request
 from backend_common.case_storage import case_slug_from_id
 from backend_common.settings import ROOT_DIR, get_settings
-from neurocade_runtime_tools.container_specs import CORE_SPECS
-from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request, freesurfer_license_bind_env
+from neurocade_runtime_tools.container_request import (
+    RuntimeBind,
+    build_container_request,
+    core_container_image,
+    container_gpu_enabled,
+    freesurfer_license_bind_env,
+)
 from neurocade_runtime_tools.execution import (
     RuntimeArtifactIndexTarget,
     RuntimeContainerRunRequest,
@@ -50,24 +55,6 @@ _SEGMENTATION_FILENAME_HINTS = (
     "hypothal",
 )
 _VOLUME_FILE_SUFFIXES = (".mgz", ".mgh", ".nii", ".nii.gz")
-
-def _docker_core_image(name: str) -> str:
-    """Return the pinned Docker image for a core runtime container."""
-    override = os.environ.get(f"NEUROCADE_{name.upper()}_IMAGE")
-    if override:
-        return override.removeprefix("docker://")
-    if name == "bash_image":
-        return os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local")
-    spec = CORE_SPECS[name]
-    if not spec.docker_uri:
-        raise ValueError(f"Core container {name} does not define a Docker image")
-    return spec.docker_uri.removeprefix("docker://")
-
-
-def _docker_gpu_enabled() -> bool:
-    """Return whether Docker runtime requests should ask for NVIDIA GPUs."""
-    return os.environ.get("NEUROCADE_DOCKER_GPU", "").strip().lower() in {"1", "true", "yes", "on"}
-
 
 def _resolve_workspace_bash_mount_path(host_path: str) -> tuple[str, tuple[str, ...]]:
     """Validate a host path and resolve it under the configured data root."""
@@ -247,12 +234,12 @@ def _docker_run_workspace_bash(
     if license_bind_env is not None:
         license_bind, env = license_bind_env
         binds.append(license_bind)
-    return build_docker_container_request(
-        image=image or _docker_core_image("bash_image"),
+    return build_container_request(
+        image=image or core_container_image("bash_image"),
         binds=binds,
         env=env,
         disable_network=True,
-        gpu=_docker_gpu_enabled(),
+        gpu=container_gpu_enabled(),
         command=["/bin/bash", "-lc", bash_cmd],
     )
 
@@ -272,12 +259,12 @@ def _docker_run_workspace_case_bash(
     if license_bind_env is not None:
         license_bind, env = license_bind_env
         binds.append(license_bind)
-    return build_docker_container_request(
-        image=image or _docker_core_image("bash_image"),
+    return build_container_request(
+        image=image or core_container_image("bash_image"),
         binds=binds,
         env=env,
         disable_network=True,
-        gpu=_docker_gpu_enabled(),
+        gpu=container_gpu_enabled(),
         command=["/bin/bash", "-lc", bash_cmd],
     )
 
@@ -337,23 +324,17 @@ def run_synchronous_runtime_task(
     """Execute a runtime-backed tool command and return text content."""
     try:
         runtime_policy = RuntimeExecutionPolicy(
-            runtime="docker",
             network_disabled=True,
             gpu_enabled=cmd.gpu_enabled,
         )
-        runner_url = (settings.runtime_runner_url or "").strip().rstrip("/")
-        if not runner_url:
-            raise RuntimeError("RUNTIME_RUNNER_URL is required for Docker runtime execution")
         result = execute_runtime_request(
             RuntimeExecutionRequest(
-                argv=[f"docker:{name}"],
+                argv=[],
                 timeout_s=RUNTIME_TASK_TIMEOUT,
-                execution_mode="host-runtime-runner",
+                execution_mode="container",
                 queue_name=queue_name,
                 task_id=task_id,
                 runtime_policy=runtime_policy,
-                runtime_runner_url=runner_url or None,
-                runtime_runner_token=(settings.runtime_runner_token or None),
                 container_run=cmd,
                 artifact_index_targets=tuple(artifact_index_targets),
                 workspace_artifact_sync_targets=tuple(workspace_artifact_sync_targets),

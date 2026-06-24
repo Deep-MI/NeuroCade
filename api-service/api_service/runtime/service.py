@@ -7,12 +7,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from celery.result import AsyncResult
 from fastapi import HTTPException
 
-from api_service.celery_app import celery_app
+from api_service.jobs import job_manager
 from api_service.runtime.constants import FASTSURFER_QUEUE
-from api_service.runtime.fastsurfer_tasks import run_fastsurfer_task
+from api_service.runtime.fastsurfer_tasks import RUN_FASTSURFER_TASK
 from api_service.file_utils import safe_write_json
 from api_service.runtime.execution import submit_runtime_request
 from api_service.runtime.gui_state import GuiStateStore
@@ -210,10 +209,10 @@ class RuntimeService:
             "vox_size": str(payload.get("vox_size") or "min"),
         }
         submission = submit_runtime_request(
-            run_fastsurfer_task,
+            RUN_FASTSURFER_TASK,
             RuntimeExecutionRequest(
-                argv=["api_service.fastsurfer.run_fastsurfer_task"],
-                execution_mode="celery-submit",
+                argv=[RUN_FASTSURFER_TASK],
+                execution_mode="job-submit",
                 synchronous=False,
                 queue_name=FASTSURFER_QUEUE,
                 user_id=user_id,
@@ -257,31 +256,15 @@ class RuntimeService:
         return {"status": "unknown"}
 
     async def fetch_task_status(self, task_id: str) -> dict[str, Any]:
-        """Return Celery task readiness, status, and result when available."""
-        task_result = AsyncResult(task_id, app=celery_app)
-        result = task_result.result if task_result.ready() else None
-        return {
-            "task_id": task_id,
-            "status": task_result.status,
-            "ready": task_result.ready(),
-            "result": result,
-        }
+        """Return background job readiness, status, and result when available."""
+        return job_manager.status(task_id)
 
     async def fetch_queue_status(self) -> dict[str, int]:
-        """Return active and reserved Celery task counts."""
-        inspector = celery_app.control.inspect(timeout=2.0)
-
-        def count_tasks(task_dict: dict | None) -> int:
-            if not task_dict:
-                return 0
-            return sum(len(tasks) for tasks in task_dict.values())
-
-        active = count_tasks(inspector.active())
-        reserved = count_tasks(inspector.reserved())
-        return {"active": active, "queued": reserved, "total": active + reserved}
+        """Return active (running) and queued background job counts."""
+        return job_manager.queue_status()
 
     async def cancel(self, case_id: str, workspace_id: str) -> None:
-        """Revoke a queued or running case task and mark it canceled."""
+        """Cancel a queued or running case job and mark it canceled."""
         case_dir = _case_dir_for_id(case_id, workspace_id)
         status_file = case_dir / "status.json" if case_dir else None
         if status_file is None or not status_file.exists():
@@ -290,7 +273,7 @@ class RuntimeService:
             data = json.loads(status_file.read_text(encoding="utf-8"))
             task_id = data.get("task_id")
             if task_id:
-                celery_app.control.revoke(task_id, terminate=True)
+                job_manager.cancel(task_id)
             data["status"] = "canceled"
             safe_write_json(str(status_file), data)
         except Exception as exc:

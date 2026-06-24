@@ -286,19 +286,27 @@ def test_workspace_queue_uses_runtime_submission(monkeypatch, seeded_context, qu
     request = cast(RuntimeExecutionRequest, captured["request"])
     assert task_id == ("task-case-1" if is_case_queue else "task-workspace-1")
     assert request.synchronous is False
-    assert request.execution_mode == "celery-submit"
+    assert request.execution_mode == "job-submit"
     assert request.queue_name == workspace_batch_module.WORKSPACE_BATCH_QUEUE
     assert request.user_id == context.user.id
     assert request.workspace_id == workspace.id
+    # A job id is pre-generated and threaded into kwargs so the runner can
+    # persist it as external_task_id; it is a UUID string.
+    job_kwargs = cast(dict, captured["kwargs"])
+    assert isinstance(job_kwargs["task_id"], str) and job_kwargs["task_id"]
     if is_case_queue:
         assert request.case_id == case_a.id
         assert request.artifact_index_targets
         assert request.artifact_index_targets[0].case_id == case_a.id
-        assert captured["kwargs"] == {"run_id": workflow.id, "case_id": case_a.id, "is_probe": True}
+        assert {k: v for k, v in job_kwargs.items() if k != "task_id"} == {
+            "run_id": workflow.id,
+            "case_id": case_a.id,
+            "is_probe": True,
+        }
     else:
         assert request.workspace_artifact_sync_targets
         assert request.workspace_artifact_sync_targets[0].run_id == workflow.id
-        assert captured["kwargs"] == {"run_id": workflow.id}
+        assert {k: v for k, v in job_kwargs.items() if k != "task_id"} == {"run_id": workflow.id}
 
 
 def test_process_workspace_command_run_passes_runtime_metadata(monkeypatch, seeded_context):
@@ -507,21 +515,17 @@ def test_cancel_workspace_batch_run_marks_unfinished_runs_canceled(monkeypatch, 
     )
     workflow = db_session.query(Run).filter(Run.id == summary.run_id).one()
 
-    revoked: list[tuple[str, bool]] = []
-    from api_service import celery_app as api_celery_module  # noqa: E402
+    canceled: list[str] = []
+    from api_service.jobs import job_manager
 
-    monkeypatch.setattr(
-        api_celery_module.celery_app.control,
-        "revoke",
-        lambda task_id, terminate=True: revoked.append((task_id, terminate)),
-    )
+    monkeypatch.setattr(job_manager, "cancel", lambda task_id: bool(canceled.append(task_id)) or True)
 
     detail = workspace_batch_module.cancel_workspace_batch_run(db_session, workflow)
     runs = db_session.query(Run).filter(Run.parent_run_id == summary.run_id).all()
 
     assert detail.status == "canceled"
     assert all(run.status.value == "canceled" for run in runs)
-    assert revoked == [(f"task-{case_a.id}", True)]
+    assert canceled == [f"task-{case_a.id}"]
 
 
 def test_cancel_workspace_command_run_revokes_single_task(monkeypatch, seeded_context):
@@ -541,19 +545,15 @@ def test_cancel_workspace_command_run_revokes_single_task(monkeypatch, seeded_co
     )
     workflow = db_session.query(Run).filter(Run.id == summary.run_id).one()
 
-    revoked: list[tuple[str, bool]] = []
-    from api_service import celery_app as api_celery_module  # noqa: E402
+    canceled: list[str] = []
+    from api_service.jobs import job_manager
 
-    monkeypatch.setattr(
-        api_celery_module.celery_app.control,
-        "revoke",
-        lambda task_id, terminate=True: revoked.append((task_id, terminate)),
-    )
+    monkeypatch.setattr(job_manager, "cancel", lambda task_id: bool(canceled.append(task_id)) or True)
 
     detail = workspace_batch_module.cancel_workspace_batch_run(db_session, workflow)
 
     assert detail.status == "canceled"
-    assert revoked == [("task-workspace-1", True)]
+    assert canceled == ["task-workspace-1"]
 
 
 def test_result_text_has_execution_error_detects_runtime_failures():

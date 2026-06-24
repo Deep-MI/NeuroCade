@@ -92,9 +92,9 @@ pytest tests/ -v
 
 | Variable | Default | Description |
 |---|---|---|
-| `GATEWAY_URL` | `http://localhost:8005` | Local app gateway URL |
+| `GATEWAY_URL` | `http://localhost:8000` | Local app URL |
 | `API_TOKEN` | `static-token-12345` | Bearer token for API requests |
-| `PROXY_SERVICE` | `api-service` | Compose service name for API log capture |
+| `PROXY_SERVICE` | `app` | Compose service name for API log capture |
 | `HEADED` | (unset) | Set to `1` or `true` to show the Playwright browser |
 | `FREESURFER_LICENSE` | (unset) | Path to a valid FreeSurfer license file |
 
@@ -106,8 +106,8 @@ GUI tests save screenshots to `tests/screenshots/`. These are useful for debuggi
 
 1. **Tests skip with "NeuroCade stack not reachable":**
    ```bash
-   ./scripts/compose/status.sh   # check services are running
-   curl http://localhost:8005/api/app/healthz  # check gateway
+   ./scripts/compose/status.sh   # check the app is running
+   curl http://localhost:8000/api/app/healthz  # check the app
    ```
 
 2. **GUI tests fail with "Playwright not installed":**

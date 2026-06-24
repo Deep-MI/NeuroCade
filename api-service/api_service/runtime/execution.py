@@ -192,38 +192,41 @@ def execute_runtime_request(
 
 
 def submit_runtime_request(
-    celery_task: Any,
+    task_name: str,
     request: RuntimeExecutionRequest,
     *,
     kwargs: dict[str, Any] | None = None,
 ) -> RuntimeExecutionResult:
-    """Submit an asynchronous runtime request through an API-service Celery task."""
+    """Submit an asynchronous runtime request to the in-process JobWorker.
+
+    ``task_name`` is the name the task registered with ``job_manager``. The job id
+    is taken from ``request.task_id`` when set (so callers that must persist the id
+    before the job runs can pre-generate it), otherwise the manager assigns one.
+    """
     if request.synchronous:
         raise ValueError("Runtime task submission requires request.synchronous=False")
-    submit_kwargs: dict[str, Any] = {
-        "kwargs": dict(kwargs or {}),
-    }
-    if request.queue_name:
-        submit_kwargs["queue"] = request.queue_name
-    if request.task_id:
-        submit_kwargs["task_id"] = request.task_id
+    from api_service.jobs import job_manager
 
     logger.info(
-        "runtime_execution.submit mode=%s queue=%s task_id=%s user_id=%s workspace_id=%s case_id=%s command=%s",
-        request.execution_mode,
+        "runtime_execution.submit task=%s queue=%s task_id=%s user_id=%s workspace_id=%s case_id=%s",
+        task_name,
         request.queue_name,
         request.task_id,
         request.user_id,
         request.workspace_id,
         request.case_id,
-        request.command,
     )
-    async_result = celery_task.apply_async(**submit_kwargs)
-    request.task_id = str(async_result.id)
+    job_id = job_manager.submit(
+        task_name,
+        dict(kwargs or {}),
+        queue=request.queue_name or "api",
+        task_id=request.task_id or None,
+    )
+    request.task_id = job_id
     return RuntimeExecutionResult(
         request=request,
         returncode=0,
         logs=list(request.log_lines),
-        execution_backend="celery-submit",
-        submitted_task_id=request.task_id,
+        execution_backend="job-submit",
+        submitted_task_id=job_id,
     )

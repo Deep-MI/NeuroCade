@@ -25,7 +25,7 @@ from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.runtime.execution import case_artifact_index_target
 from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT, resolve_case_mount_from_db
 from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest
-from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request
+from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request, core_container_image
 
 
 class CasePythonRunArgs(BaseModel):
@@ -84,7 +84,7 @@ class AssistantCaseTools:
 
     def managed_bash_available(self) -> bool:
         """Return whether the managed bash container image is configured."""
-        return bool(os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local").strip())
+        return bool(core_container_image("bash_image").strip())
 
     def build_tools(self, state: dict[str, Any]) -> list[ToolDefinition]:
         """Return case container tool definitions for the current assistant state.
@@ -241,8 +241,8 @@ class AssistantCaseTools:
     def build_case_runtime_command(self, case_dir: Path, command: list[str]) -> RuntimeContainerRunRequest:
         """Build a case-scoped Docker runtime request."""
         binds = [RuntimeBind(case_dir, CONTAINER_CASE_ROOT, "rw")]
-        return build_docker_container_request(
-            image=os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local"),
+        return build_container_request(
+            image=core_container_image("bash_image"),
             command=command,
             binds=binds,
             cwd=CONTAINER_CASE_ROOT,

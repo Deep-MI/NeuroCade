@@ -5,31 +5,28 @@ from __future__ import annotations
 import logging
 import os
 
-from api_service.celery_app import celery_app
+from api_service.jobs import job_manager
 from api_service.runtime.constants import FASTSURFER_QUEUE
 from api_service.file_utils import safe_write_json
 from api_service.runtime.execution import RuntimeCompletionGuard, execute_runtime_request
 from backend_common.case_storage import case_slug_from_id
 from backend_common.db import SessionLocal
 from backend_common.settings import get_settings
-from neurocade_runtime_tools.container_specs import CORE_SPECS
-from neurocade_runtime_tools.docker_command import RuntimeBind, build_docker_container_request, freesurfer_license_bind_env
+from neurocade_runtime_tools.container_request import (
+    RuntimeBind,
+    build_container_request,
+    core_container_image,
+    container_gpu_enabled,
+    freesurfer_license_bind_env,
+)
 from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest, RuntimeExecutionPolicy, RuntimeExecutionRequest
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+RUN_FASTSURFER_TASK = "api_service.fastsurfer.run_fastsurfer_task"
+
 HOST_DATA_DIR = os.environ.get("HOST_DATA_DIR") or str(settings.fs_data_root)
-
-
-def _docker_core_image(name: str) -> str:
-    override = os.environ.get(f"NEUROCADE_{name.upper()}_IMAGE")
-    if override:
-        return override.removeprefix("docker://")
-    spec = CORE_SPECS[name]
-    if not spec.docker_uri:
-        raise ValueError(f"Core container {name} does not define a Docker image")
-    return spec.docker_uri.removeprefix("docker://")
 
 
 def _container_data_path(path: str) -> str:
@@ -38,11 +35,6 @@ def _container_data_path(path: str) -> str:
     if os.path.commonpath([resolved, data_root]) != data_root:
         return path
     return "/data/" + os.path.relpath(resolved, data_root).lstrip("./")
-
-
-def _docker_gpu_enabled() -> bool:
-    """Return whether Docker runtime requests should ask for NVIDIA GPUs."""
-    return os.environ.get("NEUROCADE_DOCKER_GPU", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def is_cuda_runtime_available() -> bool:
@@ -72,14 +64,14 @@ def resolve_fastsurfer_device() -> str:
     return "cpu"
 
 
-def _docker_fastsurfer_request(
+def _build_fastsurfer_request(
     fastsurfer_args: list[str],
     output_dir: str,
     *,
     enable_gpu: bool,
     license_bind_env: tuple[RuntimeBind, dict[str, str]] | None = None,
 ) -> RuntimeContainerRunRequest:
-    """Build a Docker request that runs FastSurfer with data and output binds."""
+    """Build a backend-agnostic container request that runs FastSurfer."""
     binds = [
         RuntimeBind(HOST_DATA_DIR, "/data", "ro"),
         RuntimeBind(output_dir, "/output", "rw"),
@@ -88,8 +80,8 @@ def _docker_fastsurfer_request(
     if license_bind_env is not None:
         license_bind, env = license_bind_env
         binds.append(license_bind)
-    return build_docker_container_request(
-        image=_docker_core_image("fastsurfer"),
+    return build_container_request(
+        image=core_container_image("fastsurfer"),
         binds=binds,
         env=env,
         disable_network=True,
@@ -98,9 +90,8 @@ def _docker_fastsurfer_request(
     )
 
 
-@celery_app.task(bind=True, name="api_service.fastsurfer.run_fastsurfer_task")
+@job_manager.task(RUN_FASTSURFER_TASK)
 def run_fastsurfer_task(
-    self,
     case_id: str,
     input_path: str,
     output_dir: str,
@@ -120,7 +111,7 @@ def run_fastsurfer_task(
 ) -> dict:
     """Run FastSurfer for a case and persist task status, logs, and output metadata."""
     fastsurfer_device = resolve_fastsurfer_device()
-    enable_gpu = fastsurfer_device == "cuda" and _docker_gpu_enabled()
+    enable_gpu = fastsurfer_device == "cuda" and container_gpu_enabled()
     if output_case_dir_name:
         storage_case_name = str(output_case_dir_name).strip()
     elif workspace_id:
@@ -209,22 +200,18 @@ def run_fastsurfer_task(
     completion = RuntimeCompletionGuard(SessionLocal)
 
     try:
-        cmd = _docker_fastsurfer_request(
+        cmd = _build_fastsurfer_request(
             fastsurfer_args,
             output_dir,
             enable_gpu=enable_gpu,
             license_bind_env=freesurfer_license,
         )
-        runner_url = (settings.runtime_runner_url or "").strip().rstrip("/")
-        if not runner_url:
-            raise RuntimeError("RUNTIME_RUNNER_URL is required for Docker FastSurfer execution")
         request = RuntimeExecutionRequest(
-            argv=["docker:fastsurfer"],
+            argv=[],
             timeout_s=None,
-            execution_mode="host-runtime-runner",
-            synchronous=False,
+            execution_mode="container",
+            synchronous=True,
             queue_name=FASTSURFER_QUEUE,
-            task_id=str(getattr(self.request, "id", "") or "") or None,
             user_id=user_id,
             workspace_id=workspace_id,
             case_id=case_id,
@@ -233,16 +220,13 @@ def run_fastsurfer_task(
             stderr_path=stderr_path,
             capture_output=False,
             runtime_policy=RuntimeExecutionPolicy(
-                runtime="docker",
                 network_disabled=True,
                 gpu_enabled=enable_gpu,
             ),
-            runtime_runner_url=runner_url or None,
-            runtime_runner_token=(settings.runtime_runner_token or None),
             container_run=cmd,
             log_lines=[
                 f"[worker] FASTSURFER_DEVICE_MODE={os.environ.get('FASTSURFER_DEVICE_MODE', 'auto')} -> resolved device={fastsurfer_device}",
-                f"[worker] runtime_backend=docker -> gpu_enabled={enable_gpu}",
+                f"[worker] gpu_enabled={enable_gpu}",
                 f"[worker] Command: {cmd}",
             ],
             artifact_index_targets=artifact_index_targets,

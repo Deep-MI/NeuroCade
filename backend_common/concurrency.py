@@ -1,4 +1,12 @@
-"""Provide shared backend concurrency utilities for NeuroCade."""
+"""Provide shared backend concurrency utilities for NeuroCade.
+
+These helpers add ``SELECT ... FOR UPDATE`` row locks on Postgres to serialize
+read-modify-write sections. On SQLite (the single-node monolith default) there
+are no row-level locks, but serialization is provided at the engine level
+instead: every write transaction begins with ``BEGIN IMMEDIATE`` (see
+``backend_common.db``), so concurrent writers are serialized whole-transaction
+and these helpers safely degrade to a plain reload.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +18,11 @@ from backend_common.db import AssistantThread, Case, Workspace
 
 
 def supports_row_level_locks(db: Session) -> bool:
-    """Return whether the active database dialect supports row-level locks."""
+    """Return whether the active database dialect supports row-level locks.
+
+    SQLite serializes write transactions via ``BEGIN IMMEDIATE`` instead, so it
+    intentionally returns ``False`` here without losing read-modify-write safety.
+    """
     return db.get_bind().dialect.name == "postgresql"
 
 
