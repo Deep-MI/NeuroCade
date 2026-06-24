@@ -37,15 +37,7 @@ engine = _build_engine(settings.sqlalchemy_database_url)
 
 @event.listens_for(engine, "connect")
 def _configure_sqlite_connection(dbapi_connection, _connection_record):  # noqa: ANN001
-    """Apply WAL/safety pragmas and hand transaction control to SQLAlchemy.
-
-    Setting ``isolation_level = None`` disables pysqlite's implicit ``BEGIN``
-    so we can emit ``BEGIN IMMEDIATE`` ourselves (see ``_sqlite_begin_immediate``).
-    Without that, pysqlite opens deferred transactions that take a read lock on
-    the first SELECT and try to upgrade to a write lock on the first write; two
-    such transactions racing the same rows deadlock and SQLite returns
-    ``SQLITE_BUSY`` immediately (the busy timeout does not cover lock upgrades).
-    """
+    """Apply WAL/safety pragmas and hand transaction control to SQLAlchemy."""
     if engine.dialect.name != "sqlite":
         return
     dbapi_connection.isolation_level = None
@@ -62,18 +54,21 @@ def _configure_sqlite_connection(dbapi_connection, _connection_record):  # noqa:
 
 
 @event.listens_for(engine, "begin")
-def _sqlite_begin_immediate(conn):  # noqa: ANN001
-    """Start every SQLite transaction with ``BEGIN IMMEDIATE``.
+def _sqlite_begin(conn):  # noqa: ANN001
+    """Start SQLite transactions without taking the write lock for reads.
 
-    Acquiring the write lock up front serializes write transactions cleanly
-    (a second writer waits out the busy timeout instead of deadlocking), which
-    restores the read-modify-write safety the Postgres ``SELECT ... FOR UPDATE``
-    row locks used to provide now that everything shares one SQLite file. WAL
-    still allows external/out-of-engine readers to proceed concurrently.
+    Request handlers commonly perform read-only DB lookups before awaiting
+    slower work. Using ``BEGIN IMMEDIATE`` for every transaction makes those
+    reads hold SQLite's single write lock and can starve other API requests.
+    Code that truly needs an eager write lock can opt in with the
+    ``sqlite_begin_immediate`` execution option.
     """
     if engine.dialect.name != "sqlite":
         return
-    conn.exec_driver_sql("BEGIN IMMEDIATE")
+    if conn.get_execution_options().get("sqlite_begin_immediate"):
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        return
+    conn.exec_driver_sql("BEGIN")
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)

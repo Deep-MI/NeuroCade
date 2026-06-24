@@ -460,7 +460,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
           <span>NeuroCade</span>
         </div>
         <div className="h-5 w-px bg-[var(--nc-border)]" />
-        <button type="button" onClick={() => void navigate(workspaceBackPath)} className="nc-btn">
+        <button type="button" onClick={() => void navigate(workspaceBackPath)} className="nc-btn" data-testid="case-workspace-back">
           <ArrowLeft size={13} className="text-[var(--nc-interactive)]" />
           <span className="hidden max-w-[130px] truncate lg:inline">{currentWorkspace?.name ?? 'Workspace'}</span>
         </button>

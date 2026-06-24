@@ -54,6 +54,7 @@ export function ViewerToolbar({
               title={label}
               aria-label={label}
               aria-pressed={dragMode === mode}
+              data-testid={`viewer-tool-${mode}`}
             >
               <Icon size={14} />
             </button>
@@ -68,6 +69,7 @@ export function ViewerToolbar({
               className={`nc-viewer-toolbar-btn ${viewMode === mode.id ? 'is-active' : ''}`}
               onClick={() => onViewModeChange(mode.id)}
               aria-pressed={viewMode === mode.id}
+              data-testid={`viewer-view-${mode.id}`}
             >
               {mode.label}
             </button>

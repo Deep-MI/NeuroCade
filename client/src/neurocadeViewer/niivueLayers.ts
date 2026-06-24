@@ -223,12 +223,36 @@ export function effectiveLayerOpacity(volume: Volume): number {
   return volume.visible ? clampOpacity(volume.opacity, layerDefaultOpacity(volume)) : 0;
 }
 
+const arrayBufferCache = new Map<string, Promise<ArrayBuffer>>();
+
 async function fetchArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
-  const response = await appFetchUrl(url, { signal });
-  if (!response.ok) {
-    throw new Error(`Failed to load ${url}: ${response.status}`);
+  if (signal.aborted) {
+    throw new DOMException('Artifact fetch aborted', 'AbortError');
   }
-  return await response.arrayBuffer();
+  let cached = arrayBufferCache.get(url);
+  if (!cached) {
+    cached = appFetchUrl(url)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to load ${url}: ${response.status}`);
+        }
+        return await response.arrayBuffer();
+      })
+      .catch((error) => {
+        arrayBufferCache.delete(url);
+        throw error;
+      });
+    arrayBufferCache.set(url, cached);
+  }
+  const buffer = await cached;
+  if (signal.aborted) {
+    throw new DOMException('Artifact fetch aborted', 'AbortError');
+  }
+  return buffer.slice(0);
+}
+
+export function clearNiivueLayerBufferCache(): void {
+  arrayBufferCache.clear();
 }
 
 type IdleWindow = typeof window & {
@@ -386,13 +410,13 @@ async function addSurfaceCompanionLayer(nv: Niivue, mesh: NiivueMeshInterop, sur
   }
 }
 
-function surfaceDisplayKey(surface: SurfaceLayer): string {
+export function surfaceDisplayKey(surface: SurfaceLayer): string {
   const colorMode = resolveSurfaceLayerColorMode(surface);
   const companionUrl = colorMode === 'annotation' ? surface.annotationUrl : colorMode === 'curvature' ? surface.curvatureUrl : '';
   return `${colorMode}:${companionUrl ?? ''}`;
 }
 
-export function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInterop, surface: SurfaceLayer, signal: AbortSignal) {
+export async function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInterop, surface: SurfaceLayer, signal: AbortSignal): Promise<void> {
   const keyedMesh = mesh as NiivueMeshInterop & { __surfaceDisplayKey?: string; rgba255?: [number, number, number, number] };
   const nextKey = surfaceDisplayKey(surface);
   if (keyedMesh.__surfaceDisplayKey === nextKey) return;
@@ -405,13 +429,14 @@ export function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInterop, su
     nv.updateGLVolume();
     return;
   }
-  void addSurfaceCompanionLayer(nv, mesh, surface, signal)
-    .then(() => nv.updateGLVolume())
-    .catch((error) => {
-      if (!signal.aborted) {
-        console.warn(`[NiivuePane] Could not update surface coloring for ${surface.name}:`, error);
-      }
-    });
+  try {
+    await addSurfaceCompanionLayer(nv, mesh, surface, signal);
+    nv.updateGLVolume();
+  } catch (error) {
+    if (!signal.aborted) {
+      console.warn(`[NiivuePane] Could not update surface coloring for ${surface.name}:`, error);
+    }
+  }
 }
 
 export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: AbortSignal) {
@@ -473,7 +498,7 @@ export async function addNiivueSurfaceLayer(nv: Niivue, surface: SurfaceLayer, s
     // Per-pane shader: 2D planes use 'Crosscut' (cross-section outline); the 3D
     // pane is left on Niivue's default shader to show the full shaded mesh.
     if (meshShader) nv.setMeshShader(surface.id, meshShader);
-    syncNiivueSurfaceDisplay(nv, mesh, surface, signal);
+    await syncNiivueSurfaceDisplay(nv, mesh, surface, signal);
   }
 }
 
@@ -532,15 +557,15 @@ export function locationFromNiivue(locationObject: unknown, nv: Niivue, sourceVo
   };
 }
 
-// Stable key over layer sources and visibility — used to trigger reconcile when
-// a layer must be loaded or removed without reacting to opacity/order changes.
+// Stable key over layer sources. Visibility deliberately stays out of this key:
+// show/hide should use the display sync path and must not trigger full image or
+// mesh reconciliation.
 export function sourceKeyOf(volumes: Volume[]): string {
   return volumes.map((volume) => [
     volume.id,
     volume.url,
     volume.filename,
     volume.type ?? 'intensity',
-    volume.visible ? 'visible' : 'hidden',
     isSurfaceLayer(volume) ? `${volume.curvatureUrl ?? ''}:${volume.annotationUrl ?? ''}` : '',
   ].join(':')).sort().join('|');
 }

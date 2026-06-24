@@ -7,6 +7,7 @@ import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueIntero
 import { resolveSurfaceLayerColorMode, SURFACE_COLOR_MODE_LABELS, surfaceColorModeAvailable } from '../utils/surfaceColors';
 import {
   clampOpacity,
+  effectiveLayerOpacity,
   layerDefaultOpacity,
   layerType,
   type NiivueViewerInterop,
@@ -61,6 +62,36 @@ const PANE_SLICE_TYPES: ViewerSliceType[] = [0, 1, 2, 4];
 // Niivue's actually-loaded colormaps at runtime.
 const INTENSITY_COLORMAPS = ['gray', 'bone', 'hot', 'cool', 'viridis', 'plasma', 'inferno', 'jet'];
 
+interface NeuroCadeViewerDebugState {
+  activeViewMode: NeuroCadeViewMode;
+  activeDragMode: ViewerDragMode;
+  mountedPaneCount: number;
+  activePaneCount: number;
+  loadedLayerIds: string[];
+  visibleLayerIds: string[];
+  layerOrder: string[];
+  windowings: Record<string, { calMin: number; calMax: number }>;
+}
+
+declare global {
+  interface Window {
+    __neurocadeViewerDebug?: {
+      getState: () => NeuroCadeViewerDebugState;
+      getMeasures: () => PerformanceMeasure[];
+      clearMeasures: () => void;
+    };
+  }
+}
+
+function markViewerMeasure(name: string, action: () => void): void {
+  const start = `neurocade:${name}:start`;
+  const end = `neurocade:${name}:end`;
+  performance.mark(start);
+  action();
+  performance.mark(end);
+  performance.measure(`neurocade:${name}`, start, end);
+}
+
 function titleCaseColormap(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
@@ -96,7 +127,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const instancesRef = useRef<Map<ViewerSliceType, Niivue>>(new Map());
   const manualWindowingRef = useRef<Set<string>>(new Set());
   const colormapsReportedRef = useRef(false);
-  const visibilityLoadingTimerRef = useRef<number | null>(null);
+  const refreshFrameRefs = useRef<Map<ViewerSliceType, number>>(new Map());
   const onLocationChangeRef = useRef(onLocationChange);
   const drawingSessionRef = useRef<DrawingSession>({ ...DEFAULT_DRAWING_OPTIONS, active: false, dirty: false, error: null });
   const drawingBitmapRef = useRef<Uint8Array | null>(null);
@@ -106,7 +137,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
 
   const [instancesVersion, setInstancesVersion] = useState(0);
   const [loadingPanes, setLoadingPanes] = useState<Record<number, boolean>>({});
-  const [visibilityLoading, setVisibilityLoading] = useState(false);
   const [referenceVolumeId, setReferenceVolumeId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<NeuroCadeViewMode>('multi');
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -126,7 +156,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const [drawingMenuOpen, setDrawingMenuOpen] = useState(false);
   drawingSessionRef.current = drawingSession;
 
-  const loading = visibilityLoading || Object.values(loadingPanes).some(Boolean);
+  const loading = Object.values(loadingPanes).some(Boolean);
   const selectedView = VIEW_MODES.find((mode) => mode.id === viewMode) ?? VIEW_MODES[VIEW_MODES.length - 1];
   const isGrid = viewMode === 'multi';
   const primarySliceType: ViewerSliceType = isGrid ? 0 : selectedView.sliceType;
@@ -134,6 +164,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     () => isGrid ? PANE_SLICE_TYPES : [selectedView.sliceType],
     [isGrid, selectedView.sliceType],
   );
+  const activePaneSet = useMemo(() => new Set(activePaneSliceTypes), [activePaneSliceTypes]);
   const groupedLayers = useMemo(() => ({
     intensity: volumes.filter((volume) => layerType(volume) === 'intensity'),
     segmentation: volumes.filter((volume) => layerType(volume) === 'segmentation'),
@@ -155,6 +186,38 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     setReferenceVolumeId((current) => (current === referenceId ? current : referenceId));
   }, [anyInstance]);
 
+  const scheduleInstanceRefresh = useCallback((sliceType: ViewerSliceType, nv: Niivue) => {
+    if (refreshFrameRefs.current.has(sliceType)) return;
+    const frame = window.requestAnimationFrame(() => {
+      refreshFrameRefs.current.delete(sliceType);
+      nv.updateGLVolume();
+    });
+    refreshFrameRefs.current.set(sliceType, frame);
+  }, []);
+
+  const applyImmediateVolumeUpdate = useCallback((id: string, updates: Partial<Volume>) => {
+    const source = volumes.find((volume) => volume.id === id);
+    if (!source) return;
+    const next = { ...source, ...updates } as Volume;
+    for (const [sliceType, nv] of instancesRef.current.entries()) {
+      const interop = asNiivueInterop(nv);
+      const loaded = interop.volumes.find((volume) => volume.id === id);
+      if (loaded) {
+        if (typeof updates.visible === 'boolean' || typeof updates.opacity === 'number') {
+          loaded.opacity = effectiveLayerOpacity(next);
+        }
+      }
+      const mesh = (interop.meshes ?? []).find((item) => item.id === id);
+      if (mesh) {
+        if (typeof updates.visible === 'boolean') mesh.visible = updates.visible;
+        if (typeof updates.opacity === 'number' || typeof updates.visible === 'boolean') {
+          mesh.opacity = effectiveLayerOpacity(next);
+        }
+      }
+      if (loaded || mesh) scheduleInstanceRefresh(sliceType, nv);
+    }
+  }, [scheduleInstanceRefresh, volumes]);
+
   useEffect(() => {
     const instances = [...instancesRef.current.values()];
     if (instances.length < 2) return;
@@ -170,30 +233,17 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     if (!isLoading) requestAnimationFrame(syncReferenceVolumeId);
   }, [syncReferenceVolumeId]);
 
-  const markVisibilityLoading = useCallback(() => {
-    if (visibilityLoadingTimerRef.current !== null) {
-      window.clearTimeout(visibilityLoadingTimerRef.current);
-    }
-    setVisibilityLoading(true);
-    visibilityLoadingTimerRef.current = window.setTimeout(() => {
-      visibilityLoadingTimerRef.current = null;
-      setVisibilityLoading(false);
-    }, 350);
-  }, []);
-
   const handleUpdateVolume = useCallback((id: string, updates: Partial<Volume>) => {
-    if (typeof updates.visible === 'boolean') {
-      const current = volumes.find((volume) => volume.id === id);
-      if (current && current.visible !== updates.visible) markVisibilityLoading();
-    }
+    applyImmediateVolumeUpdate(id, updates);
     onUpdateVolume(id, updates);
     requestAnimationFrame(syncReferenceVolumeId);
-  }, [markVisibilityLoading, onUpdateVolume, syncReferenceVolumeId, volumes]);
+  }, [applyImmediateVolumeUpdate, onUpdateVolume, syncReferenceVolumeId]);
 
   useEffect(() => () => {
-    if (visibilityLoadingTimerRef.current !== null) {
-      window.clearTimeout(visibilityLoadingTimerRef.current);
+    for (const frame of refreshFrameRefs.current.values()) {
+      window.cancelAnimationFrame(frame);
     }
+    refreshFrameRefs.current.clear();
   }, []);
 
   const handlePaneColormaps = useCallback((colormaps: string[]) => {
@@ -544,6 +594,48 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     },
   }), []);
 
+  useEffect(() => {
+    window.__neurocadeViewerDebug = {
+      getState: () => {
+        const loadedIds = new Set<string>();
+        const actualWindowings: Record<string, { calMin: number; calMax: number }> = {};
+        for (const nv of instancesRef.current.values()) {
+          for (const loaded of asNiivueInterop(nv).volumes) {
+            if (!loaded.id) continue;
+            loadedIds.add(loaded.id);
+            actualWindowings[loaded.id] = {
+              calMin: loaded.cal_min ?? windowings[loaded.id]?.calMin ?? 0,
+              calMax: loaded.cal_max ?? windowings[loaded.id]?.calMax ?? 0,
+            };
+          }
+          for (const mesh of asNiivueInterop(nv).meshes ?? []) {
+            if (mesh.id) loadedIds.add(mesh.id);
+          }
+        }
+        return {
+          activeViewMode: viewMode,
+          activeDragMode: dragMode,
+          mountedPaneCount: instancesRef.current.size,
+          activePaneCount: activePaneSliceTypes.length,
+          loadedLayerIds: [...loadedIds],
+          visibleLayerIds: volumes.filter((volume) => volume.visible).map((volume) => volume.id),
+          layerOrder: volumes.map((volume) => volume.id),
+          windowings: { ...windowings, ...actualWindowings },
+        };
+      },
+      getMeasures: () => performance.getEntriesByType('measure')
+        .filter((entry): entry is PerformanceMeasure => entry.entryType === 'measure' && entry.name.startsWith('neurocade:')),
+      clearMeasures: () => {
+        performance.getEntriesByType('measure')
+          .filter((entry) => entry.name.startsWith('neurocade:'))
+          .forEach((entry) => performance.clearMeasures(entry.name));
+      },
+    };
+    return () => {
+      delete window.__neurocadeViewerDebug;
+    };
+  }, [activePaneSliceTypes.length, dragMode, viewMode, volumes, windowings]);
+
   const toggleExpandLayer = useCallback((id: string, type: LayerType) => {
     setExpandedLayerId((prev) => prev === id ? null : id);
     if (type === 'intensity') {
@@ -568,10 +660,25 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
 
   const updateWindowing = useCallback((id: string, field: 'calMin' | 'calMax', value: number) => {
     manualWindowingRef.current.add(id);
+    for (const [sliceType, nv] of instancesRef.current.entries()) {
+      const loaded = asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
+      if (!loaded) continue;
+      if (field === 'calMin') loaded.cal_min = value;
+      if (field === 'calMax') loaded.cal_max = value;
+      scheduleInstanceRefresh(sliceType, nv);
+    }
     setWindowings((prev) => {
       const current = prev[id] ?? { calMin: 0, calMax: 1, globalMin: 0, globalMax: 1 };
       return { ...prev, [id]: { ...current, [field]: value } };
     });
+  }, [scheduleInstanceRefresh]);
+
+  const handleDragModeChange = useCallback((mode: ViewerDragMode) => {
+    markViewerMeasure(`tool:${mode}`, () => setDragMode(mode));
+  }, []);
+
+  const handleViewModeChange = useCallback((mode: NeuroCadeViewMode) => {
+    markViewerMeasure(`view:${mode}`, () => setViewMode(mode));
   }, []);
 
   const resetView = useCallback(() => {
@@ -687,10 +794,14 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
             const colormapOptions = intensityColormaps.includes(currentColormap)
               ? intensityColormaps
               : [currentColormap, ...intensityColormaps];
+            const windowStep = win ? ((win.globalMax - win.globalMin) / 200 || 0.01) : 0.01;
             return (
               <div
                 key={volume.id}
                 className={`nc-layer-item ${draggingLayerId === volume.id ? 'opacity-[0.55]' : ''} ${dropClass}`}
+                data-testid="viewer-layer-item"
+                data-layer-id={volume.id}
+                data-layer-type={typeName}
                 onDragOver={(event) => handleLayerDragOver(event, volume)}
                 onDragLeave={() => { if (dragTarget?.id === volume.id) setDragTarget(null); }}
                 onDrop={(event) => handleLayerDrop(event, volume)}
@@ -702,6 +813,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
                     onClick={() => handleUpdateVolume(volume.id, { visible: !volume.visible })}
                     aria-label={`${volume.visible ? 'Hide' : 'Show'} ${volume.name}`}
                     title={volume.visible ? 'Hide layer' : 'Show layer'}
+                    data-testid="viewer-layer-visibility"
                   >
                     {volume.visible ? <Eye size={14} /> : <EyeOff size={14} />}
                   </button>
@@ -776,11 +888,19 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
                                 type="range"
                                 min={win.globalMin}
                                 max={win.globalMax}
-                                step={(win.globalMax - win.globalMin) / 200 || 0.01}
+                                step={windowStep}
                                 value={win.calMin}
+                                onInput={(e) => updateWindowing(volume.id, 'calMin', Number(e.currentTarget.value))}
                                 onChange={(e) => updateWindowing(volume.id, 'calMin', Number(e.currentTarget.value))}
+                                onKeyDown={(event) => {
+                                  const direction = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
+                                  if (direction === 0) return;
+                                  event.preventDefault();
+                                  updateWindowing(volume.id, 'calMin', Math.max(win.globalMin, Math.min(win.calMax - windowStep, win.calMin + direction * windowStep)));
+                                }}
                                 className="nc-viewer-layer-slider"
                                 aria-label={`${volume.name} window minimum`}
+                                data-testid="viewer-window-min"
                               />
                               <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(win.calMin)}</span>
                             </div>
@@ -790,11 +910,19 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
                                 type="range"
                                 min={win.globalMin}
                                 max={win.globalMax}
-                                step={(win.globalMax - win.globalMin) / 200 || 0.01}
+                                step={windowStep}
                                 value={win.calMax}
+                                onInput={(e) => updateWindowing(volume.id, 'calMax', Number(e.currentTarget.value))}
                                 onChange={(e) => updateWindowing(volume.id, 'calMax', Number(e.currentTarget.value))}
+                                onKeyDown={(event) => {
+                                  const direction = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
+                                  if (direction === 0) return;
+                                  event.preventDefault();
+                                  updateWindowing(volume.id, 'calMax', Math.min(win.globalMax, Math.max(win.calMin + windowStep, win.calMax + direction * windowStep)));
+                                }}
                                 className="nc-viewer-layer-slider"
                                 aria-label={`${volume.name} window maximum`}
+                                data-testid="viewer-window-max"
                               />
                               <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(win.calMax)}</span>
                             </div>
@@ -1098,7 +1226,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
 
       <main className="nc-viewer-main min-w-0 flex-1 overflow-hidden bg-[var(--nc-bg-deep)]">
         <div className={`nc-viewer-grid ${isGrid ? 'is-grid' : 'is-single'}`}>
-          {activePaneSliceTypes.map((sliceType) => (
+          {PANE_SLICE_TYPES.map((sliceType) => (
             <NiivuePane
               key={sliceType}
               sliceType={sliceType}
@@ -1108,6 +1236,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
               dragMode={dragMode}
               externalCoordinate={externalCoordinate}
               reportLocation={sliceType === primarySliceType}
+              hidden={!activePaneSet.has(sliceType)}
               onReady={handlePaneReady}
               onLocationChange={handlePaneLocation}
               onLoadingChange={handlePaneLoading}
@@ -1131,8 +1260,8 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           dragMode={dragMode}
           viewMode={viewMode}
           location={currentLocation}
-          onDragModeChange={setDragMode}
-          onViewModeChange={setViewMode}
+          onDragModeChange={handleDragModeChange}
+          onViewModeChange={handleViewModeChange}
           onOpenHelp={() => setHelpOpen(true)}
           onResetView={resetView}
         />

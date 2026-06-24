@@ -417,7 +417,7 @@ export function useCaseWorkspaceController({
   }, [availableCases]);
 
   useEffect(() => {
-    const interval = setInterval(fetchAvailableCases, 10000);
+    const interval = setInterval(fetchAvailableCases, 60000);
     return () => clearInterval(interval);
   }, [fetchAvailableCases]);
 

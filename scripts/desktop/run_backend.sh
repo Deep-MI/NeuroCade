@@ -24,6 +24,13 @@ export DATABASE_URL
 export APP_HTTP_BIND="${APP_HTTP_BIND:-127.0.0.1}"
 export APP_HTTP_PORT="${APP_HTTP_PORT:-8000}"
 
+if [[ "$APP_HTTP_BIND" == "0.0.0.0" ]]; then
+  APP_DISPLAY_HOST="localhost"
+else
+  APP_DISPLAY_HOST="$APP_HTTP_BIND"
+fi
+echo "Starting NeuroCade at http://${APP_DISPLAY_HOST}:${APP_HTTP_PORT}/"
+
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="$(command -v uv >/dev/null 2>&1 && echo uv || true)"

@@ -51,7 +51,7 @@ function surfaceKey(surface: SurfaceLayer): string {
 }
 
 function isSliceRenderedSurface(volume: Volume): volume is SurfaceLayer {
-  return isSurfaceLayer(volume) && (volume.renderInSlices ?? true);
+  return isSurfaceLayer(volume) && volume.visible && (volume.renderInSlices ?? true);
 }
 
 function surfacesKey(volumes: Volume[]): string {
@@ -99,6 +99,17 @@ function rgbaCss(surface: SurfaceLayer): string {
 function currentScreenSlice(nv: Niivue | null, sliceType: ViewerPlaneSliceType): NiivueScreenSlice | null {
   const slices = (nv as unknown as ContourNiivueInterop | null)?.screenSlices;
   return slices?.find((slice) => slice.axCorSag === sliceType && slice.leftTopMM?.length >= 2 && slice.fovMM?.length >= 2) ?? null;
+}
+
+function screenSliceSignature(tile: NiivueScreenSlice | null): string {
+  if (!tile) return '';
+  return [
+    tile.axCorSag,
+    tile.leftTopWidthHeight.join(','),
+    tile.leftTopMM.join(','),
+    tile.fovMM.join(','),
+    tile.AxyzMxy?.join(',') ?? '',
+  ].join('|');
 }
 
 function projectPointWithTile(
@@ -171,6 +182,8 @@ export function SurfaceContourOverlay({ sliceType, volumes, nvRef }: SurfaceCont
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const entriesRef = useRef<SurfaceContourEntry[]>([]);
   const volumesRef = useRef(volumes);
+  const drawFrameRef = useRef<number | null>(null);
+  const lastDrawSignatureRef = useRef('');
   const [entries, setEntries] = useState<SurfaceContourEntry[]>([]);
   const [paneGeometryKey, setPaneGeometryKey] = useState('');
   const surfaceSourceKey = useMemo(() => surfacesKey(volumes), [volumes]);
@@ -222,11 +235,20 @@ export function SurfaceContourOverlay({ sliceType, volumes, nvRef }: SurfaceCont
   }, [nvRef, paneGeometryKey, surfaceSourceKey]);
 
   useEffect(() => {
-    let frame = 0;
-    const draw = () => {
+    const draw = (force = false) => {
       const canvas = canvasRef.current;
       const context = canvas?.getContext('2d');
       if (canvas && context) {
+        const tile = currentScreenSlice(nvRef.current, sliceType);
+        const signature = [
+          screenSliceSignature(tile),
+          surfaceSourceKey,
+          entriesRef.current.length,
+          canvas.clientWidth,
+          canvas.clientHeight,
+        ].join('::');
+        if (!force && signature === lastDrawSignatureRef.current) return;
+        lastDrawSignatureRef.current = signature;
         const dpr = window.devicePixelRatio || 1;
         const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
         const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
@@ -244,11 +266,59 @@ export function SurfaceContourOverlay({ sliceType, volumes, nvRef }: SurfaceCont
           entriesRef.current,
         );
       }
-      frame = requestAnimationFrame(draw);
     };
-    frame = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(frame);
-  }, [nvRef, sliceType]);
+
+    const requestDraw = (force = false) => {
+      if (drawFrameRef.current !== null) return;
+      drawFrameRef.current = requestAnimationFrame(() => {
+        drawFrameRef.current = null;
+        draw(force);
+      });
+    };
+
+    requestDraw(true);
+    const resizeObserver = new ResizeObserver(() => requestDraw(true));
+    if (canvasRef.current) resizeObserver.observe(canvasRef.current);
+    const interval = window.setInterval(() => requestDraw(false), 250);
+    const handleResize = () => requestDraw(true);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', handleResize);
+      window.clearInterval(interval);
+      if (drawFrameRef.current !== null) {
+        cancelAnimationFrame(drawFrameRef.current);
+        drawFrameRef.current = null;
+      }
+    };
+  }, [nvRef, sliceType, surfaceSourceKey]);
+
+  useEffect(() => {
+    lastDrawSignatureRef.current = '';
+    if (drawFrameRef.current !== null) return;
+    drawFrameRef.current = requestAnimationFrame(() => {
+      drawFrameRef.current = null;
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext('2d');
+      if (!canvas || !context) return;
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawSurfaceContours(
+        context,
+        canvas,
+        sliceType,
+        nvRef.current,
+        volumesRef.current.filter(isSliceRenderedSurface),
+        entriesRef.current,
+      );
+    });
+  }, [entries, nvRef, sliceType, surfaceSourceKey]);
 
   return <canvas ref={canvasRef} className="nc-viewer-surface-contours" aria-hidden="true" />;
 }

@@ -94,8 +94,8 @@ export function surfaceColorModeAvailable(layer: SurfaceLayer, mode: SurfaceColo
 }
 
 export function defaultSurfaceColorModeForLayer(layer: SurfaceLayer): SurfaceColorMode {
-    if (layer.annotationUrl) return 'annotation';
     if (layer.curvatureUrl) return 'curvature';
+    if (layer.annotationUrl) return 'annotation';
     return 'solid';
 }
 
@@ -109,8 +109,8 @@ export function resolveSurfaceColorMode(layer: SurfaceLayer, curvature: Float32A
     if (requested === 'solid') return 'solid';
     if (requested === 'curvature' && curvature) return 'curvature';
     if (requested === 'annotation' && annotation) return 'annotation';
-    if (annotation) return 'annotation';
     if (curvature) return 'curvature';
+    if (annotation) return 'annotation';
     return 'solid';
 }
 
