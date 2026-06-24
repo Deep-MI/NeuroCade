@@ -40,6 +40,24 @@ function makeSurface(vertices: number[], indices: number[]): ArrayBuffer {
   return buffer;
 }
 
+function makeSurfaceWithVolumeInfo(vertices: number[], indices: number[], volumeInfo: string): ArrayBuffer {
+  const base = new Uint8Array(makeSurface(vertices, indices));
+  const footer = new TextEncoder().encode(volumeInfo);
+  const buffer = new ArrayBuffer(base.byteLength + 12 + footer.byteLength);
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  bytes.set(base, 0);
+  let offset = base.byteLength;
+  view.setUint32(offset, 2, false);
+  offset += 4;
+  view.setUint32(offset, 0, false);
+  offset += 4;
+  view.setUint32(offset, 20, false);
+  offset += 4;
+  bytes.set(footer, offset);
+  return buffer;
+}
+
 function makeTriangleSurface(): ArrayBuffer {
   return makeSurface(
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -150,6 +168,30 @@ void test('parseFreeSurferSurface reads binary triangle surfaces and computes no
   assert.deepEqual([...surface.indices], [0, 1, 2]);
   assert.deepEqual([...surface.vertices], [0, 0, 0, 1, 0, 0, 0, 1, 0]);
   assert.deepEqual([...surface.normals], [0, 0, 1, 0, 0, 1, 0, 0, 1]);
+});
+
+void test('parseFreeSurferSurface reads optional FreeSurfer volume info footer', () => {
+  const surface = parseFreeSurferSurface(makeSurfaceWithVolumeInfo(
+    [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    [0, 1, 2],
+    [
+      'valid = 1  # volume info valid',
+      'filename = /subject/mri/wm.mgz',
+      'volume = 320 320 320',
+      'voxelsize = 0.8 0.8 0.8',
+      'xras   = -1 0 0',
+      'yras   = 0 0 -1',
+      'zras   = 0 1 0',
+      'cras   = -0.1 23.4 -25.6',
+    ].join('\n'),
+  ));
+
+  assert.deepEqual(surface.volumeInfo?.volume, [320, 320, 320]);
+  assert.deepEqual(surface.volumeInfo?.voxelsize, [0.8, 0.8, 0.8]);
+  assert.deepEqual(surface.volumeInfo?.xras, [-1, 0, 0]);
+  assert.deepEqual(surface.volumeInfo?.yras, [0, 0, -1]);
+  assert.deepEqual(surface.volumeInfo?.zras, [0, 1, 0]);
+  assert.deepEqual(surface.volumeInfo?.cras, [-0.1, 23.4, -25.6]);
 });
 
 void test('parseFreeSurferSurface keeps closed mesh normals outward', () => {

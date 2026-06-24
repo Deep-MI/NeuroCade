@@ -13,7 +13,19 @@
     "src/utils/SurfaceLoader.ts",
     "src/utils/layerAliases.ts",
     "src/utils/surfaceLighting.ts",
+    "src/neurocadeViewer/referenceVolume.ts",
+    "src/neurocadeViewer/labelLookup.ts",
+    "src/neurocadeViewer/surfaceTransforms.ts",
+    "src/neurocadeViewer/surfaceContours.ts",
+    "src/neurocadeViewer/nativeDrawingHelpers.ts",
+    "src/types.ts",
+    "src/utils/niivueInterop.ts",
     "tests/layerAliases.test.ts",
-    "tests/SurfaceLoader.test.ts"
+    "tests/nativeDrawing.test.ts",
+    "tests/niivueLayers.test.ts",
+    "tests/SurfaceLoader.test.ts",
+    "tests/referenceVolume.test.ts",
+    "tests/surfaceTransforms.test.ts",
+    "tests/surfaceContours.test.ts"
   ]
 }

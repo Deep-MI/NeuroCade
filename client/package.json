@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.20.0",
+    "@niivue/niivue": "0.68.2",
     "@types/react-syntax-highlighter": "^15.5.13",
     "clsx": "^2.1.1",
     "lucide-react": "^0.562.0",

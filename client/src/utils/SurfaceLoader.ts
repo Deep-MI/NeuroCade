@@ -4,6 +4,18 @@ export interface SurfaceMeshData {
     indices: Uint32Array;
     vertexCount: number;
     faceCount: number;
+    volumeInfo?: FreeSurferSurfaceVolumeInfo;
+}
+
+export interface FreeSurferSurfaceVolumeInfo {
+    valid?: number;
+    filename?: string;
+    volume?: [number, number, number];
+    voxelsize?: [number, number, number];
+    xras?: [number, number, number];
+    yras?: [number, number, number];
+    zras?: [number, number, number];
+    cras?: [number, number, number];
 }
 
 export interface SurfaceAnnotationData {
@@ -209,6 +221,62 @@ function skipLine(bytes: Uint8Array, offset: number): number {
     return Math.min(cursor + 1, bytes.length);
 }
 
+function numberTriple(value: string): [number, number, number] | undefined {
+    const values = value.trim().split(/\s+/).slice(0, 3).map(Number);
+    return values.length === 3 && values.every(Number.isFinite)
+        ? [values[0], values[1], values[2]]
+        : undefined;
+}
+
+function parseFreeSurferSurfaceVolumeInfo(buffer: ArrayBuffer, offset: number): FreeSurferSurfaceVolumeInfo | undefined {
+    if (offset + 4 > buffer.byteLength) return undefined;
+    const view = new DataView(buffer);
+    const head0 = view.getUint32(offset, false);
+    offset += 4;
+    if (head0 !== 20) {
+        if (offset + 8 > buffer.byteLength) return undefined;
+        const head1 = view.getUint32(offset, false);
+        const head2 = view.getUint32(offset + 4, false);
+        offset += 8;
+        if (head0 !== 2 || head1 !== 0 || head2 !== 20) return undefined;
+    }
+
+    const text = new TextDecoder().decode(buffer.slice(offset));
+    const info: FreeSurferSurfaceVolumeInfo = {};
+    for (const rawLine of text.split('\n')) {
+        const line = rawLine.replace(/\0/g, '').trim();
+        const match = /^([A-Za-z0-9_]+)\s*=\s*([^#]*)/.exec(line);
+        if (!match) continue;
+        const key = match[1].toLowerCase();
+        const value = match[2].trim();
+        if (key === 'valid') {
+            const valid = Number.parseInt(value, 10);
+            if (Number.isFinite(valid)) info.valid = valid;
+        } else if (key === 'filename') {
+            info.filename = value;
+        } else if (key === 'volume') {
+            const triple = numberTriple(value);
+            if (triple) info.volume = triple;
+        } else if (key === 'voxelsize') {
+            const triple = numberTriple(value);
+            if (triple) info.voxelsize = triple;
+        } else if (key === 'xras') {
+            const triple = numberTriple(value);
+            if (triple) info.xras = triple;
+        } else if (key === 'yras') {
+            const triple = numberTriple(value);
+            if (triple) info.yras = triple;
+        } else if (key === 'zras') {
+            const triple = numberTriple(value);
+            if (triple) info.zras = triple;
+        } else if (key === 'cras') {
+            const triple = numberTriple(value);
+            if (triple) info.cras = triple;
+        }
+    }
+    return Object.keys(info).length > 0 ? info : undefined;
+}
+
 function computeVertexNormals(vertices: Float32Array, indices: Uint32Array): Float32Array {
     const normals = new Float32Array(vertices.length);
 
@@ -303,5 +371,6 @@ export function parseFreeSurferSurface(buffer: ArrayBuffer): SurfaceMeshData {
         indices,
         vertexCount,
         faceCount,
+        volumeInfo: parseFreeSurferSurfaceVolumeInfo(buffer, offset),
     };
 }

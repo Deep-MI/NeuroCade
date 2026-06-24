@@ -12,6 +12,7 @@ from api_service.cases.operations import (
     get_case_logs_for_user,
     list_case_runs_for_user,
     list_visible_cases,
+    save_generated_case_volume,
     start_fastsurfer_run,
     update_case_metadata,
 )
@@ -19,7 +20,7 @@ from api_service.deps import get_context, get_db
 from api_service.helpers import get_workspace_for_user
 from api_service.policies import require_workspace_manage
 from api_service.runtime.service import runtime_service
-from api_service.schemas import RunSummary, CaseDetail, CaseRenameRequest, CaseRenameResponse, CaseSummary, StartRunRequest, UploadResponse
+from api_service.schemas import ArtifactSummary, RunSummary, CaseDetail, CaseRenameRequest, CaseRenameResponse, CaseSummary, StartRunRequest, UploadResponse
 from backend_common.auth import AuthContext
 
 
@@ -84,6 +85,19 @@ async def add_case_upload(
 ) -> UploadResponse:
     """Attach uploaded input files to an existing case."""
     return await add_upload_to_case(db, context, case_id=case_id, file=file, files=files)
+
+
+@router.post("/cases/{case_id}/generated-volume", response_model=ArtifactSummary)
+async def save_generated_volume(
+    case_id: str,
+    filename: str = Form(...),
+    metadata: str | None = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> ArtifactSummary:
+    """Save a generated viewer volume as a case artifact."""
+    return await save_generated_case_volume(db, context, case_id=case_id, filename=filename, metadata=metadata, file=file)
 
 
 @router.post("/runs", response_model=RunSummary)

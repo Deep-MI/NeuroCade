@@ -1,6 +1,6 @@
 import { Children, useCallback, useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { type LocationInfo, type MriSnapshots } from './MriViewer';
+import type { LocationInfo, MriSnapshots } from '../types';
 import type {
     AssistantScope,
     ChatMessage,

@@ -13,7 +13,6 @@ const CaseListPage = lazy(() => import('./pages/CaseListPage.tsx').then(module =
 const CaseDetailPage = lazy(() => import('./pages/CaseDetailPage.tsx').then(module => ({ default: module.CaseDetailPage })))
 const SignInPage = lazy(() => import('./pages/SignInPage.tsx').then(module => ({ default: module.SignInPage })))
 const SignUpPage = lazy(() => import('./pages/SignUpPage.tsx').then(module => ({ default: module.SignUpPage })))
-const MriViewerDebugPage = lazy(() => import('./pages/MriViewerDebugPage.tsx').then(module => ({ default: module.MriViewerDebugPage })))
 const MonitoringPage = lazy(() => import('./pages/MonitoringPage.tsx').then(module => ({ default: module.MonitoringPage })))
 
 installGlobalErrorReporting()
@@ -64,14 +63,6 @@ const router = createBrowserRouter([
           },
         ],
       },
-      ...(import.meta.env.DEV
-        ? [
-            {
-              path: '/_dev/mri-viewer/header-mismatch',
-              element: <MriViewerDebugPage />,
-            },
-          ]
-        : []),
       {
         path: '*',
         element: <Navigate to="/" replace />,

@@ -9,7 +9,7 @@ export default defineConfig({
     allowedHosts: ['kronecker.dzne.ds', 'hopper.dzne.de', 'hopper.dzne.ds', 'germain.dzne.de', 'gateway', 'client'],
     proxy: {
       '/api/app': {
-        target: 'http://api-service:8000',
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://api-service:8000',
         changeOrigin: true,
       },
     },
