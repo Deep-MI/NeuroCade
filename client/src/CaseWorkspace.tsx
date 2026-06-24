@@ -1,10 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, Download, FileUp, Folder, Layers, LoaderCircle, MessageSquare, Moon, Play, RefreshCw, SlidersHorizontal, Square, Sun, TerminalSquare, X } from 'lucide-react';
+import { ArrowLeft, Check, Download, FileUp, Folder, Layers, LoaderCircle, MessageSquare, Moon, Play, RefreshCw, Square, Sun, TerminalSquare, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAppSession } from './auth/sessionContext';
 import { DownloadCaseModal } from './components/DownloadCaseModal';
-import type { LocationInfo, MriViewerRef } from './components/MriViewer';
+import type { LocationInfo, MriViewerRef } from './types';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { UploadCaseModal } from './components/UploadCaseModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -14,13 +14,13 @@ import { useGuiStateSync } from './hooks/useGuiStateSync';
 import { useHorizontalPaneResize } from './hooks/useHorizontalPaneResize';
 import { useWorkspaceVolumeState } from './hooks/useWorkspaceVolumeState';
 import { isSegmentationLayer, type ArtifactListItem, type LayerType, type OutputVolume, type Volume } from './types';
-import { downloadArtifactFile, downloadCaseArchive as downloadCaseArchiveFile, fetchCaseArtifacts, fetchOutputsList } from './utils/api';
+import { makeDrawingFilename, type DrawingLut, type DrawingSession } from './neurocadeViewer/nativeDrawing';
+import { downloadArtifactFile, downloadCaseArchive as downloadCaseArchiveFile, fetchCaseArtifacts, fetchOutputsList, saveGeneratedVolume } from './utils/api';
 import { defaultPaneWidth } from './utils/guiSession';
 import { layerDisplayName } from './utils/layerAliases';
 
-const MriViewer = lazy(() => import('./components/MriViewer').then(module => ({ default: module.MriViewer })));
+const NeuroCadeCaseViewer = lazy(() => import('./neurocadeViewer/NeuroCadeCaseViewer').then(module => ({ default: module.NeuroCadeCaseViewer })));
 const CaseManagerModal = lazy(() => import('./components/CaseManagerModal').then(module => ({ default: module.CaseManagerModal })));
-const LayerControl = lazy(() => import('./components/LayerControl').then(module => ({ default: module.LayerControl })));
 const Chat = lazy(() => import('./components/Chat').then(module => ({ default: module.Chat })));
 
 interface CaseWorkspaceProps {
@@ -30,14 +30,22 @@ interface CaseWorkspaceProps {
 
 const DOWNLOAD_ARTIFACT_TIMEOUT_MS = 8000;
 
+interface SavedNativeDrawing {
+  filename: string;
+  data: Uint8Array;
+  lut: DrawingLut;
+  source?: DrawingSession['source'];
+}
+
 const LAYER_PICKER_LABELS: Record<LayerType, string> = {
   intensity: 'Intensity Volume',
   segmentation: 'Segmentation Volume',
+  drawing: 'Drawing Source',
   surface: 'Surface Mesh',
 };
 
 function outputVolumeType(volume: OutputVolume): LayerType {
-  return volume.type === 'surface' || volume.type === 'segmentation' || volume.type === 'intensity'
+  return volume.type === 'surface' || volume.type === 'segmentation' || volume.type === 'drawing' || volume.type === 'intensity'
     ? volume.type
     : 'intensity';
 }
@@ -130,7 +138,7 @@ function LayerPickerModal({ type, options, loadedFilenames, loading, error, onCl
                     onClick={() => onLoad(option)}
                     title={loaded ? `${pathLabel} is already loaded` : `Load ${pathLabel}`}
                   >
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${type === 'surface' ? 'bg-[var(--nc-warning)]' : type === 'segmentation' ? 'bg-[var(--nc-success)]' : 'bg-[var(--nc-interactive)]'}`} />
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${type === 'surface' ? 'bg-[var(--nc-warning)]' : type === 'segmentation' ? 'bg-[var(--nc-success)]' : type === 'drawing' ? 'bg-[var(--nc-accent)]' : 'bg-[var(--nc-interactive)]'}`} />
                     <span className="min-w-0 flex-1">
                       <span className={`block truncate text-sm ${loaded ? 'text-[var(--nc-tx-faint)]' : 'text-[var(--nc-tx)]'}`}>{displayName}</span>
                       <span className="nc-mono block truncate text-[11px] text-[var(--nc-tx-dim)]">{pathLabel}</span>
@@ -196,7 +204,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     navigate,
     volumes,
     setVolumes,
-    isMaskLikeVolume,
   });
   const currentFastSurferInput = useMemo(
     () => selectCurrentIntensityInput(controller.runInputOptions, volumes),
@@ -207,7 +214,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     activeCaseId: controller.activeCaseId,
     initialCaseId,
     uploadCaseId: controller.uploadState.caseId,
-    isMaskLikeVolume,
     setVolumes,
   });
 
@@ -220,7 +226,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     currentCaseId: controller.activeCaseId,
     currentIntensityArtifactId: currentFastSurferInput?.id ?? null,
     currentIntensityVolume: currentFastSurferInput?.filename ?? null,
-    currentLocation,
     isRunActive,
     onSyncResponse: data => {
       if (data.requested_cursor_position) {
@@ -398,6 +403,32 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     setLayerPickerLoading(false);
   }, []);
 
+  const saveNativeDrawing = useCallback(async (drawing: SavedNativeDrawing) => {
+    const caseId = controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId;
+    if (!caseId) throw new Error('No active case selected.');
+    const filename = makeDrawingFilename(drawing.filename);
+    const drawingBuffer = new ArrayBuffer(drawing.data.byteLength);
+    new Uint8Array(drawingBuffer).set(drawing.data);
+    const artifact = await saveGeneratedVolume(caseId, {
+      filename,
+      blob: new Blob([drawingBuffer], { type: 'application/octet-stream' }),
+      metadata: {
+        source_artifact_id: drawing.source?.artifactId,
+        source_layer_id: drawing.source?.layerId,
+        layer_role: 'drawing',
+        volume_role: 'segmentation',
+        lut: drawing.lut,
+      },
+    });
+    volumeState.handleLoadVolumeCommand({
+      downloadPath: artifact.downloadPath,
+      filename: artifact.name,
+      type: 'segmentation',
+      lut: drawing.lut,
+      visible: true,
+    });
+  }, [controller.activeCaseId, controller.uploadState.caseId, initialCaseId, volumeState]);
+
   const loadSelectedLayer = useCallback((option: OutputVolume) => {
     const layerType = outputVolumeType(option);
     volumeState.handleLoadVolumeCommand({
@@ -406,6 +437,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
       type: layerType,
       lut: option.lut ?? (layerType === 'segmentation' && isMaskLikeVolume(option.filename) ? 'binary' : undefined),
       customLutDownloadUrl: option.customLutDownloadUrl,
+      surfaceReferenceAffine: option.surfaceReferenceAffine,
       curvatureDownloadUrl: option.curvatureDownloadUrl,
       annotationDownloadUrl: option.annotationDownloadUrl,
       visible: true,
@@ -483,48 +515,25 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
       </div>
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {layerPanelOpen && (
-          <aside className="nc-panel relative flex shrink-0 flex-col overflow-hidden border-r" style={{ width: layerPanelWidth }}>
-            <div className="nc-pane-header">
-              <SlidersHorizontal size={12} />
-              <span>Layers</span>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <Suspense fallback={<div className="text-sm text-[var(--nc-tx-muted)]">Loading layers...</div>}>
-                <LayerControl
-                  volumes={volumes}
-                  onUpdateVolume={volumeState.updateVolume}
-                  onReorderVolume={volumeState.reorderVolume}
-                  onRemoveVolume={volumeState.removeVolume}
-                  onOpenLayerPicker={openLayerPicker}
-                  canAddLayers={Boolean(controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId)}
-                  location={currentLocation}
-                />
-              </Suspense>
-            </div>
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              className="nc-resize-handle nc-resize-handle-right"
-              onMouseDown={startLayerPanelResize}
+        <ErrorBoundary label="NeuroCadeCaseViewer">
+          <Suspense fallback={<div className="flex h-full min-w-0 flex-1 items-center justify-center bg-[var(--nc-bg-deep)] text-sm text-[var(--nc-tx-muted)]">Loading viewer...</div>}>
+            <NeuroCadeCaseViewer
+              ref={mriViewerRef}
+              volumes={volumes}
+              layerPanelOpen={layerPanelOpen}
+              layerPanelWidth={layerPanelWidth}
+              onStartLayerPanelResize={startLayerPanelResize}
+              onUpdateVolume={volumeState.updateVolume}
+              onReorderVolume={volumeState.reorderVolume}
+              onRemoveVolume={volumeState.removeVolume}
+              onOpenLayerPicker={openLayerPicker}
+              onSaveDrawing={saveNativeDrawing}
+              canAddLayers={Boolean(controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId)}
+              onLocationChange={setCurrentLocation}
+              externalCoordinate={requestedCursor}
             />
-          </aside>
-        )}
-
-        <main className="min-w-0 flex-1 overflow-hidden bg-[var(--nc-bg-deep)] p-[3px]">
-          <ErrorBoundary label="MriViewer">
-            <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-[var(--nc-tx-muted)]">Loading viewer...</div>}>
-              <MriViewer
-                ref={mriViewerRef}
-                volumes={volumes}
-                onLocationChange={setCurrentLocation}
-                externalCoordinate={requestedCursor}
-                onVolumeLutDetected={volumeState.handleVolumeLutDetected}
-                showSurfacePlaceholder
-              />
-            </Suspense>
-          </ErrorBoundary>
-        </main>
+          </Suspense>
+        </ErrorBoundary>
 
         {rightPanel && (
           <aside className="nc-panel relative flex shrink-0 flex-col overflow-hidden border-l" style={{ width: rightPanelWidth }}>

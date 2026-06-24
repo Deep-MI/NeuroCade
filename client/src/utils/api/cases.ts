@@ -157,6 +157,11 @@ export async function fetchOutputsList(caseId: string): Promise<OutputsListRespo
         customLutDownloadUrl: typeof artifact.metadata?.custom_lut_url === 'string'
           ? appUrl(artifact.metadata.custom_lut_url)
           : undefined,
+        surfaceReferenceAffine: Array.isArray(artifact.metadata?.surface_reference_affine)
+          ? artifact.metadata.surface_reference_affine as number[][]
+          : Array.isArray(artifact.metadata?.surfaceReferenceAffine)
+            ? artifact.metadata.surfaceReferenceAffine as number[][]
+            : undefined,
         curvatureDownloadUrl: typeof artifact.metadata?.curvature_url === 'string'
           ? appUrl(artifact.metadata.curvature_url)
           : typeof artifact.metadata?.hemisphere === 'string'
@@ -180,6 +185,26 @@ export async function fetchCaseArtifacts(caseId: string): Promise<ArtifactListIt
     'Failed to fetch case artifacts',
   );
   return artifacts.map(normalizeArtifactListItem);
+}
+
+export async function saveGeneratedVolume(
+  caseId: string,
+  params: {
+    filename: string;
+    blob: Blob;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<ArtifactListItem> {
+  const formData = new FormData();
+  formData.append('filename', params.filename);
+  formData.append('metadata', JSON.stringify(params.metadata ?? {}));
+  formData.append('file', params.blob, params.filename);
+  const response = await appFetch(`/cases/${encodeURIComponent(caseId)}/generated-volume`, {
+    method: 'POST',
+    body: formData,
+  });
+  await expectOk(response, 'Failed to save generated volume');
+  return normalizeArtifactListItem(await response.json() as ApiArtifactListItem);
 }
 
 function filenameFromContentDisposition(headerValue: string | null, fallback: string): string {

@@ -1,7 +1,6 @@
 import { useEffect } from 'react'
 
 import type { GuiStateSyncResponse, Volume } from '../types'
-import type { LocationInfo } from '../components/MriViewer'
 import * as api from '../utils/api'
 
 interface UseGuiStateSyncOptions {
@@ -13,7 +12,6 @@ interface UseGuiStateSyncOptions {
   currentCaseId: string | null
   currentIntensityArtifactId: string | null
   currentIntensityVolume: string | null
-  currentLocation: LocationInfo | null
   isRunActive: (status: string) => boolean
   onSyncResponse: (response: GuiStateSyncResponse) => void
   onError?: (error: unknown) => void
@@ -28,7 +26,6 @@ export function useGuiStateSync({
   currentCaseId,
   currentIntensityArtifactId,
   currentIntensityVolume,
-  currentLocation,
   isRunActive,
   onSyncResponse,
   onError,
@@ -48,11 +45,6 @@ export function useGuiStateSync({
         visible_volumes: volumes.filter(v => v.visible).map(v => v.filename),
         current_intensity_artifact_id: currentIntensityArtifactId,
         current_intensity_volume: currentIntensityVolume,
-        current_cursor: currentLocation ? {
-          voxel: currentLocation.vox,
-          label_id: currentLocation.labelIndex,
-          label_name: currentLocation.labelName,
-        } : null,
       }).then(onSyncResponse).catch(error => {
         onError?.(error)
       })
@@ -62,5 +54,5 @@ export function useGuiStateSync({
     syncState()
 
     return () => clearInterval(interval)
-  }, [caseId, currentCaseId, currentIntensityArtifactId, currentIntensityVolume, currentLocation, guiSessionId, isRunActive, onError, onSyncResponse, runStatus, volumes, workspaceId])
+  }, [caseId, currentCaseId, currentIntensityArtifactId, currentIntensityVolume, guiSessionId, isRunActive, onError, onSyncResponse, runStatus, volumes, workspaceId])
 }

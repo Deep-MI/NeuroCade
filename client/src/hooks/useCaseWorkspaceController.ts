@@ -20,7 +20,6 @@ interface UseCaseWorkspaceControllerArgs {
   navigate: NavigateFunction;
   volumes: Volume[];
   setVolumes: Dispatch<SetStateAction<Volume[]>>;
-  isMaskLikeVolume: (filename: string) => boolean;
 }
 
 function chooseRunInputArtifactId(options: OutputVolume[], layers: Volume[], requestedId?: string | null): string | null {
@@ -58,7 +57,6 @@ export function useCaseWorkspaceController({
   navigate,
   volumes,
   setVolumes,
-  isMaskLikeVolume,
 }: UseCaseWorkspaceControllerArgs) {
   const [runInputOptions, setRunInputOptions] = useState<OutputVolume[]>([]);
   const [currentCaseTitle, setCurrentCaseTitle] = useState<string | null>(null);
@@ -105,14 +103,14 @@ export function useCaseWorkspaceController({
       const visibleVolumes = visibleOutputVolumes(dedupedVolumes, closedFilenames);
       const hasOrigVolume = visibleVolumes.some((volume) => isLayerFile(volume.filename, 'orig.mgz'));
       const newLayers: Volume[] = visibleVolumes.map((volume) => (
-        outputVolumeToLayer(volume, { hasOrigVolume, isMaskLikeVolume, initialIntensityVolume })
+        outputVolumeToLayer(volume, { hasOrigVolume, initialIntensityVolume })
       ));
 
       setVolumes(newLayers);
     } catch (error) {
       console.error('Error fetching outputs:', error);
     }
-  }, [isMaskLikeVolume, isStaleWorkspaceAction, setVolumes]);
+  }, [isStaleWorkspaceAction, setVolumes]);
 
   const fetchAvailableCases = useCallback(async () => {
     try {
@@ -163,11 +161,14 @@ export function useCaseWorkspaceController({
             ...serverVolume,
             visible: persistedVolume.visible,
             opacity: persistedVolume.opacity,
+            renderIn3D: persistedVolume.renderIn3D,
+            renderInSlices: persistedVolume.renderInSlices,
           };
           if (isSurfaceLayer(serverVolume) && persistedVolume.type === 'surface') {
             return {
               ...restored,
               surfaceColorMode: resolveSurfaceLayerColorMode({ ...serverVolume, surfaceColorMode: persistedVolume.surfaceColorMode ?? serverVolume.surfaceColorMode }),
+              surfaceReferenceAffine: persistedVolume.surfaceReferenceAffine ?? serverVolume.surfaceReferenceAffine,
               curvatureNegativeThreshold: persistedVolume.curvatureNegativeThreshold ?? serverVolume.curvatureNegativeThreshold,
               curvaturePositiveThreshold: persistedVolume.curvaturePositiveThreshold ?? serverVolume.curvaturePositiveThreshold,
             };

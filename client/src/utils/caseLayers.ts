@@ -33,7 +33,6 @@ export function outputVolumeToLayer(
   volume: OutputVolume,
   options: {
     hasOrigVolume: boolean;
-    isMaskLikeVolume: (filename: string) => boolean;
     initialIntensityVolume?: OutputVolume;
   },
 ): Volume {
@@ -46,11 +45,10 @@ export function outputVolumeToLayer(
     || normalized.includes('cereb')
     || normalized.includes('wmparc')
     || normalized.includes('hypothalamus');
+  const isBinaryMaskHint = normalized.includes('mask') || normalized.includes('brainmask') || normalized.includes('_bin');
   const isInputVolume = isLayerFile(volume.filename, '001.mgz');
   const isOrigVolume = isLayerFile(volume.filename, 'orig.mgz');
   const isDefaultSegmentation = isLayerFile(volume.filename, 'aparc.DKTatlas+aseg.deep.mgz');
-  const isBinaryMaskHint = options.isMaskLikeVolume(volume.filename);
-
   const defaultVisible = isSurface
     ? isDefaultVisibleSurface(volume.filename)
     : (volume.filename === options.initialIntensityVolume?.filename || isDefaultSegmentation || (!options.initialIntensityVolume && (isOrigVolume || (!options.hasOrigVolume && isInputVolume))));
@@ -62,14 +60,17 @@ export function outputVolumeToLayer(
     artifactId: volume.id,
     url: volume.downloadUrl,
     opacity: isSurface ? 1.0 : isSegmentation ? 0.7 : 1.0,
-    colormap: isSurface ? 'surface' : volume.filename.includes('aparc') ? 'jet' : (isSegmentation ? 'jet' : 'gray'),
+    colormap: isSurface ? 'surface' : (isSegmentation ? '' : 'gray'),
     visible: volume.visible ?? defaultVisible,
+    renderIn3D: isSurface,
+    renderInSlices: isSurface,
   };
 
   if (isSurface) {
     const surfaceLayer = {
       ...baseLayer,
       type: 'surface' as const,
+      surfaceReferenceAffine: volume.surfaceReferenceAffine,
       curvatureUrl: volume.curvatureDownloadUrl,
       annotationUrl: volume.annotationDownloadUrl,
       curvatureNegativeThreshold: DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,

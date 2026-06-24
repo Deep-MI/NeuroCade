@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from api_service.artifacts.service import filter_existing_artifacts
+from api_service.artifacts.service import filter_existing_artifacts, serialize_artifact
 from api_service.cases.identity import move_path_or_raise, rewrite_case_references, rollback_path_move
 from api_service.cases.serializers import serialize_case_detail, serialize_case_summary, serialize_run_summary
 from api_service.cases.service import (
@@ -51,12 +52,14 @@ from backend_common.case_storage import (
     case_relative_prefix,
     case_storage_dir,
     case_title_from_filename,
+    upload_extension,
     delete_case_storage,
     ensure_case_storage_layout,
 )
 from backend_common.concurrency import lock_case_for_update, lock_workspace_for_update
 from backend_common.db import (
     Artifact,
+    ArtifactKind,
     AssistantCheckpoint,
     AssistantMessage,
     AssistantScope,
@@ -248,6 +251,98 @@ async def add_upload_to_case(
         raise_case_conflict(exc, "Case upload conflicts with another update. Please retry.")
     log_event(db, context, "artifact.uploaded", case_id=case.id, details={"filename": original_filename})
     return UploadResponse(case_id=case.id, workspace_id=workspace.id, filename=artifact.name, title=case.title)
+
+
+def _safe_generated_volume_name(filename: str) -> str:
+    clean = Path(filename.strip()).name
+    if not clean:
+        raise HTTPException(status_code=400, detail="Filename is required")
+    lower = clean.lower()
+    if not (lower.endswith(".nii") or lower.endswith(".nii.gz") or lower.endswith(".mgz")):
+        raise HTTPException(status_code=400, detail="Generated volume filename must end with .nii, .nii.gz, or .mgz")
+    if clean in {".", ".."} or "/" in clean or "\\" in clean:
+        raise HTTPException(status_code=400, detail="Generated volume filename must not contain path separators")
+    return clean
+
+
+def _unique_generated_volume_name(case_dir: Path, filename: str) -> str:
+    extension = upload_extension(filename)
+    stem = filename[:-len(extension)] if extension and filename.lower().endswith(extension.lower()) else Path(filename).stem
+    candidate = f"{stem}{extension}"
+    index = 2
+    while (case_dir / candidate).exists():
+        candidate = f"{stem}-{index}{extension}"
+        index += 1
+    return candidate
+
+
+async def save_generated_case_volume(
+    db: Session,
+    context: AuthContext,
+    *,
+    case_id: str,
+    filename: str,
+    metadata: str | None,
+    file: UploadFile,
+):
+    """Save a generated viewer volume into a case and register it as an artifact."""
+    require_mutations_enabled()
+    case, role = get_case_for_user(db, case_id, context.user.id)
+    require_case_write(role, detail="Case not found")
+    case = lock_case_for_update(db, case)
+    workspace = ensure_case_storage_synced(db, case)
+    case_dir = ensure_case_storage_layout(db, settings, case, workspace)
+    requested_name = _safe_generated_volume_name(filename)
+    artifact_name = _unique_generated_volume_name(case_dir, requested_name)
+    target_path = case_dir / artifact_name
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Generated volume file is empty")
+
+    try:
+        metadata_json = json.loads(metadata or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Generated volume metadata must be valid JSON") from exc
+    if not isinstance(metadata_json, dict):
+        raise HTTPException(status_code=400, detail="Generated volume metadata must be an object")
+    lut = metadata_json.get("lut")
+    if lut not in {"binary", "freesurfer"}:
+        lut = "freesurfer"
+    metadata_json["volume_role"] = "segmentation"
+    metadata_json["lut"] = lut
+    metadata_json.setdefault("layer_role", "drawing")
+
+    target_path.write_bytes(payload)
+    relative_path = f"{case_relative_prefix(workspace.id, case.id)}/{artifact_name}"
+    artifact = Artifact(
+        case_id=case.id,
+        workspace_id=workspace.id,
+        kind=ArtifactKind.volume,
+        name=artifact_name,
+        relative_path=relative_path,
+        mime_type=file.content_type or "application/octet-stream",
+        size_bytes=len(payload),
+        metadata_json=metadata_json,
+    )
+    db.add(artifact)
+    try:
+        db.flush()
+        record_case_event(
+            db,
+            case,
+            "artifact.generated_volume_saved",
+            user_id=context.user.id,
+            artifact_id=artifact.id,
+            details={"filename": artifact_name, "source": metadata_json.get("source_layer_id")},
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        target_path.unlink(missing_ok=True)
+        raise_case_conflict(exc, "Generated volume conflicts with another saved artifact. Please retry.")
+    db.refresh(artifact)
+    log_event(db, context, "artifact.generated_volume_saved", case_id=case.id, artifact_id=artifact.id, details={"filename": artifact_name})
+    return serialize_artifact(artifact)
 
 
 async def start_fastsurfer_run(db: Session, context: AuthContext, *, request: StartRunRequest) -> RunSummary:

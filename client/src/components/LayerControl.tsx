@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { ChevronRight, Eye, EyeOff } from 'lucide-react';
-import { type LocationInfo } from './MriViewer';
+import type { LocationInfo } from '../types';
 import { isSurfaceLayer, type LayerType, type SurfaceColorMode, type Volume } from '../types';
 import { resolveSurfaceLayerColorMode, SURFACE_COLOR_MODE_LABELS, surfaceColorModeAvailable } from '../utils/surfaceColors';
 
@@ -305,22 +305,33 @@ export const LayerControl: React.FC<LayerControlProps> = ({ volumes, onUpdateVol
                                     (value) => onUpdateVolume(v.id, { opacity: value / 100 }),
                                 )}
                                 {isSurface && (
-                                    <div className="flex items-center gap-2">
-                                        <label className="nc-layer-control-label nc-mono w-[78px] shrink-0 whitespace-nowrap leading-none text-[var(--nc-tx-dim)]">color</label>
-                                        <select
-                                            value={surfaceColorMode}
-                                            disabled={!v.visible}
-                                            aria-label={`${v.name} surface coloring`}
-                                            onChange={(event) => onUpdateVolume(v.id, { surfaceColorMode: event.target.value as SurfaceColorMode })}
-                                            className="nc-layer-select nc-mono min-w-0 flex-1 rounded border border-[var(--nc-border)] bg-[var(--nc-bg-surface)] px-1.5 py-1 text-[var(--nc-tx-muted)] outline-none"
-                                        >
-                                            {(Object.keys(SURFACE_COLOR_MODE_LABELS) as SurfaceColorMode[])
-                                                .filter((mode) => surfaceColorModeAvailable(v, mode))
-                                                .map((mode) => (
-                                                    <option key={mode} value={mode}>{SURFACE_COLOR_MODE_LABELS[mode]}</option>
-                                                ))}
-                                        </select>
-                                    </div>
+                                    <>
+                                        <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
+                                            <input
+                                                type="checkbox"
+                                                checked={v.renderInSlices ?? true}
+                                                disabled={!v.visible}
+                                                onChange={(event) => onUpdateVolume(v.id, { renderInSlices: event.currentTarget.checked })}
+                                            />
+                                            <span>Show in slices</span>
+                                        </label>
+                                        <div className="flex items-center gap-2">
+                                            <label className="nc-layer-control-label nc-mono w-[78px] shrink-0 whitespace-nowrap leading-none text-[var(--nc-tx-dim)]">color</label>
+                                            <select
+                                                value={surfaceColorMode}
+                                                disabled={!v.visible}
+                                                aria-label={`${v.name} surface coloring`}
+                                                onChange={(event) => onUpdateVolume(v.id, { surfaceColorMode: event.target.value as SurfaceColorMode })}
+                                                className="nc-layer-select nc-mono min-w-0 flex-1 rounded border border-[var(--nc-border)] bg-[var(--nc-bg-surface)] px-1.5 py-1 text-[var(--nc-tx-muted)] outline-none"
+                                            >
+                                                {(Object.keys(SURFACE_COLOR_MODE_LABELS) as SurfaceColorMode[])
+                                                    .filter((mode) => surfaceColorModeAvailable(v, mode))
+                                                    .map((mode) => (
+                                                        <option key={mode} value={mode}>{SURFACE_COLOR_MODE_LABELS[mode]}</option>
+                                                    ))}
+                                            </select>
+                                        </div>
+                                    </>
                                 )}
                             </>
                         ) : (

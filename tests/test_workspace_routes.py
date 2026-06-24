@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service.cases import operations as cases_module  # noqa: E402
 from api_service.cases.identity import _replace_string_tokens  # noqa: E402
 from api_service.cases.service import sync_analysis_run_status  # noqa: E402
-from api_service.routers.cases import add_case_upload, create_case_with_upload, delete_case, queue_status, rename_case, start_run  # noqa: E402
+from api_service.routers.cases import add_case_upload, create_case_with_upload, delete_case, queue_status, rename_case, save_generated_volume, start_run  # noqa: E402
 from api_service.routers.workspaces import (  # noqa: E402
     cancel_batch_run,
     create_workspace,
@@ -494,6 +494,52 @@ def test_create_case_with_valid_gzipped_nifti_upload(seeded_context, monkeypatch
     assert response.filename == "nifti-case.nii.gz"
     assert artifact.name == "nifti-case.nii.gz"
     assert (fs_root / artifact.relative_path).exists()
+
+
+def test_save_generated_volume_registers_segmentation_artifact_with_collision_safe_name(seeded_context, monkeypatch, tmp_path):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    outputs_dir = fs_root / "output"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr(cases_module.settings, "outputs_dir_override", outputs_dir)
+    monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
+
+    case = Case(
+        id=build_case_id(workspace.id, "drawing-case"),
+        workspace_id=workspace.id,
+        owner_user_id=context.user.id,
+        title="drawing-case",
+    )
+    db_session.add(case)
+    db_session.flush()
+    case_dir = case_storage_dir(cases_module.settings, workspace.id, case.id)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "annotation.nii").write_bytes(b"existing")
+    db_session.commit()
+
+    artifact = asyncio.run(
+        save_generated_volume(
+            case_id=case.id,
+            filename="annotation.nii",
+            metadata='{"layer_role": "drawing", "source_layer_id": "drawing-1", "lut": "binary"}',
+            file=UploadFile(filename="annotation.nii", file=BytesIO(b"nifti-bytes")),
+            db=db_session,
+            context=context,
+        )
+    )
+
+    assert artifact.name == "annotation-2.nii"
+    assert artifact.kind == "volume"
+    assert artifact.metadata["volume_role"] == "segmentation"
+    assert artifact.metadata["lut"] == "binary"
+    assert artifact.metadata["layer_role"] == "drawing"
+    assert artifact.metadata["source_layer_id"] == "drawing-1"
+    assert (case_dir / "annotation-2.nii").read_bytes() == b"nifti-bytes"
+
+    row = db_session.query(Artifact).filter(Artifact.id == artifact.id).one()
+    assert row.relative_path == f"{case_relative_prefix(workspace.id, case.id)}/annotation-2.nii"
+    assert row.size_bytes == len(b"nifti-bytes")
 
 
 def test_failed_case_upload_does_not_reserve_case_title(seeded_context, monkeypatch, tmp_path):

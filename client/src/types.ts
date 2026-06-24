@@ -2,7 +2,7 @@
 /*  Shared type definitions for the NeuroCade frontend                 */
 /* ------------------------------------------------------------------ */
 
-export type LayerType = 'intensity' | 'segmentation' | 'surface';
+export type LayerType = 'intensity' | 'segmentation' | 'drawing' | 'surface';
 export type SurfaceColorMode = 'solid' | 'curvature' | 'annotation';
 
 interface BaseViewerLayer {
@@ -15,6 +15,10 @@ interface BaseViewerLayer {
   opacity: number;
   colormap: string;
   visible: boolean;
+  /** Whether this layer is shown in the 3D render pane. Defaults by layer type. */
+  renderIn3D?: boolean;
+  /** Whether this layer is shown as contours in 2D slice panes. Defaults by layer type. */
+  renderInSlices?: boolean;
 }
 
 export interface IntensityVolumeLayer extends BaseViewerLayer {
@@ -41,6 +45,8 @@ export interface SurfaceLayer extends BaseViewerLayer {
   type: 'surface';
   /** Surface coloring source. */
   surfaceColorMode?: SurfaceColorMode;
+  /** Row-major affine for the volume geometry this surface was reconstructed against. */
+  surfaceReferenceAffine?: number[][];
   /** Optional FreeSurfer curvature file for surface vertex coloring. */
   curvatureUrl?: string;
   /** Optional FreeSurfer annotation file for parcellation vertex coloring. */
@@ -127,10 +133,13 @@ export interface OutputVolume {
   type?: LayerType;
   lut?: 'freesurfer' | 'binary';
   customLutDownloadUrl?: string;
+  surfaceReferenceAffine?: number[][];
   curvatureDownloadUrl?: string;
   annotationDownloadUrl?: string;
   visible?: boolean;
 }
+
+export type SaveGeneratedVolumeResult = ArtifactListItem;
 
 export interface OutputsListResponse {
   volumes: OutputVolume[];
@@ -314,6 +323,8 @@ interface PersistedBaseLayer {
   url: string;
   visible: boolean;
   opacity: number;
+  renderIn3D?: boolean;
+  renderInSlices?: boolean;
 }
 
 export interface PersistedIntensityVolumeLayer extends PersistedBaseLayer {
@@ -333,6 +344,7 @@ export interface PersistedSegmentationVolumeLayer extends PersistedBaseLayer {
 export interface PersistedSurfaceLayer extends PersistedBaseLayer {
   type: 'surface';
   surfaceColorMode?: SurfaceColorMode;
+  surfaceReferenceAffine?: number[][];
   curvatureUrl?: string;
   annotationUrl?: string;
   curvatureNegativeThreshold?: number;
@@ -411,4 +423,21 @@ export interface ArtifactListItem {
   kind: string;
   downloadPath: string;
   metadata: Record<string, unknown>;
+}
+
+export interface LocationInfo {
+  vox: [number, number, number];
+  labelIndex: number;
+  labelName: string;
+  labelColor?: [number, number, number];
+}
+
+export interface MriSnapshots {
+  sagittal: string;
+  coronal: string;
+  axial: string;
+}
+
+export interface MriViewerRef {
+  getSnapshots: () => MriSnapshots | null;
 }

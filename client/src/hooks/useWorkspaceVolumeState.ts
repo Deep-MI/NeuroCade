@@ -19,7 +19,6 @@ interface UseWorkspaceVolumeStateArgs {
   activeCaseId: string | null;
   initialCaseId: string | null;
   uploadCaseId: string | null;
-  isMaskLikeVolume: (filename: string) => boolean;
   setVolumes: Dispatch<SetStateAction<Volume[]>>;
 }
 
@@ -30,21 +29,23 @@ interface LoadVolumeCommand {
   type?: string;
   lut?: string;
   customLutDownloadUrl?: string;
+  surfaceReferenceAffine?: number[][];
   curvatureDownloadUrl?: string;
   annotationDownloadUrl?: string;
   visible?: boolean;
 }
 
+type LoadableLayerType = Exclude<LayerType, 'drawing'>;
+
 export function useWorkspaceVolumeState({
   activeCaseId,
   initialCaseId,
   uploadCaseId,
-  isMaskLikeVolume,
   setVolumes,
 }: UseWorkspaceVolumeStateArgs) {
   const buildLoadedLayer = useCallback((
     cmd: LoadVolumeCommand,
-    layerType: LayerType,
+    layerType: LoadableLayerType,
   ): Volume => {
     const base = {
       id: cmd.filename,
@@ -52,14 +53,17 @@ export function useWorkspaceVolumeState({
       filename: cmd.filename,
       url: `${appUrl(cmd.downloadPath)}?t=${Date.now()}`,
       opacity: layerType === 'segmentation' ? 0.7 : 1.0,
-      colormap: layerType === 'surface' ? 'surface' : layerType === 'segmentation' ? 'jet' : 'gray',
+      colormap: layerType === 'surface' ? 'surface' : layerType === 'segmentation' ? '' : 'gray',
       visible: cmd.visible ?? true,
+      renderIn3D: layerType === 'surface',
+      renderInSlices: layerType === 'surface',
     };
 
     if (layerType === 'surface') {
       const surfaceLayer = {
         ...base,
         type: 'surface' as const,
+        surfaceReferenceAffine: cmd.surfaceReferenceAffine,
         curvatureUrl: cmd.curvatureDownloadUrl ? appUrl(cmd.curvatureDownloadUrl) : undefined,
         annotationUrl: cmd.annotationDownloadUrl ? appUrl(cmd.annotationDownloadUrl) : undefined,
         curvatureNegativeThreshold: DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,
@@ -91,7 +95,7 @@ export function useWorkspaceVolumeState({
   }, []);
 
   const handleLoadVolumeCommand = useCallback((cmd: LoadVolumeCommand) => {
-    const layerType: LayerType = cmd.type === 'surface' || cmd.type === 'segmentation' || cmd.type === 'intensity'
+    const layerType: LoadableLayerType = cmd.type === 'surface' || cmd.type === 'segmentation' || cmd.type === 'intensity'
       ? cmd.type
       : 'intensity';
     const persistCaseId = activeCaseId ?? initialCaseId ?? uploadCaseId;
@@ -161,7 +165,7 @@ export function useWorkspaceVolumeState({
   }, [setVolumes]);
 
   const updateVolume = useCallback((id: string, updates: Partial<Volume>) => {
-    setVolumes(prev => prev.map(v => v.id === id ? { ...v, ...updates } : v));
+    setVolumes(prev => prev.map(v => v.id === id ? { ...v, ...updates } as Volume : v));
   }, [setVolumes]);
 
   const removeVolume = useCallback((id: string) => {
@@ -196,16 +200,6 @@ export function useWorkspaceVolumeState({
     });
   }, [setVolumes]);
 
-  const handleVolumeLutDetected = useCallback((volumeId: string, detectedLut: 'binary' | 'freesurfer' | undefined) => {
-    setVolumes(prev => prev.map(v => {
-      if (v.id !== volumeId) return v;
-      if (v.type !== 'segmentation') return v;
-      if (isMaskLikeVolume(v.filename)) return { ...v, lut: 'binary' as const };
-      const lut: 'binary' | 'freesurfer' | undefined = detectedLut ?? v.lut;
-      return { ...v, lut };
-    }));
-  }, [isMaskLikeVolume, setVolumes]);
-
   return {
     handleLoadVolumeCommand,
     handleCloseVolumeCommand,
@@ -214,6 +208,5 @@ export function useWorkspaceVolumeState({
     updateVolume,
     removeVolume,
     reorderVolume,
-    handleVolumeLutDetected,
   };
 }
