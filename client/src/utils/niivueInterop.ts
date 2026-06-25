@@ -12,6 +12,7 @@ export interface NiivueVolumeInterop {
   colormapLabel?: NiivueLabelLut | null;
   colorbarVisible?: boolean;
   frame4D?: number;
+  toRAS?: number[] | number[][];
   global_min?: number;
   global_max?: number;
   cal_min?: number;
@@ -109,6 +110,9 @@ export interface NiivueInterop extends NiivueDrawingInterop {
   setCrosshairPosition?: (coordinate: [number, number, number]) => void;
   setScale?: (scale: number) => void;
   resetBriCon?: () => void;
+  clearActiveDragMode?: () => void;
+  refreshLayers?: (overlayItem: NiivueVolumeInterop, layer: number) => void;
+  drawScene?: () => void;
   updateGLVolume?: () => void;
 }
 

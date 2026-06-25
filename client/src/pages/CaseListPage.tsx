@@ -36,19 +36,9 @@ import {
   renameWorkspace,
 } from '../utils/api';
 import { removeCaseState } from '../utils/caseStorage';
+import { caseSummaryPath, caseViewerPath, workspaceCasesPath } from '../utils/caseRoutes';
 import { getCaseNameValidationError, getSlugNameValidationError } from '../utils/caseNames';
 import { createGuiSessionId, defaultPaneWidth } from '../utils/guiSession';
-
-function workspacePath(workspaceId: string) {
-  return `/workspaces/${encodeURIComponent(workspaceId)}/cases`;
-}
-
-function caseRouteSlug(caseItem: CaseSummary) {
-  if (caseItem.subject_name) return caseItem.subject_name;
-  const prefix = `${caseItem.workspace_id}__`;
-  if (caseItem.case_id.startsWith(prefix)) return caseItem.case_id.slice(prefix.length);
-  throw new Error('Case id must use the canonical workspace-prefixed format.');
-}
 
 export function CaseListPage() {
   const navigate = useNavigate();
@@ -136,7 +126,7 @@ export function CaseListPage() {
       setUploading(true);
       try {
         const uploaded = await createCaseWithUpload(files, workspaceId, caseName, metadata);
-        void navigate(`/workspaces/${encodeURIComponent(uploaded.workspace_id)}/cases/${encodeURIComponent(uploaded.title)}`);
+        void navigate(caseViewerPath(uploaded.workspace_id, uploaded.case_id, uploaded.title));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setUploadError(message);
@@ -148,9 +138,9 @@ export function CaseListPage() {
   });
 
   const openCase = (caseItem: CaseSummary) => {
-    const targetWorkspaceId = caseItem.workspace_id ?? workspaceId;
-    if (!targetWorkspaceId) return;
-    void navigate(`/workspaces/${encodeURIComponent(targetWorkspaceId)}/cases/${encodeURIComponent(caseRouteSlug(caseItem))}`);
+    const target = caseSummaryPath(caseItem, workspaceId);
+    if (!target) return;
+    void navigate(target);
   };
 
   const handleUploadCardClick = () => {
@@ -261,10 +251,10 @@ export function CaseListPage() {
       setWorkspaceError(null);
       if (editingWorkspaceId) {
         const workspace = await renameWorkspace(editingWorkspaceId, name, workspaceDescription);
-        void navigate(workspacePath(workspace.id));
+        void navigate(workspaceCasesPath(workspace.id));
       } else {
         const workspace = await createWorkspace(name, workspaceDescription);
-        void navigate(workspacePath(workspace.id));
+        void navigate(workspaceCasesPath(workspace.id));
       }
       setCreatingWorkspace(false);
       setEditingWorkspaceId(null);
@@ -322,7 +312,7 @@ export function CaseListPage() {
       setWorkspaceDeleteTargetId(null);
       setWorkspaceMenuOpenId(null);
       if (workspaceDeleteTarget.id === workspaceId) {
-        void navigate(fallbackWorkspace ? workspacePath(fallbackWorkspace.id) : '/');
+        void navigate(fallbackWorkspace ? workspaceCasesPath(fallbackWorkspace.id) : '/');
       }
       await refresh();
     } catch (err) {
@@ -380,7 +370,7 @@ export function CaseListPage() {
           destructiveActionsEnabled={destructiveActionsEnabled}
           width={workspacePaneWidth}
           onStartResize={startWorkspaceResize}
-          onOpenWorkspace={(targetWorkspaceId) => void navigate(workspacePath(targetWorkspaceId))}
+          onOpenWorkspace={(targetWorkspaceId) => void navigate(workspaceCasesPath(targetWorkspaceId))}
           onEditWorkspace={openWorkspaceEdit}
           onToggleWorkspaceMenu={(targetWorkspaceId) => setWorkspaceMenuOpenId((current) => current === targetWorkspaceId ? null : targetWorkspaceId)}
           onDeleteWorkspace={openWorkspaceDelete}

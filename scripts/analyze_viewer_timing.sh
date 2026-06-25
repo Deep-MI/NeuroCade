@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 export GATEWAY_URL="${GATEWAY_URL:-http://localhost:8000}"
 export NEUROCADE_TIMING_OUTPUT_DIR="${NEUROCADE_TIMING_OUTPUT_DIR:-tests/screenshots/viewer-timing}"
-export NEUROCADE_TIMING_SETTLE_MS="${NEUROCADE_TIMING_SETTLE_MS:-3000}"
+export NEUROCADE_TIMING_SETTLE_MS="${NEUROCADE_TIMING_SETTLE_MS:-15000}"
 
 if [[ -f ".venv/bin/activate" ]]; then
   # shellcheck disable=SC1091

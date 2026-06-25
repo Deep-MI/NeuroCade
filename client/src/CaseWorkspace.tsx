@@ -16,7 +16,9 @@ import { useWorkspaceVolumeState } from './hooks/useWorkspaceVolumeState';
 import { isSegmentationLayer, type ArtifactListItem, type LayerType, type OutputVolume, type Volume } from './types';
 import { makeDrawingFilename, type DrawingLut, type DrawingSession } from './neurocadeViewer/nativeDrawing';
 import { downloadArtifactFile, downloadCaseArchive as downloadCaseArchiveFile, fetchCaseArtifacts, fetchOutputsList, saveGeneratedVolume } from './utils/api';
+import { workspaceCasesPath } from './utils/caseRoutes';
 import { defaultPaneWidth } from './utils/guiSession';
+import { isMaskLikeFilename, outputVolumeLayerType } from './utils/layerBuilders';
 import { layerDisplayName } from './utils/layerAliases';
 
 const NeuroCadeCaseViewer = lazy(() => import('./neurocadeViewer/NeuroCadeCaseViewer').then(module => ({ default: module.NeuroCadeCaseViewer })));
@@ -43,12 +45,6 @@ const LAYER_PICKER_LABELS: Record<LayerType, string> = {
   drawing: 'Drawing Source',
   surface: 'Surface Mesh',
 };
-
-function outputVolumeType(volume: OutputVolume): LayerType {
-  return volume.type === 'surface' || volume.type === 'segmentation' || volume.type === 'drawing' || volume.type === 'intensity'
-    ? volume.type
-    : 'intensity';
-}
 
 function selectCurrentIntensityInput(options: OutputVolume[], volumes: Volume[]): OutputVolume | null {
   const inputOptions = options.filter((option) => option.id && option.kind === 'volume' && (option.type ?? 'intensity') === 'intensity');
@@ -192,11 +188,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   const mriViewerRef = useRef<MriViewerRef>(null);
   const downloadRequestIdRef = useRef(0);
   const currentWorkspace = session?.workspaces.find((workspace) => workspace.id === initialWorkspaceId) ?? null;
-
-  const isMaskLikeVolume = useCallback((filename: string) => {
-    const normalized = filename.toLowerCase();
-    return normalized.includes('mask') || normalized.includes('brainmask') || normalized.includes('_bin');
-  }, []);
 
   const controller = useCaseWorkspaceController({
     initialCaseId,
@@ -379,7 +370,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     try {
       const data = await fetchOutputsList(caseId);
       const options = data.volumes
-        .filter((volume) => outputVolumeType(volume) === type)
+        .filter((volume) => outputVolumeLayerType(volume) === type)
         .filter((volume, index, list) => list.findIndex((candidate) => candidate.filename === volume.filename) === index)
         .sort((a, b) => a.filename.localeCompare(b.filename));
       setLayerPickerOptions(options);
@@ -430,12 +421,12 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   }, [controller.activeCaseId, controller.uploadState.caseId, initialCaseId, volumeState]);
 
   const loadSelectedLayer = useCallback((option: OutputVolume) => {
-    const layerType = outputVolumeType(option);
+    const layerType = outputVolumeLayerType(option);
     volumeState.handleLoadVolumeCommand({
       downloadPath: option.downloadUrl,
       filename: option.filename,
       type: layerType,
-      lut: option.lut ?? (layerType === 'segmentation' && isMaskLikeVolume(option.filename) ? 'binary' : undefined),
+      lut: option.lut ?? (layerType === 'segmentation' && isMaskLikeFilename(option.filename) ? 'binary' : undefined),
       customLutDownloadUrl: option.customLutDownloadUrl,
       surfaceReferenceAffine: option.surfaceReferenceAffine,
       curvatureDownloadUrl: option.curvatureDownloadUrl,
@@ -443,14 +434,14 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
       visible: true,
     });
     closeLayerPicker();
-  }, [closeLayerPicker, isMaskLikeVolume, volumeState]);
+  }, [closeLayerPicker, volumeState]);
 
   const confirmRun = async (params: Parameters<typeof controller.confirmRun>[0]) => {
     setRightPanel('results');
     await controller.confirmRun(params);
   };
 
-  const workspaceBackPath = initialWorkspaceId ? `/workspaces/${encodeURIComponent(initialWorkspaceId)}/cases` : '/';
+  const workspaceBackPath = initialWorkspaceId ? workspaceCasesPath(initialWorkspaceId) : '/';
 
   return (
     <div className={`nc-shell ${isLight ? 'nc-light' : ''}`}>

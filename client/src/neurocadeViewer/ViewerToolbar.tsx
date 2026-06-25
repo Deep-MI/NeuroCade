@@ -1,5 +1,5 @@
 import React from 'react';
-import { HelpCircle, Mouse, Move, RotateCcw, Ruler, SlidersHorizontal, SquareStack } from 'lucide-react';
+import { HelpCircle, Move, RotateCcw, Ruler, SlidersHorizontal } from 'lucide-react';
 
 import type { LocationInfo } from '../types';
 import {
@@ -19,8 +19,8 @@ interface ViewerToolbarProps {
 }
 
 const INTERACTION_TOOLS: { mode: ViewerDragMode; Icon: React.ComponentType<{ size?: number }>; label: string }[] = [
-  { mode: 'contrast', Icon: SlidersHorizontal, label: 'Right-click window / level' },
   { mode: 'pan', Icon: Move, label: 'Right-click pan / zoom' },
+  { mode: 'contrast', Icon: SlidersHorizontal, label: 'Right-click window / level' },
   { mode: 'measurement', Icon: Ruler, label: 'Right-click measure distance' },
 ];
 
@@ -44,7 +44,6 @@ export function ViewerToolbar({
     <div className="nc-viewer-toolbar">
       <div className="nc-viewer-toolbar-cluster">
         <div className="nc-viewer-toolbar-group" role="group" aria-label="Right-click mouse action">
-          <Mouse size={13} className="nc-viewer-toolbar-group-icon" aria-hidden="true" />
           {INTERACTION_TOOLS.map(({ mode, Icon, label }) => (
             <button
               key={mode}
@@ -61,7 +60,6 @@ export function ViewerToolbar({
           ))}
         </div>
         <div className="nc-viewer-toolbar-group" role="group" aria-label="View layout">
-          <SquareStack size={13} className="nc-viewer-toolbar-group-icon" aria-hidden="true" />
           {VIEW_MODES.map((mode) => (
             <button
               key={mode.id}

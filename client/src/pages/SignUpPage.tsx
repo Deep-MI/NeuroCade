@@ -3,6 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 
 import { useAppSession } from '../auth/sessionContext';
 import { APP_DISPLAY_NAME } from '../constants';
+import { workspaceCasesPath } from '../utils/caseRoutes';
 
 
 function redirectTargetFromState(state: unknown, fallback: string): string {
@@ -22,7 +23,7 @@ export function SignUpPage() {
   const { session, loading } = useAppSession();
   const location = useLocation();
   const defaultWorkspacePath = session?.default_workspace_id
-    ? `/workspaces/${encodeURIComponent(session.default_workspace_id)}/cases`
+    ? workspaceCasesPath(session.default_workspace_id)
     : '/';
   const redirectTarget = redirectTargetFromState(location.state, defaultWorkspacePath);
 

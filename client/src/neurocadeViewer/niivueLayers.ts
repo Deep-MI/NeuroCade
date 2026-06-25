@@ -182,10 +182,10 @@ export function volumesInRenderOrder(sources: Volume[]): Volume[] {
 
 // Reorders the already-loaded Niivue volumes to match volumesInRenderOrder
 // (top-of-list on top, segmentations above intensities) without re-fetching.
-export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]) {
+export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]): boolean {
   const interop = asNiivueInterop(nv);
   const current = interop.volumes;
-  if (current.length < 2) return;
+  if (current.length < 2) return false;
   const orderIds = volumesInRenderOrder(sources).map((volume) => volume.id);
   const rankOf = (loaded: NiivueVolumeInterop) => {
     const position = loaded.id ? orderIds.indexOf(loaded.id) : -1;
@@ -195,7 +195,7 @@ export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]) {
     .map((loaded, index) => ({ loaded, index, rank: rankOf(loaded) }))
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.loaded);
-  if (desired.every((loaded, index) => loaded === current[index])) return;
+  if (desired.every((loaded, index) => loaded === current[index])) return false;
   const orderable = nv as unknown as {
     volumes: NiivueVolumeInterop[];
     back: NiivueVolumeInterop | null;
@@ -204,7 +204,7 @@ export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]) {
   orderable.volumes = desired;
   orderable.back = desired[0] ?? null;
   orderable.overlays = desired.slice(1);
-  nv.updateGLVolume();
+  return true;
 }
 
 export function clampOpacity(value: number | undefined, fallback = 0.75) {
@@ -225,7 +225,7 @@ export function effectiveLayerOpacity(volume: Volume): number {
 
 const arrayBufferCache = new Map<string, Promise<ArrayBuffer>>();
 
-async function fetchArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
+export async function fetchCachedArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
   if (signal.aborted) {
     throw new DOMException('Artifact fetch aborted', 'AbortError');
   }
@@ -341,6 +341,29 @@ function isToFixedDigitsRangeError(error: unknown): boolean {
   return error instanceof RangeError && String(error.message).includes('toFixed() digits');
 }
 
+function isLocationConversionError(error: unknown): boolean {
+  if (isToFixedDigitsRangeError(error)) return true;
+  return error instanceof TypeError && String(error.message).includes("Cannot read properties of undefined (reading '1')");
+}
+
+function tryFrac2mm(patch: SafeLocationNiivue, frac: number[]): number[] | null {
+  try {
+    return typeof patch.frac2mm === 'function'
+      ? patch.frac2mm(frac, 0, true)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function tryFrac2vox(patch: SafeLocationNiivue, frac: number[]): number[] {
+  try {
+    return typeof patch.frac2vox === 'function' ? patch.frac2vox(frac) : [NaN, NaN, NaN];
+  } catch {
+    return [NaN, NaN, NaN];
+  }
+}
+
 export function installSafeLocationChange(nv: Niivue) {
   const patch = nv as unknown as SafeLocationNiivue;
   if (typeof patch.createOnLocationChange !== 'function') return;
@@ -350,18 +373,16 @@ export function installSafeLocationChange(nv: Niivue) {
     try {
       createOnLocationChange(axCorSag);
     } catch (error) {
-      if (!isToFixedDigitsRangeError(error)) throw error;
+      if (!isLocationConversionError(error)) throw error;
       const frac = patch.scene?.crosshairPos;
       if (!frac) return;
-      const mm = typeof patch.frac2mm === 'function'
-        ? patch.frac2mm(frac, 0, true)
-        : null;
+      const mm = tryFrac2mm(patch, frac);
       if (!mm?.every((value) => Number.isFinite(value))) return;
 
       const msg = {
         mm,
         axCorSag,
-        vox: typeof patch.frac2vox === 'function' ? patch.frac2vox(frac) : [NaN, NaN, NaN],
+        vox: tryFrac2vox(patch, frac),
         frac,
         xy: [patch.mousePos?.[0] ?? NaN, patch.mousePos?.[1] ?? NaN],
         values: [],
@@ -382,7 +403,7 @@ async function addSurfaceCompanionLayer(nv: Niivue, mesh: NiivueMeshInterop, sur
     companionUrl,
     colorMode === 'annotation' ? `${surface.filename}.annot` : `${surface.filename}.curv`,
   );
-  const buffer = await fetchArrayBuffer(companionUrl, signal);
+  const buffer = await fetchCachedArrayBuffer(companionUrl, signal);
   const objectUrl = URL.createObjectURL(new Blob([buffer]));
   const layer: SurfaceCompanionLayer = colorMode === 'annotation'
     ? {
@@ -441,7 +462,7 @@ export async function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInter
 
 export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: AbortSignal) {
   const filename = volume.filename || volume.name;
-  const buffer = await fetchArrayBuffer(volume.url, signal);
+  const buffer = await fetchCachedArrayBuffer(volume.url, signal);
   const imageOptions: Parameters<Niivue['addVolumeFromUrl']>[0] = {
     url: filename,
     name: filename,
@@ -476,7 +497,7 @@ export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: A
 
 export async function addNiivueSurfaceLayer(nv: Niivue, surface: SurfaceLayer, signal: AbortSignal, meshShader?: string) {
   const filename = surface.filename || surface.name;
-  const buffer = await fetchArrayBuffer(surface.url, signal);
+  const buffer = await fetchCachedArrayBuffer(surface.url, signal);
   const meshOptions = [{
     url: filename,
     name: filename,

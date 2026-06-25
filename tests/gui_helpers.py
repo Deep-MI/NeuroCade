@@ -155,7 +155,7 @@ def send_chat_message(page: "Page", message: str, timeout: int = 120_000) -> str
 
 
 def get_current_position(page: "Page") -> dict:
-    """Read the current cursor/label display from LayerControl."""
+    """Read the current cursor/label display from the viewer toolbar."""
     result: dict[str, str | None] = {"voxel_text": None, "label_index": None, "label_name": None}
 
     coords_el = page.locator("div.coordinates-display div.coordinates span").last

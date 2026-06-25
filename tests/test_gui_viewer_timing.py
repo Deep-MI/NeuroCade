@@ -28,6 +28,7 @@ TARGETS_MS = {
     "view": 250,
     "toggle_loaded_layer": 150,
     "layer_reorder": 150,
+    "opacity": 150,
     "windowing": 150,
     "first_context_tab": 500,
     "cases_back": 750,
@@ -52,7 +53,7 @@ def _wait_for_viewer(page) -> None:
         timeout=60_000,
     )
     page.wait_for_load_state("networkidle", timeout=15_000)
-    settle_ms = int(os.environ.get("NEUROCADE_TIMING_SETTLE_MS", "3000"))
+    settle_ms = int(os.environ.get("NEUROCADE_TIMING_SETTLE_MS", "15000"))
     if settle_ms > 0:
         page.wait_for_timeout(settle_ms)
         page.wait_for_load_state("networkidle", timeout=15_000)
@@ -61,15 +62,31 @@ def _wait_for_viewer(page) -> None:
 def _measure(timings: list[dict[str, Any]], name: str, target_ms: int, action: Callable[[], None], wait: Callable[[], None] | None = None) -> None:
     start = time.perf_counter()
     action()
+    action_done = time.perf_counter()
     if wait is not None:
         wait()
-    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    end = time.perf_counter()
     timings.append({
         "name": name,
-        "duration_ms": duration_ms,
+        "duration_ms": round((end - start) * 1000, 2),
+        "action_ms": round((action_done - start) * 1000, 2),
+        "wait_ms": round((end - action_done) * 1000, 2),
         "target_ms": target_ms,
-        "over_target": duration_ms > target_ms,
+        "over_target": (end - start) * 1000 > target_ms,
     })
+
+
+def _measure_control_click(
+    page,
+    timings: list[dict[str, Any]],
+    name: str,
+    target_ms: int,
+    locator,
+    wait: Callable[[], None] | None = None,
+) -> None:
+    locator.wait_for(state="visible", timeout=5_000)
+    locator.scroll_into_view_if_needed(timeout=5_000)
+    _measure(timings, name, target_ms, lambda: locator.click(force=True, no_wait_after=True, timeout=5_000), wait)
 
 
 def _clear_case_persistence(page) -> None:
@@ -138,22 +155,25 @@ def test_viewer_interaction_timing_report(browser, services_up):
     timings: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     interaction_failures: list[dict[str, str]] = []
+    settled_network_cutoff = 0
 
     try:
         _clear_case_persistence(page)
         _load_timing_case(page)
         _wait_for_viewer(page)
+        settled_network_cutoff = len(network_events)
 
         initial_state = _debug_state(page)
         assert initial_state, "Viewer debug state was unavailable"
 
         # Tool switching: pan, contrast/windowing, measurement.
         for mode in ("pan", "contrast", "measurement"):
-            _measure(
+            _measure_control_click(
+                page,
                 timings,
                 f"tool:{mode}",
                 TARGETS_MS["tool"],
-                lambda mode=mode: page.locator(f"[data-testid='viewer-tool-{mode}']").click(),
+                page.locator(f"[data-testid='viewer-tool-{mode}']"),
                 lambda mode=mode: page.wait_for_function(
                     """mode => window.__neurocadeViewerDebug?.getState?.().activeDragMode === mode""",
                     arg=mode,
@@ -163,11 +183,12 @@ def test_viewer_interaction_timing_report(browser, services_up):
 
         # View switching: axial, sagittal, coronal, grid, 3D.
         for view_mode in ("axial", "sagittal", "coronal", "multi", "render"):
-            _measure(
+            _measure_control_click(
+                page,
                 timings,
                 f"view:{view_mode}",
                 TARGETS_MS["view"],
-                lambda view_mode=view_mode: page.locator(f"[data-testid='viewer-view-{view_mode}']").click(),
+                page.locator(f"[data-testid='viewer-view-{view_mode}']"),
                 lambda view_mode=view_mode: page.wait_for_function(
                     """viewMode => window.__neurocadeViewerDebug?.getState?.().activeViewMode === viewMode""",
                     arg=view_mode,
@@ -175,27 +196,39 @@ def test_viewer_interaction_timing_report(browser, services_up):
                 ),
             )
 
+        # Layer controls are slice-view interactions; return to the default
+        # multi-slice layout after exercising view switching.
+        page.locator("[data-testid='viewer-view-multi']").evaluate("element => element.click()")
+        page.wait_for_function(
+            """() => window.__neurocadeViewerDebug?.getState?.().activeViewMode === 'multi'""",
+            timeout=5_000,
+        )
+
         # Show/hide an already-loaded image/segmentation layer.
-        loaded_visible_ids = set(initial_state["loadedLayerIds"]) & set(initial_state["visibleLayerIds"])
+        current_state = _debug_state(page)
         layer_items = page.locator("[data-testid='viewer-layer-item']")
         assert layer_items.count() > 0, "No viewer layers were available"
-        toggle_index = 0
+        toggle_index = None
         for index in range(layer_items.count()):
-            layer_id = layer_items.nth(index).get_attribute("data-layer-id")
             layer_type = layer_items.nth(index).get_attribute("data-layer-type")
-            if layer_id in loaded_visible_ids and layer_type in {"intensity", "segmentation"}:
+            toggle_label = layer_items.nth(index).locator("[data-testid='viewer-layer-visibility']").get_attribute("aria-label") or ""
+            if layer_type in {"intensity", "segmentation"} and toggle_label.startswith("Hide "):
                 toggle_index = index
                 break
+        assert toggle_index is not None, "No visible image/segmentation layer was available to hide"
         toggle_item = layer_items.nth(toggle_index)
         toggle_id = toggle_item.get_attribute("data-layer-id")
         assert toggle_id, "Selected toggle layer did not expose a layer id"
-        was_visible = toggle_id in _debug_state(page)["visibleLayerIds"]
+        toggle_visibility = page.locator(
+            f'[data-testid="viewer-layer-item"][data-layer-id="{toggle_id}"] [data-testid="viewer-layer-visibility"]'
+        )
+        was_visible = True
 
         _measure(
             timings,
             "toggle:image-or-segmentation",
             TARGETS_MS["toggle_loaded_layer"],
-            lambda: toggle_item.locator("[data-testid='viewer-layer-visibility']").click(),
+            lambda: toggle_visibility.click(),
             lambda: page.wait_for_function(
                 """args => window.__neurocadeViewerDebug?.getState?.().visibleLayerIds.includes(args.id) === args.visible""",
                 arg={"id": toggle_id, "visible": not was_visible},
@@ -206,7 +239,7 @@ def test_viewer_interaction_timing_report(browser, services_up):
             timings,
             "toggle:image-or-segmentation:restore",
             TARGETS_MS["toggle_loaded_layer"],
-            lambda: toggle_item.locator("[data-testid='viewer-layer-visibility']").click(),
+            lambda: toggle_visibility.click(),
             lambda: page.wait_for_function(
                 """args => window.__neurocadeViewerDebug?.getState?.().visibleLayerIds.includes(args.id) === args.visible""",
                 arg={"id": toggle_id, "visible": was_visible},
@@ -216,23 +249,27 @@ def test_viewer_interaction_timing_report(browser, services_up):
 
         # Show/hide a surface if the deterministic case has one.
         surface_items = page.locator("[data-testid='viewer-layer-item'][data-layer-type='surface']")
+        current_state = _debug_state(page)
         surface_index = None
         for index in range(surface_items.count()):
-            candidate_id = surface_items.nth(index).get_attribute("data-layer-id")
-            if candidate_id in loaded_visible_ids:
+            toggle_label = surface_items.nth(index).locator("[data-testid='viewer-layer-visibility']").get_attribute("aria-label") or ""
+            if toggle_label.startswith("Hide "):
                 surface_index = index
                 break
         if surface_index is not None:
             surface_item = surface_items.nth(surface_index)
             surface_id = surface_item.get_attribute("data-layer-id")
             assert surface_id
-            surface_was_visible = surface_id in _debug_state(page)["visibleLayerIds"]
+            surface_visibility = page.locator(
+                f'[data-testid="viewer-layer-item"][data-layer-id="{surface_id}"] [data-testid="viewer-layer-visibility"]'
+            )
+            surface_was_visible = True
             try:
                 _measure(
                     timings,
                     "toggle:surface",
                     TARGETS_MS["toggle_loaded_layer"],
-                    lambda: surface_item.locator("[data-testid='viewer-layer-visibility']").click(),
+                    lambda: surface_visibility.click(),
                     lambda: page.wait_for_function(
                         """args => window.__neurocadeViewerDebug?.getState?.().visibleLayerIds.includes(args.id) === args.visible""",
                         arg={"id": surface_id, "visible": not surface_was_visible},
@@ -243,7 +280,7 @@ def test_viewer_interaction_timing_report(browser, services_up):
                     timings,
                     "toggle:surface:restore",
                     TARGETS_MS["toggle_loaded_layer"],
-                    lambda: surface_item.locator("[data-testid='viewer-layer-visibility']").click(),
+                    lambda: surface_visibility.click(),
                     lambda: page.wait_for_function(
                         """args => window.__neurocadeViewerDebug?.getState?.().visibleLayerIds.includes(args.id) === args.visible""",
                         arg={"id": surface_id, "visible": surface_was_visible},
@@ -267,15 +304,27 @@ def test_viewer_interaction_timing_report(browser, services_up):
         before_window = _debug_state(page)["windowings"].get(intensity_id)
         assert before_window, "Windowing readback was unavailable"
         original_min = before_window["calMin"]
+        before_opacity = _debug_state(page)["layerOpacities"].get(intensity_id)
+        assert isinstance(before_opacity, (int, float)), "Opacity readback was unavailable"
+        next_opacity = round(max(0, before_opacity - 0.05), 2) if before_opacity > 0.5 else round(min(1, before_opacity + 0.05), 2)
 
         try:
             _measure(
                 timings,
                 "contrast:window-min",
                 TARGETS_MS["windowing"],
-                lambda: (
-                    page.locator("[data-testid='viewer-window-min']").first.focus(),
-                    page.keyboard.press("ArrowRight"),
+                lambda: page.evaluate(
+                    """() => {
+                      const input = document.querySelector('[data-testid="viewer-window-min"]');
+                      if (!(input instanceof HTMLInputElement)) throw new Error('Window minimum slider was unavailable');
+                      const step = Number(input.step) || 0.01;
+                      const max = Number(input.max);
+                      const next = Math.min(max, Number(input.value) + step);
+                      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                      setter?.call(input, String(next));
+                      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+                      input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }"""
                 ),
                 lambda: page.wait_for_function(
                     """args => {
@@ -288,6 +337,35 @@ def test_viewer_interaction_timing_report(browser, services_up):
             )
         except Exception as error:  # noqa: BLE001 - report diagnostic and continue timing the remaining interactions.
             interaction_failures.append({"name": "contrast:window-min", "error": str(error)})
+
+        try:
+            _measure(
+                timings,
+                "opacity:layer-slider",
+                TARGETS_MS["opacity"],
+                lambda: page.evaluate(
+                    """value => {
+                      const input = document.querySelector('[data-testid="viewer-layer-opacity"]');
+                      if (!(input instanceof HTMLInputElement)) throw new Error('Opacity slider was unavailable');
+                      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                      setter?.call(input, String(value));
+                      input.dispatchEvent(new Event('input', { bubbles: true }));
+                      input.dispatchEvent(new Event('change', { bubbles: true }));
+                      input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                    }""",
+                    next_opacity,
+                ),
+                lambda: page.wait_for_function(
+                    """args => {
+                      const value = window.__neurocadeViewerDebug?.getState?.().layerOpacities[args.id];
+                      return typeof value === 'number' && Math.abs(value - args.originalOpacity) > 0.001;
+                    }""",
+                    arg={"id": intensity_id, "originalOpacity": before_opacity},
+                    timeout=5_000,
+                ),
+            )
+        except Exception as error:  # noqa: BLE001 - report diagnostic and continue timing the remaining interactions.
+            interaction_failures.append({"name": "opacity:layer-slider", "error": str(error)})
 
         # Layer order: use keyboard reorder in the first section with at least 2 layers.
         reordered = False
@@ -319,28 +397,26 @@ def test_viewer_interaction_timing_report(browser, services_up):
 
         # First context/tab switch: terminal panel is the normally hidden heavy
         # context panel when the case opens with chat active.
-        _measure(
+        _measure_control_click(
+            page,
             timings,
             "context:terminal-first-open",
             TARGETS_MS["first_context_tab"],
-            lambda: page.locator("button:has-text('Terminal')").click(),
+            page.locator("button:has-text('Terminal')"),
             lambda: page.locator("[data-testid='terminal-content']").wait_for(state="visible", timeout=10_000),
         )
 
         # Cases back navigation stays part of this timing report because the
         # original slowdown was observed returning from a case to cases.
-        _measure(
+        _measure_control_click(
+            page,
             timings,
             "navigation:back-to-cases",
             TARGETS_MS["cases_back"],
-            lambda: page.locator("[data-testid='case-workspace-back']").click(),
-            lambda: page.wait_for_function(
-                """() => {
-                  const hasFilter = !!document.querySelector("input[placeholder='Filter cases...']");
-                  const loading = Array.from(document.querySelectorAll('span,div')).some((el) => el.textContent?.includes('Loading cases...'));
-                  return hasFilter && !loading;
-                }""",
-                timeout=15_000,
+            page.locator("[data-testid='case-workspace-back']"),
+            lambda: (
+                page.wait_for_url("**/workspaces/*/cases", timeout=15_000),
+                page.locator("input[placeholder='Filter cases...']").wait_for(state="visible", timeout=15_000),
             ),
         )
     finally:
@@ -355,13 +431,25 @@ def test_viewer_interaction_timing_report(browser, services_up):
             and event["duration_ms"] > 1000
             and "/api/" in event.get("url", "")
         ]
+        interaction_network_events = network_events[settled_network_cutoff:]
+        slow_api_during_interactions = [
+            event for event in interaction_network_events
+            if event.get("duration_ms") is not None
+            and event["duration_ms"] > 1000
+            and "/api/" in event.get("url", "")
+        ]
         report = {
             "gateway_url": GATEWAY_URL,
+            "settle_ms": int(os.environ.get("NEUROCADE_TIMING_SETTLE_MS", "15000")),
+            "interaction_click_method": "visible control locator.click(force=True, no_wait_after=True)",
             "targets_ms": TARGETS_MS,
             "timings": timings,
             "skipped": skipped,
             "interaction_failures": interaction_failures,
+            "startup_network_event_count": settled_network_cutoff,
+            "interaction_network_event_count": len(interaction_network_events),
             "slow_api_over_1000ms": slow_api,
+            "slow_api_during_interactions_over_1000ms": slow_api_during_interactions,
             "api_5xx": api_5xx,
             "page_errors": page_errors,
             "console_errors": console_errors,

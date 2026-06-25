@@ -1,7 +1,6 @@
 import { NVMesh } from '@niivue/niivue';
 
 import type { SurfaceLayer } from '../types';
-import { appFetchUrl } from '../utils/api';
 import { parseFreeSurferSurface } from '../utils/SurfaceLoader';
 import {
   buildSurfaceContours,
@@ -10,6 +9,7 @@ import {
   type SurfaceContourSet,
   type VolumeContourGeometry,
 } from './surfaceContours';
+import { fetchCachedArrayBuffer } from './niivueLayers';
 
 const geometryCache = new Map<string, Promise<MeshGeometry>>();
 const contourCache = new Map<string, Promise<SurfaceContourSet>>();
@@ -58,9 +58,7 @@ export async function loadSurfaceGeometry(surface: SurfaceLayer, gl: WebGL2Rende
 
   const promise = (async () => {
     const filename = surface.filename ?? surface.name ?? filenameFromUrl(surface.url, 'surface.mesh');
-    const response = await appFetchUrl(surface.url, { signal });
-    if (!response.ok) throw new Error(`Failed to load surface ${filename}: ${response.status}`);
-    const buffer = await response.arrayBuffer();
+    const buffer = await fetchCachedArrayBuffer(surface.url, signal);
     if (signal.aborted) throw new DOMException('Surface load aborted', 'AbortError');
     const parsed = parseFreeSurferMeshGeometry(buffer);
     if (parsed) return parsed;

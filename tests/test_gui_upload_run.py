@@ -113,7 +113,7 @@ class TestGuiUploadAndRun:
         upload_mri(page, str(upload_file))
 
         # Verify upload — the filename should appear somewhere in the UI
-        # After upload, the volume name appears in the LayerControl
+        # After upload, the volume name appears in the layer panel
         page.wait_for_timeout(2000)
         take_screenshot(page, "01_after_upload", screenshot_dir)
 
@@ -385,7 +385,7 @@ class TestGuiUploadAndRun:
         page.wait_for_url(current_url, timeout=15_000)
         page.wait_for_selector("input.chat-input", state="visible", timeout=20_000)
         page.wait_for_selector("button:has-text('Hide Output')", state="visible", timeout=20_000)
-        page.wait_for_selector("[data-testid='terminal-panel']", state="visible", timeout=10_000)
+        page.wait_for_selector("[data-testid='terminal-content']", state="visible", timeout=10_000)
         page.wait_for_function(
             """() => {
               const terminal = document.querySelector('[data-testid="terminal-content"]');

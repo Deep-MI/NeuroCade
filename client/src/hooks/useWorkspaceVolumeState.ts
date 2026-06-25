@@ -1,15 +1,10 @@
 import { useCallback } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 
-import {
-  DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,
-  DEFAULT_SURFACE_CURVATURE_POSITIVE_THRESHOLD,
-} from '../constants';
 import type { LayerType, Volume } from '../types';
 import { appUrl } from '../utils/api';
 import { forgetClosedCaseVolume, rememberClosedCaseVolume } from '../utils/caseStorage';
-import { layerDisplayName } from '../utils/layerAliases';
-import { defaultSurfaceColorModeForLayer } from '../utils/surfaceColors';
+import { createViewerLayer } from '../utils/layerBuilders';
 
 function layerTypeOf(volume: Volume): LayerType {
   return volume.type ?? 'intensity';
@@ -47,51 +42,17 @@ export function useWorkspaceVolumeState({
     cmd: LoadVolumeCommand,
     layerType: LoadableLayerType,
   ): Volume => {
-    const base = {
-      id: cmd.filename,
-      name: layerDisplayName(cmd),
+    return createViewerLayer({
       filename: cmd.filename,
       url: `${appUrl(cmd.downloadPath)}?t=${Date.now()}`,
-      opacity: layerType === 'segmentation' ? 0.7 : 1.0,
-      colormap: layerType === 'surface' ? 'surface' : layerType === 'segmentation' ? '' : 'gray',
+      type: layerType,
+      lut: cmd.lut,
+      customLutUrl: cmd.customLutDownloadUrl ? appUrl(cmd.customLutDownloadUrl) : undefined,
+      surfaceReferenceAffine: cmd.surfaceReferenceAffine,
+      curvatureUrl: cmd.curvatureDownloadUrl ? appUrl(cmd.curvatureDownloadUrl) : undefined,
+      annotationUrl: cmd.annotationDownloadUrl ? appUrl(cmd.annotationDownloadUrl) : undefined,
       visible: cmd.visible ?? true,
-      renderIn3D: layerType === 'surface',
-      renderInSlices: layerType === 'surface',
-    };
-
-    if (layerType === 'surface') {
-      const surfaceLayer = {
-        ...base,
-        type: 'surface' as const,
-        surfaceReferenceAffine: cmd.surfaceReferenceAffine,
-        curvatureUrl: cmd.curvatureDownloadUrl ? appUrl(cmd.curvatureDownloadUrl) : undefined,
-        annotationUrl: cmd.annotationDownloadUrl ? appUrl(cmd.annotationDownloadUrl) : undefined,
-        curvatureNegativeThreshold: DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,
-        curvaturePositiveThreshold: DEFAULT_SURFACE_CURVATURE_POSITIVE_THRESHOLD,
-      };
-      return {
-        ...surfaceLayer,
-        surfaceColorMode: defaultSurfaceColorModeForLayer(surfaceLayer),
-      };
-    }
-
-    if (layerType === 'segmentation') {
-      return {
-        ...base,
-        type: 'segmentation',
-        lut: (cmd.lut === 'binary' || cmd.lut === 'freesurfer') ? cmd.lut : undefined,
-        customLutUrl: cmd.customLutDownloadUrl ? appUrl(cmd.customLutDownloadUrl) : undefined,
-        brightness: 0,
-        contrast: 1.0,
-      };
-    }
-
-    return {
-      ...base,
-      type: 'intensity',
-      brightness: 0,
-      contrast: 1.0,
-    };
+    });
   }, []);
 
   const handleLoadVolumeCommand = useCallback((cmd: LoadVolumeCommand) => {

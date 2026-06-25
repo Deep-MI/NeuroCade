@@ -12,7 +12,7 @@ Flow:
   4. Type "Show me the cerebellum" in chat, click Send
   5. Wait for assistant response (the LLM should call gui_focus_label)
   6. Wait 5s for GUI state sync (every 2s, frontend polls for cursor commands)
-  7. Read the "Current Position" display in LayerControl
+  7. Read the current position display in the viewer toolbar
   8. Assert the label name contains "cerebellum" (case-insensitive)
   9. Screenshot the result
 

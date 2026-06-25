@@ -2,35 +2,25 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { DRAG_MODE, Niivue } from '@niivue/niivue';
 
 import type { LocationInfo, Volume } from '../types';
-import { isSurfaceLayer } from '../types';
-import { asNiivueInterop } from '../utils/niivueInterop';
+import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
 import {
-  applyBrightnessContrast,
-  getCachedFreesurferLabelLut,
-  getFreesurferColorMap,
-  inferredSegmentationLut,
-  maxLabelForVolume,
-  resolveCachedVolumeLabelColormap,
-  resolveVolumeColormap,
-} from '../utils/volumeColormap';
-import {
-  addNiivueSurfaceLayer,
-  addNiivueVolumeLayer,
-  applyVoxelExactLabelRendering,
-  effectiveLayerOpacity,
-  enforceVolumeRenderOrder,
   installCoverRendering,
   installSafeLocationChange,
   locationFromNiivue,
-  shouldUseVoxelExactLabelRendering,
   sourceKeyOf,
-  surfaceDisplayKey,
-  syncNiivueSurfaceDisplay,
-  volumesInRenderOrder,
 } from './niivueLayers';
-import { selectLoadedReferenceVolume } from './referenceVolume';
-import { syncSurfaceReferenceTransforms } from './surfaceTransforms';
+import {
+  sourceVisibilityKeyOf,
+  surfaceAppearanceKeyOf,
+  surfaceTransformKeyOf,
+  volumeAppearanceKeyOf,
+  volumeOrderKeyOf,
+  volumeVisibilityKeyOf,
+  windowingKeyOf,
+  type WindowSetting,
+} from './paneSyncKeys';
 import { SurfaceContourOverlay } from './SurfaceContourOverlay';
+import { useNiivuePaneLayers } from './useNiivuePaneLayers';
 import type { ViewerDragMode, ViewerPlaneSliceType, ViewerSliceType } from './viewerControls';
 
 // The Matcap shader has no light/ambient term — mesh brightness is set entirely
@@ -66,12 +56,7 @@ async function loadBrightenedMatcap(url: string, factor: number): Promise<string
   return canvas.toDataURL('image/png');
 }
 
-export interface WindowSetting {
-  calMin: number;
-  calMax: number;
-  globalMin: number;
-  globalMax: number;
-}
+export type { WindowSetting } from './paneSyncKeys';
 
 interface NiivuePaneProps {
   sliceType: ViewerSliceType;
@@ -85,6 +70,7 @@ interface NiivuePaneProps {
   className?: string;
   onReady: (nv: Niivue | null, sliceType: ViewerSliceType) => void;
   onLocationChange?: (location: LocationInfo, mm: number[]) => void;
+  onIntensityWindowChange?: (sliceType: ViewerSliceType, loaded: NiivueVolumeInterop) => void;
   onLoadingChange?: (sliceType: ViewerSliceType, loading: boolean) => void;
   onError?: (message: string | null) => void;
   onColormaps?: (colormaps: string[]) => void;
@@ -93,6 +79,35 @@ interface NiivuePaneProps {
 function isPlane(sliceType: ViewerSliceType): sliceType is ViewerPlaneSliceType {
   return sliceType <= 2;
 }
+
+function selectedDragMode(mode: ViewerDragMode): DRAG_MODE {
+  return DRAG_MODE[mode];
+}
+
+function primaryDragMode(): DRAG_MODE {
+  return DRAG_MODE.crosshair;
+}
+
+function applyMouseDragMode(nv: Niivue, mode: ViewerDragMode): void {
+  const interop = asNiivueInterop(nv);
+  interop.opts.dragMode = selectedDragMode(mode);
+  interop.opts.dragModePrimary = primaryDragMode();
+  interop.opts.mouseEventConfig = undefined;
+  interop.clearActiveDragMode?.();
+}
+
+interface OrientationLabels {
+  top: string;
+  right: string;
+  bottom: string;
+  left: string;
+}
+
+const PLANE_ORIENTATION_LABELS: Record<ViewerPlaneSliceType, OrientationLabels> = {
+  0: { top: 'A', right: 'R', bottom: 'P', left: 'L' },
+  1: { top: 'S', right: 'R', bottom: 'I', left: 'L' },
+  2: { top: 'S', right: 'A', bottom: 'I', left: 'P' },
+};
 
 export function NiivuePane({
   sliceType,
@@ -106,6 +121,7 @@ export function NiivuePane({
   className,
   onReady,
   onLocationChange,
+  onIntensityWindowChange,
   onLoadingChange,
   onError,
   onColormaps,
@@ -117,21 +133,27 @@ export function NiivuePane({
   const loadingLayerIdsRef = useRef<Set<string>>(new Set());
   const surfaceDisplayControllersRef = useRef<Map<string, AbortController>>(new Map());
   const glFrameRef = useRef<number | null>(null);
+  const drawFrameRef = useRef<number | null>(null);
   const currentMmRef = useRef<number[] | null>(null);
+  const windowingGestureStartRef = useRef<Map<string, { calMin: number; calMax: number }> | null>(null);
   const onLocationChangeRef = useRef(onLocationChange);
+  const onIntensityWindowChangeRef = useRef(onIntensityWindowChange);
   const reportLocationRef = useRef(reportLocation);
   latestVolumesRef.current = volumes;
   windowingsRef.current = windowings;
   onLocationChangeRef.current = onLocationChange;
+  onIntensityWindowChangeRef.current = onIntensityWindowChange;
   reportLocationRef.current = reportLocation;
 
   const plane = isPlane(sliceType);
   const sourceKey = sourceKeyOf(volumes);
-  const visibleSourceKey = useMemo(() => volumes
-    .filter((volume) => volume.visible)
-    .map((volume) => `${volume.id}:${volume.url}:${volume.filename}:${volume.type ?? 'intensity'}`)
-    .sort()
-    .join('|'), [volumes]);
+  const visibleSourceKey = useMemo(() => sourceVisibilityKeyOf(volumes), [volumes]);
+  const visibilityKey = useMemo(() => volumeVisibilityKeyOf(volumes), [volumes]);
+  const volumeAppearanceKey = useMemo(() => volumeAppearanceKeyOf(volumes), [volumes]);
+  const activeWindowingKey = useMemo(() => windowingKeyOf(windowings), [windowings]);
+  const volumeOrderKey = useMemo(() => volumeOrderKeyOf(volumes), [volumes]);
+  const surfaceAppearanceKey = useMemo(() => surfaceAppearanceKeyOf(volumes), [volumes]);
+  const surfaceTransformKey = useMemo(() => surfaceTransformKeyOf(volumes), [volumes]);
 
   const scheduleRefresh = useCallback(() => {
     if (glFrameRef.current !== null) return;
@@ -141,16 +163,28 @@ export function NiivuePane({
     });
   }, []);
 
+  const scheduleDraw = useCallback(() => {
+    if (drawFrameRef.current !== null) return;
+    drawFrameRef.current = requestAnimationFrame(() => {
+      drawFrameRef.current = null;
+      const nv = nvRef.current;
+      if (!nv) return;
+      asNiivueInterop(nv).drawScene?.();
+    });
+  }, []);
+
   // --- Instance lifecycle ---------------------------------------------------
   useEffect(() => {
     if (!canvasRef.current || nvRef.current) return;
+    const surfaceDisplayControllers = surfaceDisplayControllersRef.current;
     const nv = new Niivue({
       loadingText: '',
       dragAndDropEnabled: false,
       fontMinPx: 14,
       fontSizeScaling: 0.5,
       fontColor: [0.82, 0.86, 0.94, 0.55],
-      showAllOrientationMarkers: true,
+      isOrientationTextVisible: false,
+      showAllOrientationMarkers: false,
       // Dark grey so a volume's extent is visible against the empty canvas.
       backColor: [0.16, 0.16, 0.16, 1],
       crosshairColor: [0.47, 0.66, 1, 0.7],
@@ -162,6 +196,8 @@ export function NiivuePane({
       isColorbar: false,
       showLegend: false,
       isNearestInterpolation: true,
+      dragMode: selectedDragMode(dragMode),
+      dragModePrimary: primaryDragMode(),
     });
     let disposed = false;
     void nv.attachToCanvas(canvasRef.current).then(() => {
@@ -186,6 +222,13 @@ export function NiivuePane({
         }
       }
     };
+    const handleIntensityChange = (event: Event) => {
+      const loaded = (event as CustomEvent<NiivueVolumeInterop>).detail;
+      if (loaded?.id && loaded.cal_min !== undefined && loaded.cal_max !== undefined) {
+        onIntensityWindowChangeRef.current?.(sliceType, loaded);
+      }
+    };
+    nv.addEventListener('intensityChange', handleIntensityChange);
     installSafeLocationChange(nv);
     nvRef.current = nv;
     onReady(nv, sliceType);
@@ -196,10 +239,15 @@ export function NiivuePane({
         cancelAnimationFrame(glFrameRef.current);
         glFrameRef.current = null;
       }
-      for (const controller of surfaceDisplayControllersRef.current.values()) {
+      if (drawFrameRef.current !== null) {
+        cancelAnimationFrame(drawFrameRef.current);
+        drawFrameRef.current = null;
+      }
+      nv.removeEventListener('intensityChange', handleIntensityChange);
+      for (const controller of surfaceDisplayControllers.values()) {
         controller.abort();
       }
-      surfaceDisplayControllersRef.current.clear();
+      surfaceDisplayControllers.clear();
       onReady(null, sliceType);
       onLoadingChange?.(sliceType, false);
       (nv as unknown as { cleanup?: () => void }).cleanup?.();
@@ -213,8 +261,7 @@ export function NiivuePane({
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
-    asNiivueInterop(nv).opts.dragMode = DRAG_MODE[dragMode];
-    nv.updateGLVolume();
+    applyMouseDragMode(nv, dragMode);
   }, [dragMode]);
 
   // --- External crosshair coordinate ---------------------------------------
@@ -231,277 +278,28 @@ export function NiivuePane({
     nvInterop.updateGLVolume?.();
   }, [externalCoordinate]);
 
-  // --- Incremental layer reconcile (load/preload), per instance ------------
-  useEffect(() => {
-    const nv = nvRef.current;
-    if (!nv) return;
-    const controller = new AbortController();
-    let cancelled = false;
-    const claimedIds: string[] = [];
-    const loadingLayerIds = loadingLayerIdsRef.current;
-
-    const isLayerLoaded = (layer: Volume) => {
-      const filename = layer.filename || layer.name;
-      if (plane && isSurfaceLayer(layer)) return true;
-      return isSurfaceLayer(layer)
-        ? (nv.meshes ?? []).some((mesh) => mesh.id === layer.id || mesh.name === filename)
-        : asNiivueInterop(nv).volumes.some((loaded) => loaded.id === layer.id || loaded.url === layer.url || loaded.name === filename);
-    };
-    const claim = (id: string) => { loadingLayerIds.add(id); claimedIds.push(id); };
-    const release = (id: string) => loadingLayerIds.delete(id);
-
-    const reconcile = async () => {
-      onError?.(null);
-      const sources = latestVolumesRef.current;
-      const sourceIds = new Set(sources.map((volume) => volume.id));
-
-      // Remove only layers whose source is gone (close / case switch).
-      for (const loaded of [...asNiivueInterop(nv).volumes]) {
-        if (!loaded.id || !sourceIds.has(loaded.id)) nv.removeVolume(loaded as never);
-      }
-      for (const mesh of [...(asNiivueInterop(nv).meshes ?? [])]) {
-        if (!mesh.id || !sourceIds.has(mesh.id)) nv.removeMesh(mesh as never);
-      }
-
-      const pending = sources.filter((layer) => !isLayerLoaded(layer) && !loadingLayerIds.has(layer.id));
-      if (pending.length === 0) {
-        if (!cancelled) onLoadingChange?.(sliceType, false);
-        return;
-      }
-      onLoadingChange?.(sliceType, true);
-      try {
-        const visibleVolumes = volumesInRenderOrder(pending.filter((layer) => layer.visible));
-        for (const volume of visibleVolumes) {
-          if (cancelled || controller.signal.aborted) break;
-          claim(volume.id);
-          try {
-            await addNiivueVolumeLayer(nv, volume, controller.signal);
-          } catch (error) {
-            if (!cancelled && !controller.signal.aborted) {
-              onError?.(`Failed to load volume ${volume.filename || volume.name}: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          } finally {
-            release(volume.id);
-          }
-        }
-        if (!cancelled && visibleVolumes.length > 0) {
-          enforceVolumeRenderOrder(nv, latestVolumesRef.current);
-          if (!plane) {
-            const interop = asNiivueInterop(nv);
-            const referenceVolume = selectLoadedReferenceVolume(interop.volumes, latestVolumesRef.current);
-            if (referenceVolume) {
-              syncSurfaceReferenceTransforms(
-                interop.meshes ?? [],
-                latestVolumesRef.current,
-                referenceVolume,
-                interop.gl,
-              );
-            }
-          }
-          nv.updateGLVolume();
-        }
-
-        if (plane) return;
-        const visibleSurfaces = pending.filter(isSurfaceLayer).filter((layer) => layer.visible);
-        await Promise.all(visibleSurfaces.map(async (surface) => {
-          if (cancelled || controller.signal.aborted) return;
-          claim(surface.id);
-          try {
-            await addNiivueSurfaceLayer(nv, surface, controller.signal, 'Matcap');
-          } catch (error) {
-            if (!controller.signal.aborted) console.warn(`[NiivuePane] Could not load surface ${surface.name}:`, error);
-          } finally {
-            release(surface.id);
-          }
-        }));
-        if (!cancelled && visibleSurfaces.length > 0) {
-          const interop = asNiivueInterop(nv);
-          const referenceVolume = selectLoadedReferenceVolume(interop.volumes, latestVolumesRef.current);
-          if (referenceVolume) {
-            syncSurfaceReferenceTransforms(
-              interop.meshes ?? [],
-              latestVolumesRef.current,
-              referenceVolume,
-              interop.gl,
-            );
-          }
-          nv.updateGLVolume();
-        }
-      } finally {
-        if (!cancelled) onLoadingChange?.(sliceType, false);
-      }
-    };
-
-    void reconcile();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      for (const id of claimedIds) loadingLayerIds.delete(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceKey]);
-
-  // A layer may start hidden and therefore skipped by the source reconciler.
-  // Showing it later should load it once, then future hide/show operations stay
-  // on the fast display-sync path.
-  useEffect(() => {
-    const nv = nvRef.current;
-    if (!nv) return;
-    const controller = new AbortController();
-    let cancelled = false;
-    const loadingLayerIds = loadingLayerIdsRef.current;
-
-    const isLayerLoaded = (layer: Volume) => {
-      const filename = layer.filename || layer.name;
-      if (plane && isSurfaceLayer(layer)) return true;
-      return isSurfaceLayer(layer)
-        ? (nv.meshes ?? []).some((mesh) => mesh.id === layer.id || mesh.name === filename)
-        : asNiivueInterop(nv).volumes.some((loaded) => loaded.id === layer.id || loaded.url === layer.url || loaded.name === filename);
-    };
-
-    const loadVisibleMissing = async () => {
-      const pending = latestVolumesRef.current
-        .filter((layer) => layer.visible && !isLayerLoaded(layer) && !loadingLayerIds.has(layer.id));
-      if (pending.length === 0) return;
-      onLoadingChange?.(sliceType, true);
-      try {
-        const pendingVolumes = volumesInRenderOrder(pending.filter((layer) => !isSurfaceLayer(layer)));
-        for (const volume of pendingVolumes) {
-          if (cancelled || controller.signal.aborted) break;
-          loadingLayerIds.add(volume.id);
-          try {
-            await addNiivueVolumeLayer(nv, volume, controller.signal);
-          } catch (error) {
-            if (!cancelled && !controller.signal.aborted) {
-              onError?.(`Failed to load volume ${volume.filename || volume.name}: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          } finally {
-            loadingLayerIds.delete(volume.id);
-          }
-        }
-        if (!cancelled && pendingVolumes.length > 0) {
-          enforceVolumeRenderOrder(nv, latestVolumesRef.current);
-        }
-
-        if (!plane) {
-          for (const surface of pending.filter(isSurfaceLayer)) {
-            if (cancelled || controller.signal.aborted) break;
-            loadingLayerIds.add(surface.id);
-            try {
-              await addNiivueSurfaceLayer(nv, surface, controller.signal, 'Matcap');
-            } catch (error) {
-              if (!controller.signal.aborted) console.warn(`[NiivuePane] Could not load surface ${surface.name}:`, error);
-            } finally {
-              loadingLayerIds.delete(surface.id);
-            }
-          }
-        }
-
-        if (!cancelled) scheduleRefresh();
-      } finally {
-        if (!cancelled) onLoadingChange?.(sliceType, false);
-      }
-    };
-
-    void loadVisibleMissing();
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleSourceKey]);
-
-  // --- Per-volume display sync (opacity, colormap, windowing, order) --------
-  useEffect(() => {
-    const nv = nvRef.current;
-    if (!nv) return;
-    let needsFreesurferLabelRefresh = false;
-    for (const loaded of asNiivueInterop(nv).volumes) {
-      const source = volumes.find((volume) => volume.id === loaded.id);
-      if (!source || isSurfaceLayer(source)) continue;
-      loaded.opacity = effectiveLayerOpacity(source);
-      loaded.colorbarVisible = false;
-      const colormap = resolveVolumeColormap(source);
-      if (loaded.colormap !== colormap) loaded.colormap = colormap;
-      const colormapLabel = resolveCachedVolumeLabelColormap(source, loaded);
-      if (shouldUseVoxelExactLabelRendering(source)) {
-        if (colormapLabel) {
-          applyVoxelExactLabelRendering(loaded, source, colormapLabel);
-        } else if (inferredSegmentationLut(source) === 'freesurfer') {
-          needsFreesurferLabelRefresh = true;
-        }
-      } else if (colormapLabel && loaded.colormapLabel !== colormapLabel) {
-        loaded.colormapLabel = colormapLabel;
-      } else if (inferredSegmentationLut(source) === 'freesurfer' && !colormapLabel) {
-        needsFreesurferLabelRefresh = true;
-      }
-      if (source.type === undefined || source.type === 'intensity') {
-        const win = windowingsRef.current[source.id];
-        if (manualWindowingIds.current.has(source.id) && win) {
-          loaded.cal_min = win.calMin;
-          loaded.cal_max = win.calMax;
-        } else {
-          applyBrightnessContrast(loaded, source);
-        }
-      }
-    }
-    if (!plane) {
-      for (const mesh of (asNiivueInterop(nv).meshes ?? [])) {
-        const source = volumes.filter(isSurfaceLayer).find((layer) => layer.id === mesh.id);
-        if (!source) continue;
-        mesh.visible = source.visible;
-        mesh.opacity = effectiveLayerOpacity(source);
-        const controllerKey = `${source.id}:${surfaceDisplayKey(source)}`;
-        const existingController = surfaceDisplayControllersRef.current.get(source.id);
-        if (existingController && (mesh as { __surfaceDisplayKey?: string }).__surfaceDisplayKey !== surfaceDisplayKey(source)) {
-          existingController.abort();
-          surfaceDisplayControllersRef.current.delete(source.id);
-        }
-        const controller = surfaceDisplayControllersRef.current.get(source.id) ?? new AbortController();
-        surfaceDisplayControllersRef.current.set(source.id, controller);
-        void syncNiivueSurfaceDisplay(nv, mesh, source, controller.signal);
-        if ((mesh as { __surfaceDisplayControllerKey?: string }).__surfaceDisplayControllerKey !== controllerKey) {
-          (mesh as { __surfaceDisplayControllerKey?: string }).__surfaceDisplayControllerKey = controllerKey;
-        }
-      }
-    }
-    enforceVolumeRenderOrder(nv, volumes);
-    if (!plane) {
-      const interop = asNiivueInterop(nv);
-      const referenceVolume = selectLoadedReferenceVolume(interop.volumes, volumes);
-      if (referenceVolume) {
-        syncSurfaceReferenceTransforms(
-          interop.meshes ?? [],
-          volumes,
-          referenceVolume,
-          interop.gl,
-        );
-      }
-    }
-    scheduleRefresh();
-    if (needsFreesurferLabelRefresh) {
-      void getFreesurferColorMap()
-        .then(() => {
-          const activeNv = nvRef.current;
-          if (!activeNv) return;
-          for (const loaded of asNiivueInterop(activeNv).volumes) {
-            const source = volumes.find((volume) => volume.id === loaded.id);
-            if (source && inferredSegmentationLut(source) === 'freesurfer') {
-              loaded.colormap = resolveVolumeColormap(source);
-              const labelLut = getCachedFreesurferLabelLut(maxLabelForVolume(loaded)) ?? null;
-              if (shouldUseVoxelExactLabelRendering(source)) {
-                applyVoxelExactLabelRendering(loaded, source, labelLut);
-              } else {
-                loaded.colormapLabel = labelLut;
-              }
-              loaded.colorbarVisible = false;
-            }
-          }
-          activeNv.updateGLVolume();
-        })
-        .catch((error) => console.warn('[NiivuePane] Could not load FreeSurfer LUT:', error));
-    }
-  }, [volumes, windowings, manualWindowingIds, plane, scheduleRefresh]);
+  useNiivuePaneLayers({
+    sliceType,
+    plane,
+    manualWindowingIds,
+    sourceKey,
+    visibleSourceKey,
+    visibilityKey,
+    volumeAppearanceKey,
+    activeWindowingKey,
+    volumeOrderKey,
+    surfaceAppearanceKey,
+    surfaceTransformKey,
+    nvRef,
+    latestVolumesRef,
+    windowingsRef,
+    loadingLayerIdsRef,
+    surfaceDisplayControllersRef,
+    scheduleRefresh,
+    scheduleDraw,
+    onLoadingChange,
+    onError,
+  });
 
   // Re-emit the current location when layers change (e.g. a segmentation is
   // toggled) so the label readout refreshes without moving the crosshair. Only
@@ -537,6 +335,36 @@ export function NiivuePane({
     event.stopPropagation();
   }, [plane, sliceType]);
 
+  const captureWindowingGestureStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 2) return;
+    const nv = nvRef.current;
+    if (!nv) return;
+    const starts = new Map<string, { calMin: number; calMax: number }>();
+    for (const loaded of asNiivueInterop(nv).volumes) {
+      if (!loaded.id || loaded.cal_min === undefined || loaded.cal_max === undefined) continue;
+      starts.set(loaded.id, { calMin: loaded.cal_min, calMax: loaded.cal_max });
+    }
+    windowingGestureStartRef.current = starts;
+  }, []);
+
+  const emitWindowingGestureChanges = useCallback(() => {
+    const starts = windowingGestureStartRef.current;
+    if (!starts) return;
+    windowingGestureStartRef.current = null;
+
+    const nv = nvRef.current;
+    if (!nv) return;
+    for (const loaded of asNiivueInterop(nv).volumes) {
+      if (!loaded.id || loaded.cal_min === undefined || loaded.cal_max === undefined) continue;
+      const start = starts.get(loaded.id);
+      if (!start) continue;
+      if (loaded.cal_min === start.calMin && loaded.cal_max === start.calMax) continue;
+      onIntensityWindowChangeRef.current?.(sliceType, loaded);
+    }
+  }, [sliceType]);
+
+  const orientationLabels = plane ? PLANE_ORIENTATION_LABELS[sliceType] : null;
+
   return (
     <div
       className={className ?? 'nc-viewer-pane'}
@@ -545,8 +373,19 @@ export function NiivuePane({
       role="application"
       aria-label="MRI viewer — use arrow keys to navigate slices"
       onKeyDownCapture={handleKeyDown}
+      onMouseDownCapture={captureWindowingGestureStart}
+      onMouseUpCapture={emitWindowingGestureChanges}
+      onMouseLeave={emitWindowingGestureChanges}
     >
       <canvas ref={canvasRef} className="nc-viewer-canvas" />
+      {orientationLabels && (
+        <div className="nc-viewer-orientation-labels" aria-hidden="true">
+          <span className="nc-viewer-orientation-label nc-viewer-orientation-label-top">{orientationLabels.top}</span>
+          <span className="nc-viewer-orientation-label nc-viewer-orientation-label-right">{orientationLabels.right}</span>
+          <span className="nc-viewer-orientation-label nc-viewer-orientation-label-bottom">{orientationLabels.bottom}</span>
+          <span className="nc-viewer-orientation-label nc-viewer-orientation-label-left">{orientationLabels.left}</span>
+        </div>
+      )}
       {plane && (
         <SurfaceContourOverlay
           sliceType={sliceType}

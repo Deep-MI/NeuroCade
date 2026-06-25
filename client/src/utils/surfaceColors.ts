@@ -1,9 +1,9 @@
 import {
     DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,
     DEFAULT_SURFACE_CURVATURE_POSITIVE_THRESHOLD,
-} from '../constants';
-import type { SurfaceColorMode, SurfaceLayer } from '../types';
-import type { SurfaceAnnotationData } from './SurfaceLoader';
+} from '../constants.js';
+import type { SurfaceColorMode, SurfaceLayer } from '../types.js';
+import type { SurfaceAnnotationData } from './SurfaceLoader.js';
 
 export type SurfaceRgb = [number, number, number];
 

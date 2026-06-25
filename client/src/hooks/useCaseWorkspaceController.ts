@@ -2,16 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
-import { isRunActive, isRunFailed, isRunTerminal } from '../constants';
+import { isRunActive, isRunTerminal } from '../constants';
 import { useCasePolling } from './useCasePolling';
 import { useCaseUploadModal } from './useCaseUploadModal';
-import { isSurfaceLayer, type CaseSummary, type ChatMessage, type FastSurferParams, type OutputVolume, type UploadState, type Volume } from '../types';
-import { loadCaseState, loadClosedCaseVolumes, removeCaseState, saveCaseState } from '../utils/caseStorage';
+import { useFastSurferRunController } from './useFastSurferRunController';
+import { type CaseSummary, type ChatMessage, type OutputVolume, type UploadState, type Volume } from '../types';
+import { loadClosedCaseVolumes, removeCaseState } from '../utils/caseStorage';
 import * as api from '../utils/api';
 import { dedupeOutputVolumes, outputVolumeToLayer, selectInitialIntensityOutputVolume, visibleOutputVolumes } from '../utils/caseLayers';
+import { restorePersistedCaseLayers, savePersistedCaseLayers } from '../utils/caseLayerPersistence';
+import { caseViewerPath } from '../utils/caseRoutes';
 import { createGuiSessionId } from '../utils/guiSession';
 import { isLayerFile } from '../utils/layerAliases';
-import { resolveSurfaceLayerColorMode } from '../utils/surfaceColors';
 
 
 interface UseCaseWorkspaceControllerArgs {
@@ -20,35 +22,6 @@ interface UseCaseWorkspaceControllerArgs {
   navigate: NavigateFunction;
   volumes: Volume[];
   setVolumes: Dispatch<SetStateAction<Volume[]>>;
-}
-
-function chooseRunInputArtifactId(options: OutputVolume[], layers: Volume[], requestedId?: string | null): string | null {
-  const validOptions = options.filter((option) => option.id && option.kind === 'volume' && (option.type ?? 'intensity') === 'intensity');
-  if (requestedId && validOptions.some((option) => option.id === requestedId)) {
-    return requestedId;
-  }
-
-  const visibleIntensityLayers = layers.filter((layer) => (layer.type ?? 'intensity') === 'intensity' && layer.visible);
-  const loadedIntensityLayers = layers.filter((layer) => (layer.type ?? 'intensity') === 'intensity');
-  const candidates = [...visibleIntensityLayers, ...loadedIntensityLayers];
-  for (const layer of candidates) {
-    if (layer.artifactId && validOptions.some((option) => option.id === layer.artifactId)) {
-      return layer.artifactId;
-    }
-    const matchingOption = validOptions.find((option) => option.filename === layer.filename);
-    if (matchingOption?.id) {
-      return matchingOption.id;
-    }
-  }
-
-  return validOptions[0]?.id ?? null;
-}
-
-function routeCaseSlug(workspaceId: string, caseId: string, fallbackTitle?: string | null) {
-  const prefix = `${workspaceId}__`;
-  if (caseId.startsWith(prefix)) return caseId.slice(prefix.length);
-  if (fallbackTitle) return fallbackTitle;
-  throw new Error('Case id must use the canonical workspace-prefixed format.');
 }
 
 export function useCaseWorkspaceController({
@@ -61,13 +34,10 @@ export function useCaseWorkspaceController({
   const [runInputOptions, setRunInputOptions] = useState<OutputVolume[]>([]);
   const [currentCaseTitle, setCurrentCaseTitle] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
-  const [runStatus, setRunStatus] = useState<string>('idle');
   const [logs, setLogs] = useState<string>('');
   const [chatNotifications, setChatNotifications] = useState<ChatMessage[]>([]);
   const [availableCases, setAvailableCases] = useState<CaseSummary[]>([]);
-  const [queueMessage, setQueueMessage] = useState<string>("FastSurfer will run on the dedicated analysis server. This may take 15-60 minutes depending on the hardware.");
 
   const [guiSessionId] = useState(createGuiSessionId);
   const suppressedRouteCaseRef = useRef<string | null>(null);
@@ -135,6 +105,21 @@ export function useCaseWorkspaceController({
     }
   }, [isStaleWorkspaceAction]);
 
+  const runController = useFastSurferRunController({
+    initialWorkspaceId,
+    currentCaseId,
+    currentCaseTitle,
+    availableCases,
+    runInputOptions,
+    volumes,
+    navigate,
+    fetchAvailableCases,
+    setActiveCaseId,
+    setLogs,
+    setChatNotifications,
+  });
+  const { runStatus, setRunStatus } = runController;
+
   const loadCase = useCallback(async (caseId: string) => {
     const actionId = startWorkspaceAction();
     setRunInputOptions([]);
@@ -145,53 +130,7 @@ export function useCaseWorkspaceController({
     await fetchLogs(caseId, actionId);
     if (isStaleWorkspaceAction(actionId)) return;
 
-    const saved = loadCaseState(caseId);
-    if (saved && saved.volumes.length > 0) {
-      const savedOrder = new Map(saved.volumes.flatMap((volume, index) => [
-        [volume.id, index] as const,
-        [volume.filename, index] as const,
-      ]));
-      setVolumes((serverVolumes) => {
-        const restoredVolumes = serverVolumes.map((serverVolume) => {
-          const persistedVolume = saved.volumes.find((volume) => volume.id === serverVolume.id || volume.filename === serverVolume.filename);
-          if (!persistedVolume) {
-            return serverVolume;
-          }
-          const restored = {
-            ...serverVolume,
-            visible: persistedVolume.visible,
-            opacity: persistedVolume.opacity,
-            renderIn3D: persistedVolume.renderIn3D,
-            renderInSlices: persistedVolume.renderInSlices,
-          };
-          if (isSurfaceLayer(serverVolume) && persistedVolume.type === 'surface') {
-            return {
-              ...restored,
-              surfaceColorMode: resolveSurfaceLayerColorMode({ ...serverVolume, surfaceColorMode: persistedVolume.surfaceColorMode ?? serverVolume.surfaceColorMode }),
-              surfaceReferenceAffine: persistedVolume.surfaceReferenceAffine ?? serverVolume.surfaceReferenceAffine,
-              curvatureNegativeThreshold: persistedVolume.curvatureNegativeThreshold ?? serverVolume.curvatureNegativeThreshold,
-              curvaturePositiveThreshold: persistedVolume.curvaturePositiveThreshold ?? serverVolume.curvaturePositiveThreshold,
-            };
-          }
-          if (!isSurfaceLayer(serverVolume) && persistedVolume.type !== 'surface') {
-            return {
-              ...restored,
-              brightness: persistedVolume.brightness,
-              contrast: persistedVolume.contrast,
-            };
-          }
-          return restored;
-        });
-        return restoredVolumes
-          .map((volume, index) => ({ volume, index }))
-          .sort((a, b) => {
-            const aOrder = savedOrder.get(a.volume.id) ?? savedOrder.get(a.volume.filename) ?? Number.MAX_SAFE_INTEGER;
-            const bOrder = savedOrder.get(b.volume.id) ?? savedOrder.get(b.volume.filename) ?? Number.MAX_SAFE_INTEGER;
-            return aOrder - bOrder || a.index - b.index;
-          })
-          .map(({ volume }) => volume);
-      });
-    }
+    setVolumes((serverVolumes) => restorePersistedCaseLayers(caseId, serverVolumes));
 
     try {
       const data = await api.fetchStatus(caseId);
@@ -208,117 +147,7 @@ export function useCaseWorkspaceController({
     if (suppressedRouteCaseRef.current === caseId) {
       suppressedRouteCaseRef.current = null;
     }
-  }, [fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setVolumes, startWorkspaceAction]);
-
-  const handleAgentRunFastSurfer = useCallback(async (cmd: { case_id: string; input_artifact_id?: string; seg_only?: boolean; case_name?: string }) => {
-    if (!initialWorkspaceId) {
-      setChatNotifications((previous) => [...previous, { role: 'info', content: 'No active workspace selected for FastSurfer run.' }]);
-      return;
-    }
-    if (!currentCaseId) {
-      setChatNotifications((previous) => [...previous, { role: 'info', content: 'No active case selected for FastSurfer run.' }]);
-      return;
-    }
-    const currentCaseName = currentCaseTitle ?? availableCases.find((caseItem) => caseItem.case_id === currentCaseId)?.subject_name ?? null;
-    const effectiveName = cmd.case_name ?? currentCaseName ?? currentCaseId;
-    const inputArtifactId = chooseRunInputArtifactId(runInputOptions, volumes, cmd.input_artifact_id);
-    if (!inputArtifactId) {
-      setShowConfirm(true);
-      setChatNotifications((previous) => [...previous, { role: 'info', content: 'Choose an input volume before starting FastSurfer.' }]);
-      return;
-    }
-    const formData = api.buildRunFormData(
-      {
-        input_artifact_id: inputArtifactId,
-        seg_only: cmd.seg_only ?? false,
-        no_bias: false,
-        no_cereb: cmd.seg_only ?? false,
-        no_asegdkt: false,
-        no_hypothal: false,
-        three_t: false,
-        case_name: effectiveName,
-      },
-      {
-        activeCaseId: currentCaseId,
-        currentCaseName,
-        workspaceId: initialWorkspaceId,
-      },
-    );
-
-    try {
-      const data = await api.startRun(formData);
-      setRunStatus(data.status);
-      setActiveCaseId(data.case_id);
-      if (data.workspace_id) {
-        void navigate(`/workspaces/${encodeURIComponent(data.workspace_id)}/cases/${encodeURIComponent(routeCaseSlug(data.workspace_id, data.case_id, effectiveName))}`);
-      }
-      setLogs('Initializing FastSurfer pipeline...\nRun started by AI assistant');
-      setChatNotifications((previous) => [...previous, {
-        role: 'info',
-        content: `FastSurfer analysis started for case "${effectiveName}". You can monitor progress in the output panel.`,
-      }]);
-      void fetchAvailableCases();
-    } catch (error) {
-      console.error('Agent-triggered run failed:', error);
-      setChatNotifications((previous) => [...previous, { role: 'info', content: 'Failed to start FastSurfer run triggered by assistant.' }]);
-    }
-  }, [availableCases, currentCaseId, currentCaseTitle, fetchAvailableCases, initialWorkspaceId, navigate, runInputOptions, volumes]);
-
-  const handleRunFastSurfer = useCallback(() => {
-    if (!currentCaseId && !isRunFailed(runStatus)) {
-      alert('Please create or load a case first.');
-      return;
-    }
-    setShowConfirm(true);
-    setQueueMessage("FastSurfer will run on the dedicated analysis server. This may take 15-60 minutes depending on the hardware.");
-  }, [currentCaseId, runStatus]);
-
-  const handleCancel = useCallback(async () => {
-    if (!currentCaseId) return;
-    if (!confirm('Are you sure you want to cancel this run?')) return;
-
-    try {
-      await api.cancelCaseRun(currentCaseId);
-      setRunStatus('canceled');
-      setChatNotifications((previous) => [...previous, { role: 'info', content: 'Run canceled by user.' }]);
-    } catch (error) {
-      console.error('Failed to cancel run', error);
-    }
-  }, [currentCaseId]);
-
-  const confirmRun = useCallback(async (params: FastSurferParams) => {
-    if (!currentCaseId || !initialWorkspaceId) {
-      throw new Error('No active case selected');
-    }
-    if (!params.input_artifact_id) {
-      throw new Error('Choose an input volume for FastSurfer');
-    }
-    const currentCaseName = currentCaseTitle ?? availableCases.find((caseItem) => caseItem.case_id === currentCaseId)?.subject_name ?? null;
-    const formData = api.buildRunFormData(params, {
-      activeCaseId: currentCaseId,
-      currentCaseName,
-      workspaceId: initialWorkspaceId,
-    });
-
-    try {
-      const data = await api.startRun(formData);
-      setShowConfirm(false);
-      setRunStatus(data.status);
-      setActiveCaseId(data.case_id);
-      if (data.workspace_id) {
-        void navigate(`/workspaces/${encodeURIComponent(data.workspace_id)}/cases/${encodeURIComponent(routeCaseSlug(data.workspace_id, data.case_id, params.case_name ?? currentCaseName))}`);
-      }
-      setLogs('Initializing FastSurfer pipeline...\nRun started');
-      setChatNotifications([{
-        role: 'info',
-        content: `FastSurfer analysis started for case "${params.case_name ?? currentCaseName ?? currentCaseId}". You can monitor the progress in the output panel.`,
-      }]);
-    } catch (error: unknown) {
-      console.error('Run error:', error);
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(message);
-    }
-  }, [availableCases, currentCaseId, currentCaseTitle, initialWorkspaceId, navigate]);
+  }, [fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setRunStatus, setVolumes, startWorkspaceAction]);
 
   const handleRenameCase = useCallback(async (oldId: string, newId: string) => {
     const renamed = await api.renameCase(oldId, newId);
@@ -326,7 +155,7 @@ export function useCaseWorkspaceController({
       setActiveCaseId(renamed.new_id);
       setCurrentCaseTitle(renamed.new_title);
       if (initialWorkspaceId) {
-        void navigate(`/workspaces/${encodeURIComponent(initialWorkspaceId)}/cases/${encodeURIComponent(routeCaseSlug(initialWorkspaceId, renamed.new_id, renamed.new_title))}`);
+        void navigate(caseViewerPath(initialWorkspaceId, renamed.new_id, renamed.new_title));
       }
     }
     await fetchAvailableCases();
@@ -344,13 +173,13 @@ export function useCaseWorkspaceController({
       setCurrentCaseTitle(null);
     }
     await fetchAvailableCases();
-  }, [currentCaseId, fetchAvailableCases, setVolumes]);
+  }, [currentCaseId, fetchAvailableCases, setRunStatus, setVolumes]);
 
   const openCase = useCallback((caseId: string) => {
     const targetCase = availableCases.find((caseItem) => caseItem.case_id === caseId);
     const targetWorkspaceId = targetCase?.workspace_id ?? initialWorkspaceId;
     if (!targetWorkspaceId) return;
-    void navigate(`/workspaces/${encodeURIComponent(targetWorkspaceId)}/cases/${encodeURIComponent(routeCaseSlug(targetWorkspaceId, caseId, targetCase?.subject_name))}`);
+    void navigate(caseViewerPath(targetWorkspaceId, caseId, targetCase?.subject_name));
   }, [availableCases, initialWorkspaceId, navigate]);
 
   const uploadModal = useCaseUploadModal({
@@ -373,7 +202,7 @@ export function useCaseWorkspaceController({
         setActiveCaseId(data.case_id);
         setCurrentCaseTitle(data.title);
         suppressedRouteCaseRef.current = data.case_id;
-        void navigate(`/workspaces/${encodeURIComponent(data.workspace_id)}/cases/${encodeURIComponent(routeCaseSlug(data.workspace_id, data.case_id, data.title))}`);
+        void navigate(caseViewerPath(data.workspace_id, data.case_id, data.title));
       } catch (error) {
         if (!isStaleWorkspaceAction(actionId)) {
           suppressedRouteCaseRef.current = null;
@@ -417,21 +246,18 @@ export function useCaseWorkspaceController({
   }, [availableCases]);
 
   useEffect(() => {
-    const interval = setInterval(fetchAvailableCases, 60000);
-    return () => clearInterval(interval);
+    void fetchAvailableCases();
+    const interval = window.setInterval(() => {
+      void fetchAvailableCases();
+    }, 300000);
+    return () => window.clearInterval(interval);
   }, [fetchAvailableCases]);
 
   useEffect(() => {
     if (!currentCaseId) return;
-    const timerId = setTimeout(() => saveCaseState(currentCaseId, volumes), 500);
+    const timerId = setTimeout(() => savePersistedCaseLayers(currentCaseId, volumes), 500);
     return () => clearTimeout(timerId);
   }, [currentCaseId, volumes]);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      void fetchAvailableCases();
-    });
-  }, [fetchAvailableCases]);
 
   useEffect(() => {
     if (!initialCaseId) {
@@ -445,23 +271,6 @@ export function useCaseWorkspaceController({
     }, 0);
     return () => window.clearTimeout(timerId);
   }, [initialCaseId, loadCase]);
-
-  useEffect(() => {
-    if (!showConfirm || !initialWorkspaceId) {
-      return;
-    }
-    void api.fetchQueueStatus(initialWorkspaceId)
-      .then((data) => {
-        const totalInfo = data.total > 0
-          ? `There are currently ${data.total} other jobs in the queue (Active: ${data.active}, Queued: ${data.queued}).`
-          : 'The server is currently idle.';
-        setQueueMessage(`FastSurfer will run on the dedicated analysis server. This may take 15-60 minutes depending on the hardware. ${totalInfo}`);
-      })
-      .catch((error) => {
-        console.error('Failed to fetch queue status', error);
-        setQueueMessage("FastSurfer will run on the dedicated analysis server. This may take 15-60 minutes depending on the hardware.");
-      });
-  }, [initialWorkspaceId, showConfirm]);
 
   useCasePolling({
     activeCaseId: currentCaseId,
@@ -520,20 +329,20 @@ export function useCaseWorkspaceController({
     currentCaseTitle,
     uploadState,
     showUploadModal: uploadModal.showUploadModal,
-    showConfirm,
+    showConfirm: runController.showConfirm,
     activeCaseId: currentCaseId,
     runStatus,
     logs,
     chatNotifications,
     availableCases,
-    queueMessage,
+    queueMessage: runController.queueMessage,
     hasUploadedCase,
     suggestedCaseName,
-    setShowConfirm,
-    handleRunFastSurfer,
-    handleCancel,
-    confirmRun,
-    handleAgentRunFastSurfer,
+    setShowConfirm: runController.setShowConfirm,
+    handleRunFastSurfer: runController.handleRunFastSurfer,
+    handleCancel: runController.handleCancel,
+    confirmRun: runController.confirmRun,
+    handleAgentRunFastSurfer: runController.handleAgentRunFastSurfer,
     fetchAvailableCases,
     handleRenameCase,
     handleDeleteCase,

@@ -1,7 +1,7 @@
 /* ------------------------------------------------------------------ */
 /*  localStorage persistence helpers for per-case volume display state */
 /* ------------------------------------------------------------------ */
-import type { Volume, CaseState, PersistedVolume } from '../types';
+import type { Volume, CaseState, PersistedVolume } from '../types.js';
 
 const CASE_KEY_PREFIX = 'fastsurfer-case-';
 const CASE_CLOSED_KEY_PREFIX = 'fastsurfer-case-closed-';
