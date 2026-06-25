@@ -3,7 +3,7 @@ import { Niivue } from '@niivue/niivue';
 
 import type { Volume } from '../types';
 import { isSurfaceLayer } from '../types';
-import { asNiivueInterop } from '../utils/niivueInterop';
+import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
 import {
   applyBrightnessContrast,
   getCachedFreesurferLabelLut,
@@ -24,6 +24,7 @@ import {
   syncNiivueSurfaceDisplay,
   volumesInRenderOrder,
 } from './niivueLayers';
+import { refreshNiivueWindowingLayer, scheduleNiivueWindowingTexturePrime } from './niivueWindowingRefresh';
 import type { WindowSetting } from './paneSyncKeys';
 import { selectLoadedReferenceVolume } from './referenceVolume';
 import { syncSurfaceReferenceTransforms } from './surfaceTransforms';
@@ -58,6 +59,15 @@ function isLayerLoaded(nv: Niivue, plane: boolean, layer: Volume): boolean {
   return isSurfaceLayer(layer)
     ? (asNiivueInterop(nv).meshes ?? []).some((mesh) => mesh.id === layer.id || mesh.name === filename)
     : asNiivueInterop(nv).volumes.some((loaded) => loaded.id === layer.id || loaded.url === layer.url || loaded.name === filename);
+}
+
+function primeWindowingTextures(nv: Niivue, sources: Volume[]): void {
+  const interop = asNiivueInterop(nv);
+  for (const loaded of interop.volumes) {
+    const source = sources.find((volume) => volume.id === loaded.id);
+    if (!source || isSurfaceLayer(source) || (source.type !== undefined && source.type !== 'intensity')) continue;
+    scheduleNiivueWindowingTexturePrime(nv, loaded);
+  }
 }
 
 export function useNiivuePaneLayers({
@@ -137,6 +147,7 @@ export function useNiivuePaneLayers({
             }
           }
           nv.updateGLVolume();
+          primeWindowingTextures(nv, latestVolumesRef.current);
         }
 
         if (plane) return;
@@ -159,6 +170,7 @@ export function useNiivuePaneLayers({
             syncSurfaceReferenceTransforms(interop.meshes ?? [], latestVolumesRef.current, referenceVolume, interop.gl);
           }
           nv.updateGLVolume();
+          primeWindowingTextures(nv, latestVolumesRef.current);
         }
       } finally {
         if (!cancelled) onLoadingChange?.(sliceType, false);
@@ -219,7 +231,10 @@ export function useNiivuePaneLayers({
           }
         }
 
-        if (!cancelled) scheduleRefresh();
+        if (!cancelled) {
+          scheduleRefresh();
+          primeWindowingTextures(nv, latestVolumesRef.current);
+        }
       } finally {
         if (!cancelled) onLoadingChange?.(sliceType, false);
       }
@@ -339,7 +354,7 @@ export function useNiivuePaneLayers({
     const nv = nvRef.current;
     if (!nv) return;
     const sources = latestVolumesRef.current;
-    let changed = false;
+    const changedVolumes: NiivueVolumeInterop[] = [];
 
     for (const loaded of asNiivueInterop(nv).volumes) {
       const source = sources.find((volume) => volume.id === loaded.id);
@@ -347,18 +362,26 @@ export function useNiivuePaneLayers({
       if (!manualWindowingIds.current.has(source.id)) continue;
       const win = windowingsRef.current[source.id];
       if (!win) continue;
+      if (!Number.isFinite(win.calMin) || !Number.isFinite(win.calMax) || win.calMin === win.calMax) continue;
       if (loaded.cal_min !== win.calMin) {
         loaded.cal_min = win.calMin;
-        changed = true;
+        changedVolumes.push(loaded);
       }
       if (loaded.cal_max !== win.calMax) {
         loaded.cal_max = win.calMax;
-        changed = true;
+        if (!changedVolumes.includes(loaded)) changedVolumes.push(loaded);
       }
     }
 
-    if (changed) scheduleRefresh();
-  }, [activeWindowingKey, latestVolumesRef, manualWindowingIds, nvRef, scheduleRefresh, windowingsRef]);
+    if (changedVolumes.length > 0) {
+      let refreshed = false;
+      for (const loaded of changedVolumes) {
+        refreshed = refreshNiivueWindowingLayer(nv, loaded, { sliceType, source: 'windowing-state-reconcile' }) || refreshed;
+      }
+      if (refreshed) asNiivueInterop(nv).drawScene?.();
+      else scheduleRefresh();
+    }
+  }, [activeWindowingKey, latestVolumesRef, manualWindowingIds, nvRef, scheduleRefresh, sliceType, windowingsRef]);
 
   useEffect(() => {
     const nv = nvRef.current;

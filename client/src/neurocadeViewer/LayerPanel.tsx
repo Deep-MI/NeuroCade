@@ -284,7 +284,9 @@ export function LayerPanel({
                                   const direction = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
                                   if (direction === 0) return;
                                   event.preventDefault();
-                                  onUpdateWindowing(volume.id, 'calMin', Math.max(win.globalMin, Math.min(win.calMax - windowStep, win.calMin + direction * windowStep)));
+                                  const nextMin = Math.max(win.globalMin, Math.min(win.globalMax, win.calMin + direction * windowStep));
+                                  const adjustedMin = nextMin === win.calMax ? Math.max(win.globalMin, Math.min(win.globalMax, nextMin + direction * windowStep)) : nextMin;
+                                  if (adjustedMin !== win.calMax) onUpdateWindowing(volume.id, 'calMin', adjustedMin);
                                 }}
                                 className="nc-viewer-layer-slider"
                                 aria-label={`${volume.name} window minimum`}
@@ -306,7 +308,9 @@ export function LayerPanel({
                                   const direction = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
                                   if (direction === 0) return;
                                   event.preventDefault();
-                                  onUpdateWindowing(volume.id, 'calMax', Math.min(win.globalMax, Math.max(win.calMin + windowStep, win.calMax + direction * windowStep)));
+                                  const nextMax = Math.max(win.globalMin, Math.min(win.globalMax, win.calMax + direction * windowStep));
+                                  const adjustedMax = nextMax === win.calMin ? Math.max(win.globalMin, Math.min(win.globalMax, nextMax + direction * windowStep)) : nextMax;
+                                  if (adjustedMax !== win.calMin) onUpdateWindowing(volume.id, 'calMax', adjustedMax);
                                 }}
                                 className="nc-viewer-layer-slider"
                                 aria-label={`${volume.name} window maximum`}

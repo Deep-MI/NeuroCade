@@ -1,0 +1,32 @@
+NeuroCade NiiVue windowing speedup
+
+Problem:
+- NiiVue's standard windowing refresh path calls refreshLayers()/updateGLVolume().
+- For scalar volumes, that path recreates/uploads full 3D textures via texSubImage3D.
+- In the multi-canvas viewer, doing that for every pane caused visible lag during right-click window/level and min/max slider updates.
+
+Current approach:
+- Keep the multi-canvas setup unchanged.
+- Cache one raw scalar 3D texture per NiiVue instance and volume.
+- For windowing-only changes, rerun only the shader pass that maps raw intensity through cal_min/cal_max into the displayed texture.
+- Avoid full refreshLayers()/updateGLVolume() for supported scalar background windowing updates.
+- Coalesce slider/windowing changes into one requestAnimationFrame transaction and update React windowing state once.
+- Prewarm raw windowing textures after volume load so the first interaction is less likely to pay the upload cost.
+
+Fallback behavior:
+- Unsupported cases still use NiiVue's original refresh path.
+- This includes labels, segmentations, non-background layers, modulation, negative colormaps, unsupported datatypes, missing WebGL state, and zero-width windows.
+
+Inverted windowing:
+- min > max is allowed and treated as an inverted intensity window.
+- The fast path temporarily inverts the colormap while rendering the windowed texture, then restores the volume state.
+- min == max remains ignored because it collapses the window to zero width.
+
+Source-pane right-click windowing:
+- NiiVue's own contrast handler calls calculateNewRange() followed by refreshLayers().
+- We install a narrow wrapper that detects that specific windowing refresh and routes scalar layer-0 updates through the fast path.
+- Other refreshLayers() calls continue to use the original NiiVue implementation.
+
+Debugging:
+- Set localStorage.setItem('neurocade.windowingPerf', '1') to log fast refresh, cache upload/prime, drawScene, batch, and fallback refresh timings.
+- Remove the flag before judging interaction smoothness, because DevTools console logging can add jank.

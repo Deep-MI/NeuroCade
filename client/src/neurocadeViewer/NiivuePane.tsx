@@ -22,6 +22,7 @@ import {
 import { SurfaceContourOverlay } from './SurfaceContourOverlay';
 import { useNiivuePaneLayers } from './useNiivuePaneLayers';
 import type { ViewerDragMode, ViewerPlaneSliceType, ViewerSliceType } from './viewerControls';
+import { installNiivueWindowingRefreshPatch } from './niivueWindowingRefresh';
 
 // The Matcap shader has no light/ambient term — mesh brightness is set entirely
 // by this texture (final color = matcap × surface color). We keep Fuzzy's soft,
@@ -199,6 +200,7 @@ export function NiivuePane({
       dragMode: selectedDragMode(dragMode),
       dragModePrimary: primaryDragMode(),
     });
+    installNiivueWindowingRefreshPatch(nv);
     let disposed = false;
     void nv.attachToCanvas(canvasRef.current).then(() => {
       if (disposed) return;

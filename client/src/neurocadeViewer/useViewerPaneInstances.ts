@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Niivue } from '@niivue/niivue';
 
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
+import { logNiivueWindowingPerf, refreshNiivueWindowingLayer } from './niivueWindowingRefresh';
 import type { ViewerSliceType } from './viewerControls';
 
 interface LayerRefreshBatch {
@@ -41,6 +42,7 @@ export function useViewerPaneInstances() {
     }
     const volumes = new Set<NiivueVolumeInterop>([loaded]);
     const frame = window.requestAnimationFrame(() => {
+      const batchStart = performance.now();
       layerRefreshFrameRefs.current.delete(sliceType);
       const interop = asNiivueInterop(nv);
       if (typeof interop.refreshLayers !== 'function') {
@@ -48,19 +50,15 @@ export function useViewerPaneInstances() {
         return;
       }
       for (const volume of volumes) {
-        let layer = 0;
-        let found = false;
-        for (const candidate of interop.volumes) {
-          if (candidate === volume) {
-            found = true;
-            break;
-          }
-          if (candidate.toRAS) layer += 1;
-        }
-        if (!found || !volume.toRAS) continue;
-        interop.refreshLayers(volume, layer);
+        refreshNiivueWindowingLayer(nv, volume, { sliceType, source: 'scheduled-layer-refresh' });
       }
+      const drawStart = performance.now();
       interop.drawScene?.();
+      logNiivueWindowingPerf('drawScene', performance.now() - drawStart, { sliceType });
+      logNiivueWindowingPerf('batch', performance.now() - batchStart, {
+        sliceType,
+        volumes: volumes.size,
+      });
     });
     layerRefreshFrameRefs.current.set(sliceType, { frame, volumes });
   }, []);

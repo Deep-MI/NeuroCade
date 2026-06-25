@@ -13,6 +13,15 @@ interface UseViewerWindowingOptions {
   scheduleInstanceLayerRefresh: (sliceType: ViewerSliceType, nv: Niivue, loaded: NiivueVolumeInterop) => void;
 }
 
+interface PendingWindowingTransaction {
+  id: string;
+  calMin?: number;
+  calMax?: number;
+  globalMin?: number;
+  globalMax?: number;
+  sourceSliceType?: ViewerSliceType;
+}
+
 export function useViewerWindowing({
   volumes,
   instancesRef,
@@ -20,37 +29,73 @@ export function useViewerWindowing({
   scheduleInstanceLayerRefresh,
 }: UseViewerWindowingOptions) {
   const manualWindowingRef = useRef<Set<string>>(new Set());
-  const windowingStateFrameRef = useRef<number | null>(null);
-  const pendingWindowingStateRef = useRef<Record<string, WindowSetting>>({});
+  const windowingTransactionFrameRef = useRef<number | null>(null);
+  const pendingWindowingTransactionsRef = useRef<Map<string, PendingWindowingTransaction>>(new Map());
   const [windowings, setWindowings] = useState<Record<string, WindowSetting>>({});
 
-  const scheduleWindowingState = useCallback((id: string, setting: WindowSetting) => {
-    pendingWindowingStateRef.current[id] = setting;
-    if (windowingStateFrameRef.current !== null) return;
-    windowingStateFrameRef.current = window.requestAnimationFrame(() => {
-      windowingStateFrameRef.current = null;
-      const pending = pendingWindowingStateRef.current;
-      pendingWindowingStateRef.current = {};
+  const scheduleWindowingTransaction = useCallback((transaction: PendingWindowingTransaction) => {
+    const pending = pendingWindowingTransactionsRef.current;
+    const current = pending.get(transaction.id);
+    pending.set(transaction.id, {
+      id: transaction.id,
+      calMin: transaction.calMin ?? current?.calMin,
+      calMax: transaction.calMax ?? current?.calMax,
+      globalMin: transaction.globalMin ?? current?.globalMin,
+      globalMax: transaction.globalMax ?? current?.globalMax,
+      sourceSliceType: current?.sourceSliceType ?? transaction.sourceSliceType,
+    });
+    if (windowingTransactionFrameRef.current !== null) return;
+
+    windowingTransactionFrameRef.current = window.requestAnimationFrame(() => {
+      windowingTransactionFrameRef.current = null;
+      const transactions = [...pendingWindowingTransactionsRef.current.values()];
+      pendingWindowingTransactionsRef.current.clear();
+
+      for (const item of transactions) {
+        if (item.calMin !== undefined && item.calMax !== undefined) {
+          if (!Number.isFinite(item.calMin) || !Number.isFinite(item.calMax) || item.calMin === item.calMax) continue;
+        }
+        for (const [sliceType, nv] of instancesRef.current.entries()) {
+          if (item.sourceSliceType !== undefined && sliceType === item.sourceSliceType) continue;
+          const loaded = asNiivueInterop(nv).volumes.find((volume) => volume.id === item.id);
+          if (!loaded) continue;
+          const nextMin = item.calMin ?? loaded.cal_min;
+          const nextMax = item.calMax ?? loaded.cal_max;
+          if (nextMin === undefined || nextMax === undefined) continue;
+          if (!Number.isFinite(nextMin) || !Number.isFinite(nextMax) || nextMin === nextMax) continue;
+          if (loaded.cal_min === nextMin && loaded.cal_max === nextMax) continue;
+          loaded.cal_min = nextMin;
+          loaded.cal_max = nextMax;
+          scheduleInstanceLayerRefresh(sliceType, nv, loaded);
+        }
+      }
+
       setWindowings((prev) => {
         let changed = false;
         const next = { ...prev };
-        for (const [volumeId, value] of Object.entries(pending)) {
-          const current = prev[volumeId];
+        for (const item of transactions) {
+          const current = prev[item.id] ?? { calMin: 0, calMax: 1, globalMin: item.globalMin ?? 0, globalMax: item.globalMax ?? 1 };
+          const value = {
+            calMin: item.calMin ?? current.calMin,
+            calMax: item.calMax ?? current.calMax,
+            globalMin: item.globalMin ?? current.globalMin,
+            globalMax: item.globalMax ?? current.globalMax,
+          };
           if (
-            current?.calMin === value.calMin &&
+            current.calMin === value.calMin &&
             current.calMax === value.calMax &&
             current.globalMin === value.globalMin &&
             current.globalMax === value.globalMax
           ) {
             continue;
           }
-          next[volumeId] = value;
+          next[item.id] = value;
           changed = true;
         }
         return changed ? next : prev;
       });
     });
-  }, []);
+  }, [instancesRef, scheduleInstanceLayerRefresh]);
 
   const ensureWindowingForLayer = useCallback((id: string) => {
     setWindowings((prev) => {
@@ -73,59 +118,39 @@ export function useViewerWindowing({
 
   const updateWindowing = useCallback((id: string, field: 'calMin' | 'calMax', value: number) => {
     manualWindowingRef.current.add(id);
-    for (const [sliceType, nv] of instancesRef.current.entries()) {
-      const loaded = asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
-      if (!loaded) continue;
-      const current = field === 'calMin' ? loaded.cal_min : loaded.cal_max;
-      if (current === value) continue;
-      if (field === 'calMin') loaded.cal_min = value;
-      if (field === 'calMax') loaded.cal_max = value;
-      scheduleInstanceLayerRefresh(sliceType, nv, loaded);
-    }
-    setWindowings((prev) => {
-      const current = prev[id] ?? { calMin: 0, calMax: 1, globalMin: 0, globalMax: 1 };
-      if (current[field] === value) return prev;
-      return { ...prev, [id]: { ...current, [field]: value } };
-    });
-  }, [instancesRef, scheduleInstanceLayerRefresh]);
+    scheduleWindowingTransaction({ id, [field]: value });
+  }, [scheduleWindowingTransaction]);
 
   const syncIntensityWindow = useCallback((sourceSliceType: ViewerSliceType, sourceLoaded: NiivueVolumeInterop) => {
     const id = sourceLoaded.id;
     const calMin = sourceLoaded.cal_min;
     const calMax = sourceLoaded.cal_max;
     if (!id || calMin === undefined || calMax === undefined) return;
-    if (!Number.isFinite(calMin) || !Number.isFinite(calMax) || calMin >= calMax) return;
+    if (!Number.isFinite(calMin) || !Number.isFinite(calMax) || calMin === calMax) return;
     const source = volumes.find((volume) => volume.id === id);
     if (!source || isSurfaceLayer(source) || source.type === 'segmentation') return;
 
     manualWindowingRef.current.add(id);
-    for (const [sliceType, nv] of instancesRef.current.entries()) {
-      if (sliceType === sourceSliceType) continue;
-      const loaded = asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
-      if (!loaded || (loaded.cal_min === calMin && loaded.cal_max === calMax)) continue;
-      loaded.cal_min = calMin;
-      loaded.cal_max = calMax;
-      scheduleInstanceLayerRefresh(sliceType, nv, loaded);
-    }
-
-    scheduleWindowingState(id, {
+    scheduleWindowingTransaction({
+      id,
       calMin,
       calMax,
       globalMin: sourceLoaded.global_min ?? calMin,
       globalMax: sourceLoaded.global_max ?? calMax,
+      sourceSliceType,
     });
-  }, [instancesRef, scheduleInstanceLayerRefresh, scheduleWindowingState, volumes]);
+  }, [scheduleWindowingTransaction, volumes]);
 
   const clearManualWindowing = useCallback(() => {
     manualWindowingRef.current.clear();
   }, []);
 
   useEffect(() => () => {
-    if (windowingStateFrameRef.current !== null) {
-      window.cancelAnimationFrame(windowingStateFrameRef.current);
-      windowingStateFrameRef.current = null;
+    if (windowingTransactionFrameRef.current !== null) {
+      window.cancelAnimationFrame(windowingTransactionFrameRef.current);
+      windowingTransactionFrameRef.current = null;
     }
-    pendingWindowingStateRef.current = {};
+    pendingWindowingTransactionsRef.current.clear();
   }, []);
 
   return {
