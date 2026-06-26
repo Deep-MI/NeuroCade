@@ -1,0 +1,26 @@
+NeuroCade viewer layering requirements
+
+1. The bottom layer is always the NiiVue reference volume.
+   - Bottom means lowest in the layer pane and visually below other volumes.
+   - The reference indicator in NeuroCade must match the actual NiiVue reference volume.
+
+2. Render order must follow the layer pane order.
+   - A layer shown above another layer in the pane must render above it.
+   - A layer shown below another layer in the pane must render below it.
+
+3. Hidden volumes should not change the reference volume just because they are hidden.
+   - Hide/show should be display state whenever possible, not layer removal.
+   - Hiding should not reorder loaded NiiVue volumes.
+
+4. Preloading volumes is acceptable when it helps preserve correct ordering.
+   - Prefer preloading over causing slow NiiVue reloads during interaction.
+   - Avoid performance-intensive NiiVue reloads unless needed for correctness.
+
+5. Drag-and-drop reordering must remain supported.
+   - Reordering can update the NiiVue reference volume when the pane's bottom layer changes.
+   - The UI reference indication must update after reorder, load, hide/show, and remove operations.
+
+6. Fast display updates should be scoped.
+   - Windowing-only scalar background updates should use the shader-only fast path.
+   - Opacity/show-hide may use the same fast path only when it is safe for the affected NiiVue layer.
+   - Segmentation compositing correctness takes priority over forcing the scalar fast path.

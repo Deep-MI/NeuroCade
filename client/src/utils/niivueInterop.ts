@@ -114,6 +114,10 @@ export interface NiivueInterop extends NiivueDrawingInterop {
   addMeshesFromUrl?: (meshes: MeshLoadOptions[]) => Promise<void>;
   loadMeshes?: (meshes: MeshLoadOptions[]) => Promise<void>;
   loadMatCapTexture?: (url: string) => Promise<WebGLTexture | null>;
+  getVolumeIndexByID?: (id: string) => number;
+  setOpacity?: (volIdx: number, newOpacity: number) => void;
+  moveVolumeUp?: (volume: NiivueVolumeInterop) => void;
+  moveVolumeDown?: (volume: NiivueVolumeInterop) => void;
   moveCrosshairInVox?: (x: number, y: number, z: number) => void;
   setCrosshairPosition?: (coordinate: [number, number, number]) => void;
   setScale?: (scale: number) => void;

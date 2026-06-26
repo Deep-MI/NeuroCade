@@ -2,7 +2,7 @@ import { Niivue } from '@niivue/niivue';
 
 import { type Volume } from '../types';
 import { asNiivueInterop } from '../utils/niivueInterop';
-import { effectiveLayerOpacity } from './niivueLayers';
+import { effectiveLayerOpacity, setNiivueVolumeOpacity } from './niivueLayers';
 import type { ViewerSliceType } from './viewerControls';
 
 export type PaneRenderAction = 'draw' | 'refresh' | null;
@@ -15,10 +15,13 @@ export function applyLayerDisplay(nv: Niivue, id: string, next: Volume, updates:
   const interop = asNiivueInterop(nv);
   const loaded = interop.volumes.find((volume) => volume.id === id);
   let needsDraw = false;
+  let needsRefresh = false;
+  let handledLoadedDisplay = false;
   if (loaded) {
     if (typeof updates.visible === 'boolean' || typeof updates.opacity === 'number') {
-      loaded.opacity = effectiveLayerOpacity(next);
-      needsDraw = true;
+      handledLoadedDisplay = true;
+      const result = setNiivueVolumeOpacity(nv, loaded, effectiveLayerOpacity(next));
+      needsRefresh = result === 'mutated';
     }
   }
   const mesh = (interop.meshes ?? []).find((item) => item.id === id);
@@ -32,21 +35,28 @@ export function applyLayerDisplay(nv: Niivue, id: string, next: Volume, updates:
       needsDraw = true;
     }
   }
+  if (needsRefresh) return 'refresh';
   if (needsDraw) return 'draw';
+  if (handledLoadedDisplay) return null;
   return loaded || mesh ? 'refresh' : null;
 }
 
-export function previewLayerOpacity(nv: Niivue, id: string, next: Volume): boolean {
+export function previewLayerOpacity(nv: Niivue, id: string, next: Volume): PaneRenderAction {
   const interop = asNiivueInterop(nv);
   const loaded = interop.volumes.find((volume) => volume.id === id);
   const mesh = (interop.meshes ?? []).find((item) => item.id === id);
-  if (!loaded && !mesh) return false;
-  if (loaded) loaded.opacity = effectiveLayerOpacity(next);
+  if (!loaded && !mesh) return null;
+  let action: PaneRenderAction = null;
+  if (loaded) {
+    const result = setNiivueVolumeOpacity(nv, loaded, effectiveLayerOpacity(next));
+    if (result === 'mutated') action = 'refresh';
+  }
   if (mesh) {
     mesh.visible = next.visible;
     mesh.opacity = effectiveLayerOpacity(next);
+    action = action ?? 'draw';
   }
-  return true;
+  return action;
 }
 
 export function capturePaneSnapshot(nv: Niivue | null | undefined): string | null {

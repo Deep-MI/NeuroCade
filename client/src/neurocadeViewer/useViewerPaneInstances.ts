@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Niivue } from '@niivue/niivue';
 
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
-import { logNiivueWindowingPerf, refreshNiivueWindowingLayer } from './niivueWindowingRefresh';
+import { logNiivueWindowingPerf, refreshNiivueWindowingOrLayerStack } from './niivueWindowingRefresh';
 import type { ViewerSliceType } from './viewerControls';
 
 interface LayerRefreshBatch {
@@ -49,9 +49,7 @@ export function useViewerPaneInstances() {
         nv.updateGLVolume();
         return;
       }
-      for (const volume of volumes) {
-        refreshNiivueWindowingLayer(nv, volume, { sliceType, source: 'scheduled-layer-refresh' });
-      }
+      refreshNiivueWindowingOrLayerStack(nv, volumes, { sliceType, source: 'scheduled-layer-refresh' });
       const drawStart = performance.now();
       interop.drawScene?.();
       logNiivueWindowingPerf('drawScene', performance.now() - drawStart, { sliceType });

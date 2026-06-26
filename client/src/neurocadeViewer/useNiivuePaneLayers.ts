@@ -20,11 +20,12 @@ import {
   effectiveLayerOpacity,
   enforceVolumeRenderOrder,
   shouldUseVoxelExactLabelRendering,
+  setNiivueVolumeOpacity,
   surfaceDisplayKey,
   syncNiivueSurfaceDisplay,
   volumesInRenderOrder,
 } from './niivueLayers';
-import { refreshNiivueWindowingLayer, scheduleNiivueWindowingTexturePrime } from './niivueWindowingRefresh';
+import { refreshNiivueWindowingOrLayerStack, scheduleNiivueWindowingTexturePrime } from './niivueWindowingRefresh';
 import type { WindowSetting } from './paneSyncKeys';
 import { selectLoadedReferenceVolume } from './referenceVolume';
 import { syncSurfaceReferenceTransforms } from './surfaceTransforms';
@@ -121,10 +122,15 @@ export function useNiivuePaneLayers({
         if (!cancelled) onLoadingChange?.(sliceType, false);
         return;
       }
+      const pendingVolumes = volumesInRenderOrder(pending.filter((layer) => !isSurfaceLayer(layer)));
+      const visibleSurfaces = plane ? [] : pending.filter(isSurfaceLayer).filter((layer) => layer.visible);
+      if (pendingVolumes.length === 0 && visibleSurfaces.length === 0) {
+        if (!cancelled) onLoadingChange?.(sliceType, false);
+        return;
+      }
       onLoadingChange?.(sliceType, true);
       try {
-        const visibleVolumes = volumesInRenderOrder(pending.filter((layer) => layer.visible));
-        for (const volume of visibleVolumes) {
+        for (const volume of pendingVolumes) {
           if (cancelled || controller.signal.aborted) break;
           claim(volume.id);
           try {
@@ -137,7 +143,7 @@ export function useNiivuePaneLayers({
             release(volume.id);
           }
         }
-        if (!cancelled && visibleVolumes.length > 0) {
+        if (!cancelled && pendingVolumes.length > 0) {
           enforceVolumeRenderOrder(nv, latestVolumesRef.current);
           if (!plane) {
             const interop = asNiivueInterop(nv);
@@ -151,7 +157,6 @@ export function useNiivuePaneLayers({
         }
 
         if (plane) return;
-        const visibleSurfaces = pending.filter(isSurfaceLayer).filter((layer) => layer.visible);
         await Promise.all(visibleSurfaces.map(async (surface) => {
           if (cancelled || controller.signal.aborted) return;
           claim(surface.id);
@@ -185,7 +190,7 @@ export function useNiivuePaneLayers({
     };
   }, [latestVolumesRef, loadingLayerIdsRef, nvRef, onError, onLoadingChange, plane, sliceType, sourceKey]);
 
-  // A layer may start hidden and therefore skipped by the source reconciler.
+  // Surfaces may start hidden and therefore be skipped by the source reconciler.
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
@@ -195,11 +200,12 @@ export function useNiivuePaneLayers({
 
     const loadVisibleMissing = async () => {
       const pending = latestVolumesRef.current
-        .filter((layer) => layer.visible && !isLayerLoaded(nv, plane, layer) && !loadingLayerIds.has(layer.id));
-      if (pending.length === 0) return;
+        .filter((layer) => !isLayerLoaded(nv, plane, layer) && !loadingLayerIds.has(layer.id));
+      const pendingVolumes = volumesInRenderOrder(pending.filter((layer) => !isSurfaceLayer(layer)));
+      const pendingSurfaces = plane ? [] : pending.filter(isSurfaceLayer).filter((layer) => layer.visible);
+      if (pendingVolumes.length === 0 && pendingSurfaces.length === 0) return;
       onLoadingChange?.(sliceType, true);
       try {
-        const pendingVolumes = volumesInRenderOrder(pending.filter((layer) => !isSurfaceLayer(layer)));
         for (const volume of pendingVolumes) {
           if (cancelled || controller.signal.aborted) break;
           loadingLayerIds.add(volume.id);
@@ -218,7 +224,7 @@ export function useNiivuePaneLayers({
         }
 
         if (!plane) {
-          for (const surface of pending.filter(isSurfaceLayer)) {
+          for (const surface of pendingSurfaces) {
             if (cancelled || controller.signal.aborted) break;
             loadingLayerIds.add(surface.id);
             try {
@@ -251,16 +257,15 @@ export function useNiivuePaneLayers({
     const nv = nvRef.current;
     if (!nv) return;
     const sources = latestVolumesRef.current;
-    let changed = false;
+    let needsDraw = false;
+    let needsRefresh = false;
 
     for (const loaded of asNiivueInterop(nv).volumes) {
       const source = sources.find((volume) => volume.id === loaded.id);
       if (!source || isSurfaceLayer(source)) continue;
       const nextOpacity = effectiveLayerOpacity(source);
-      if (loaded.opacity !== nextOpacity) {
-        loaded.opacity = nextOpacity;
-        changed = true;
-      }
+      const result = setNiivueVolumeOpacity(nv, loaded, nextOpacity);
+      if (result === 'mutated') needsRefresh = true;
     }
 
     if (!plane) {
@@ -270,17 +275,18 @@ export function useNiivuePaneLayers({
         const nextOpacity = effectiveLayerOpacity(source);
         if (mesh.visible !== source.visible) {
           mesh.visible = source.visible;
-          changed = true;
+          needsDraw = true;
         }
         if (mesh.opacity !== nextOpacity) {
           mesh.opacity = nextOpacity;
-          changed = true;
+          needsDraw = true;
         }
       }
     }
 
-    if (changed) scheduleDraw();
-  }, [latestVolumesRef, nvRef, plane, scheduleDraw, visibilityKey]);
+    if (needsRefresh) scheduleRefresh();
+    else if (needsDraw) scheduleDraw();
+  }, [latestVolumesRef, nvRef, plane, scheduleDraw, scheduleRefresh, visibilityKey]);
 
   useEffect(() => {
     const nv = nvRef.current;
@@ -374,10 +380,7 @@ export function useNiivuePaneLayers({
     }
 
     if (changedVolumes.length > 0) {
-      let refreshed = false;
-      for (const loaded of changedVolumes) {
-        refreshed = refreshNiivueWindowingLayer(nv, loaded, { sliceType, source: 'windowing-state-reconcile' }) || refreshed;
-      }
+      const refreshed = refreshNiivueWindowingOrLayerStack(nv, changedVolumes, { sliceType, source: 'windowing-state-reconcile' });
       if (refreshed) asNiivueInterop(nv).drawScene?.();
       else scheduleRefresh();
     }

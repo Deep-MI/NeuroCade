@@ -163,25 +163,21 @@ export function applyVoxelExactLabelRendering(loaded: NiivueVolumeInterop, volum
   loaded.cal_max = 255;
 }
 
-// Render priority across groups: intensity images are the anatomical underlay
-// (rank 0, lower Niivue indices); segmentations are composited on top (rank 1,
-// higher indices) so an opaque intensity can never hide a segmentation.
-function volumeRenderRank(volume: Volume): number {
-  return isLabelVolume(volume) ? 1 : 0;
-}
-
 // Desired Niivue volume order, bottom-to-top (ascending index = background →
-// top overlay). The layer panel lists the top-most layer first, so within each
-// group the list order is reversed here. Surfaces are meshes, handled elsewhere.
+// top overlay). Intensity images remain anatomical underlays; segmentations
+// remain overlays. Within each group, the layer panel/source array is
+// top-to-bottom, so reverse the group directly. Surfaces are meshes, handled
+// elsewhere.
 export function volumesInRenderOrder(sources: Volume[]): Volume[] {
   const nonSurface = sources.filter((volume) => !isSurfaceLayer(volume));
-  const intensities = nonSurface.filter((volume) => volumeRenderRank(volume) === 0);
-  const segmentations = nonSurface.filter((volume) => volumeRenderRank(volume) === 1);
+  const intensities = nonSurface.filter((volume) => volume.type !== 'segmentation');
+  const segmentations = nonSurface.filter((volume) => volume.type === 'segmentation');
   return [...intensities.reverse(), ...segmentations.reverse()];
 }
 
 // Reorders the already-loaded Niivue volumes to match volumesInRenderOrder
-// (top-of-list on top, segmentations above intensities) without re-fetching.
+// without re-fetching. The layer panel is user-facing top-to-bottom, while
+// NiiVue renders the first volume as the bottom/reference layer.
 export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]): boolean {
   const interop = asNiivueInterop(nv);
   const current = interop.volumes;
@@ -196,6 +192,24 @@ export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]): boolean
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.loaded);
   if (desired.every((loaded, index) => loaded === current[index])) return false;
+  if (typeof interop.moveVolumeDown === 'function' && typeof interop.moveVolumeUp === 'function') {
+    let moved = false;
+    for (let targetIndex = 0; targetIndex < desired.length; targetIndex += 1) {
+      const target = desired[targetIndex];
+      let currentIndex = interop.volumes.indexOf(target);
+      while (currentIndex > targetIndex) {
+        interop.moveVolumeDown(target);
+        currentIndex -= 1;
+        moved = true;
+      }
+      while (currentIndex >= 0 && currentIndex < targetIndex) {
+        interop.moveVolumeUp(target);
+        currentIndex += 1;
+        moved = true;
+      }
+    }
+    return moved;
+  }
   const orderable = nv as unknown as {
     volumes: NiivueVolumeInterop[];
     back: NiivueVolumeInterop | null;
@@ -221,6 +235,24 @@ export function layerDefaultOpacity(volume: Volume): number {
 // Opacity to hand Niivue for a layer, honouring its visibility (hidden = 0).
 export function effectiveLayerOpacity(volume: Volume): number {
   return volume.visible ? clampOpacity(volume.opacity, layerDefaultOpacity(volume)) : 0;
+}
+
+export type NiivueOpacityUpdate = 'none' | 'refreshed' | 'mutated';
+
+export function setNiivueVolumeOpacity(nv: Niivue, loaded: NiivueVolumeInterop, opacity: number): NiivueOpacityUpdate {
+  const nextOpacity = clampOpacity(opacity);
+  if (loaded.opacity === nextOpacity) return 'none';
+  const interop = asNiivueInterop(nv);
+  let index = interop.volumes.indexOf(loaded);
+  if (index < 0 && loaded.id && typeof interop.getVolumeIndexByID === 'function') {
+    index = interop.getVolumeIndexByID(loaded.id);
+  }
+  if (index >= 0 && typeof interop.setOpacity === 'function') {
+    interop.setOpacity(index, nextOpacity);
+    return 'refreshed';
+  }
+  loaded.opacity = nextOpacity;
+  return 'mutated';
 }
 
 const arrayBufferCache = new Map<string, Promise<ArrayBuffer>>();

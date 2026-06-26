@@ -170,14 +170,21 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     requestAnimationFrame(syncReferenceVolumeId);
   }, [applyImmediateVolumeUpdate, onUpdateVolume, syncReferenceVolumeId]);
 
+  useEffect(() => {
+    const frame = requestAnimationFrame(syncReferenceVolumeId);
+    return () => cancelAnimationFrame(frame);
+  }, [syncReferenceVolumeId, volumes]);
+
   const previewVolumeOpacity = useCallback((id: string, opacity: number) => {
     const source = volumes.find((volume) => volume.id === id);
     if (!source) return;
     const next = { ...source, opacity, visible: opacity > 0 } as Volume;
     for (const [sliceType, nv] of instancesRef.current.entries()) {
-      if (previewLayerOpacity(nv, id, next)) scheduleInstanceDraw(sliceType, nv);
+      const action = previewLayerOpacity(nv, id, next);
+      if (action === 'draw') scheduleInstanceDraw(sliceType, nv);
+      if (action === 'refresh') scheduleInstanceRefresh(sliceType, nv);
     }
-  }, [instancesRef, scheduleInstanceDraw, volumes]);
+  }, [instancesRef, scheduleInstanceDraw, scheduleInstanceRefresh, volumes]);
 
   const commitVolumeOpacity = useCallback((id: string, opacity: number) => {
     handleUpdateVolume(id, { opacity, visible: opacity > 0 });

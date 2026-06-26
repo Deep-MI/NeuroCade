@@ -27,6 +27,7 @@ function volumesInRenderOrder(sources: Volume[]): Volume[] {
 
 export function sourceVisibilityKeyOf(volumes: Volume[]): string {
   return volumes
+    .filter(isSurfaceLayer)
     .filter((volume) => volume.visible)
     .map((volume) => `${volume.id}:${volume.url}:${volume.filename}:${volume.type ?? 'intensity'}`)
     .sort()

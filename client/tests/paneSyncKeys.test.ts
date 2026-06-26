@@ -57,7 +57,8 @@ const surface = {
 } satisfies Volume;
 
 void test('pane sync keys isolate source, visibility, appearance, and ordering concerns', () => {
-  assert.match(sourceVisibilityKeyOf([intensity]), /orig\.mgz:\/orig\.mgz/);
+  assert.equal(sourceVisibilityKeyOf([intensity]), '');
+  assert.match(sourceVisibilityKeyOf([surface]), /lh\.pial:\/lh\.pial/);
   assert.notEqual(volumeVisibilityKeyOf([intensity]), volumeVisibilityKeyOf([{ ...intensity, opacity: 0.5 }]));
   assert.notEqual(volumeAppearanceKeyOf([intensity]), volumeAppearanceKeyOf([{ ...intensity, colormap: 'hot' }]));
   assert.equal(volumeOrderKeyOf([intensity, segmentation]), 'orig.mgz|aseg.mgz');

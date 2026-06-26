@@ -242,6 +242,15 @@ function configureColormapUniforms(gl: WebGL2RenderingContext, shader: NiivueSha
   gl.uniform1f(shader.uniforms.cal_maxNeg ?? null, maxNegative);
 }
 
+function refreshLayerOfVolume(nv: NiivueInterop, volume: NiivueVolumeInterop): number | null {
+  let layer = 0;
+  for (const candidate of nv.volumes) {
+    if (candidate === volume) return volume.toRAS ? layer : null;
+    if (candidate.toRAS) layer += 1;
+  }
+  return null;
+}
+
 export function refreshNiivueWindowingOnly(nvSource: Niivue, volume: NiivueVolumeInterop, layer: number): boolean {
   if (layer !== 0) return false;
 
@@ -323,16 +332,8 @@ export function refreshNiivueWindowingLayer(nvSource: Niivue, volume: NiivueVolu
   const refreshLayers = originalRefreshLayers.get(nv) ?? nv.refreshLayers;
   if (typeof refreshLayers !== 'function') return false;
 
-  let layer = 0;
-  let found = false;
-  for (const candidate of nv.volumes) {
-    if (candidate === volume) {
-      found = true;
-      break;
-    }
-    if (candidate.toRAS) layer += 1;
-  }
-  if (!found || !volume.toRAS) return false;
+  const layer = refreshLayerOfVolume(nv, volume);
+  if (layer === null) return false;
 
   if (refreshNiivueWindowingOnly(nvSource, volume, layer)) return true;
 
@@ -345,6 +346,64 @@ export function refreshNiivueWindowingLayer(nvSource: Niivue, volume: NiivueVolu
     ...details,
   });
   return true;
+}
+
+export function refreshNiivueLayerStack(nvSource: Niivue, volumes: Iterable<NiivueVolumeInterop>, details: Record<string, unknown> = {}): boolean {
+  const nv = asNiivueInterop(nvSource);
+  const refreshLayers = originalRefreshLayers.get(nv) ?? nv.refreshLayers;
+  if (typeof refreshLayers !== 'function') return false;
+
+  let firstLayer = Number.POSITIVE_INFINITY;
+  const changedIds: string[] = [];
+  for (const volume of volumes) {
+    const layer = refreshLayerOfVolume(nv, volume);
+    if (layer === null) continue;
+    firstLayer = Math.min(firstLayer, layer);
+    changedIds.push(volume.id ?? volume.name ?? String(layer));
+  }
+  if (!Number.isFinite(firstLayer)) return false;
+
+  const startLayer = firstLayer > 1 ? firstLayer - 1 : firstLayer;
+  const start = performance.now();
+  let layer = 0;
+  let refreshed = 0;
+  for (const volume of nv.volumes) {
+    if (!volume.toRAS) continue;
+    if (layer >= startLayer) {
+      refreshLayers.call(nvSource, volume, layer);
+      refreshed += 1;
+    }
+    layer += 1;
+  }
+  logNiivueWindowingPerf('stack refreshLayers', performance.now() - start, {
+    firstLayer,
+    startLayer,
+    changedIds,
+    refreshed,
+    ...details,
+  });
+  return refreshed > 0;
+}
+
+export function refreshNiivueWindowingOrLayerStack(nvSource: Niivue, volumes: Iterable<NiivueVolumeInterop>, details: Record<string, unknown> = {}): boolean {
+  const volumeList = Array.from(volumes);
+  if (volumeList.length === 0) return false;
+
+  const nv = asNiivueInterop(nvSource);
+  const layers = volumeList
+    .map((volume) => refreshLayerOfVolume(nv, volume))
+    .filter((layer): layer is number => layer !== null);
+  if (layers.length === 0) return false;
+
+  if (layers.every((layer) => layer === 0)) {
+    let refreshed = false;
+    for (const volume of volumeList) {
+      refreshed = refreshNiivueWindowingLayer(nvSource, volume, details) || refreshed;
+    }
+    return refreshed;
+  }
+
+  return refreshNiivueLayerStack(nvSource, volumeList, details);
 }
 
 export function installNiivueWindowingRefreshPatch(nvSource: Niivue): void {
