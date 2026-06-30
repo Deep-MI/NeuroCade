@@ -15,6 +15,7 @@
     "src/utils/surfaceLighting.ts",
     "src/neurocadeViewer/referenceVolume.ts",
     "src/neurocadeViewer/labelLookup.ts",
+    "src/neurocadeViewer/loadedVolumeDisplay.ts",
     "src/neurocadeViewer/surfaceTransforms.ts",
     "src/neurocadeViewer/surfaceContours.ts",
     "src/neurocadeViewer/nativeDrawingHelpers.ts",

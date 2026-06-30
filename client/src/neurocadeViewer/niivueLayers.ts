@@ -20,6 +20,7 @@ import {
 import { resolveSurfaceLayerColorMode, surfaceColor } from '../utils/surfaceColors';
 import type { ViewerSliceType } from './viewerControls';
 import { labelInfoFromLut, type LabelLookupResult } from './labelLookup';
+import { reorderLoadedVolumes, setLoadedVolumeOpacity } from './loadedVolumeDisplay';
 
 // NIfTI intent code Niivue uses to route label maps through its atlas shader.
 const LABEL_INTENT_CODE = 1002;
@@ -192,33 +193,7 @@ export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]): boolean
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.loaded);
   if (desired.every((loaded, index) => loaded === current[index])) return false;
-  if (typeof interop.moveVolumeDown === 'function' && typeof interop.moveVolumeUp === 'function') {
-    let moved = false;
-    for (let targetIndex = 0; targetIndex < desired.length; targetIndex += 1) {
-      const target = desired[targetIndex];
-      let currentIndex = interop.volumes.indexOf(target);
-      while (currentIndex > targetIndex) {
-        interop.moveVolumeDown(target);
-        currentIndex -= 1;
-        moved = true;
-      }
-      while (currentIndex >= 0 && currentIndex < targetIndex) {
-        interop.moveVolumeUp(target);
-        currentIndex += 1;
-        moved = true;
-      }
-    }
-    return moved;
-  }
-  const orderable = nv as unknown as {
-    volumes: NiivueVolumeInterop[];
-    back: NiivueVolumeInterop | null;
-    overlays: NiivueVolumeInterop[];
-  };
-  orderable.volumes = desired;
-  orderable.back = desired[0] ?? null;
-  orderable.overlays = desired.slice(1);
-  return true;
+  return reorderLoadedVolumes(nv, desired);
 }
 
 export function clampOpacity(value: number | undefined, fallback = 0.75) {
@@ -237,23 +212,7 @@ export function effectiveLayerOpacity(volume: Volume): number {
   return volume.visible ? clampOpacity(volume.opacity, layerDefaultOpacity(volume)) : 0;
 }
 
-export type NiivueOpacityUpdate = 'none' | 'refreshed' | 'mutated';
-
-export function setNiivueVolumeOpacity(nv: Niivue, loaded: NiivueVolumeInterop, opacity: number): NiivueOpacityUpdate {
-  const nextOpacity = clampOpacity(opacity);
-  if (loaded.opacity === nextOpacity) return 'none';
-  const interop = asNiivueInterop(nv);
-  let index = interop.volumes.indexOf(loaded);
-  if (index < 0 && loaded.id && typeof interop.getVolumeIndexByID === 'function') {
-    index = interop.getVolumeIndexByID(loaded.id);
-  }
-  if (index >= 0 && typeof interop.setOpacity === 'function') {
-    interop.setOpacity(index, nextOpacity);
-    return 'refreshed';
-  }
-  loaded.opacity = nextOpacity;
-  return 'mutated';
-}
+export const setNiivueVolumeOpacity = setLoadedVolumeOpacity;
 
 const arrayBufferCache = new Map<string, Promise<ArrayBuffer>>();
 

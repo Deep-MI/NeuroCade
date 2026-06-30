@@ -12,6 +12,7 @@ import { useNativeDrawingSession, type SavedDrawingPayload } from './useNativeDr
 import { useViewerPaneInstances } from './useViewerPaneInstances';
 import { useViewerWindowing } from './useViewerWindowing';
 import { applyLayerDisplay, capturePaneSnapshot, previewLayerOpacity, referenceVolumeId as getReferenceVolumeId } from './viewerPaneAdapter';
+import type { PaneRenderAction } from './viewerPaneAdapter';
 import { VIEW_MODES, type NeuroCadeViewMode, type ViewerDragMode, type ViewerSliceType } from './viewerControls';
 
 interface NeuroCadeCaseViewerProps {
@@ -148,16 +149,22 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     scheduleInstanceLayerRefresh,
   });
 
+  const schedulePaneRenderAction = useCallback((sliceType: ViewerSliceType, nv: Niivue, action: PaneRenderAction) => {
+    if (!action) return;
+    if (action.kind === 'draw') scheduleInstanceDraw(sliceType, nv);
+    if (action.kind === 'refresh') scheduleInstanceRefresh(sliceType, nv);
+    if (action.kind === 'layer-refresh') scheduleInstanceLayerRefresh(sliceType, nv, action.loaded);
+  }, [scheduleInstanceDraw, scheduleInstanceLayerRefresh, scheduleInstanceRefresh]);
+
   const applyImmediateVolumeUpdate = useCallback((id: string, updates: Partial<Volume>) => {
     const source = volumes.find((volume) => volume.id === id);
     if (!source) return;
     const next = { ...source, ...updates } as Volume;
     for (const [sliceType, nv] of instancesRef.current.entries()) {
       const action = applyLayerDisplay(nv, id, next, updates);
-      if (action === 'draw') scheduleInstanceDraw(sliceType, nv);
-      if (action === 'refresh') scheduleInstanceRefresh(sliceType, nv);
+      schedulePaneRenderAction(sliceType, nv, action);
     }
-  }, [instancesRef, scheduleInstanceDraw, scheduleInstanceRefresh, volumes]);
+  }, [instancesRef, schedulePaneRenderAction, volumes]);
 
   const handlePaneLoading = useCallback((sliceType: ViewerSliceType, isLoading: boolean) => {
     setLoadingPanes((prev) => (prev[sliceType] === isLoading ? prev : { ...prev, [sliceType]: isLoading }));
@@ -178,16 +185,15 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const previewVolumeOpacity = useCallback((id: string, opacity: number) => {
     const source = volumes.find((volume) => volume.id === id);
     if (!source) return;
-    const next = { ...source, opacity, visible: opacity > 0 } as Volume;
+    const next = { ...source, opacity } as Volume;
     for (const [sliceType, nv] of instancesRef.current.entries()) {
       const action = previewLayerOpacity(nv, id, next);
-      if (action === 'draw') scheduleInstanceDraw(sliceType, nv);
-      if (action === 'refresh') scheduleInstanceRefresh(sliceType, nv);
+      schedulePaneRenderAction(sliceType, nv, action);
     }
-  }, [instancesRef, scheduleInstanceDraw, scheduleInstanceRefresh, volumes]);
+  }, [instancesRef, schedulePaneRenderAction, volumes]);
 
   const commitVolumeOpacity = useCallback((id: string, opacity: number) => {
-    handleUpdateVolume(id, { opacity, visible: opacity > 0 });
+    handleUpdateVolume(id, { opacity });
   }, [handleUpdateVolume]);
 
   const handlePaneColormaps = useCallback((colormaps: string[]) => {

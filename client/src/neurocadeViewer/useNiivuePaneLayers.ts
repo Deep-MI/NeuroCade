@@ -258,14 +258,21 @@ export function useNiivuePaneLayers({
     if (!nv) return;
     const sources = latestVolumesRef.current;
     let needsDraw = false;
-    let needsRefresh = false;
+    const changedVolumes: NiivueVolumeInterop[] = [];
+    let needsFullVolumeRefresh = false;
 
     for (const loaded of asNiivueInterop(nv).volumes) {
       const source = sources.find((volume) => volume.id === loaded.id);
       if (!source || isSurfaceLayer(source)) continue;
       const nextOpacity = effectiveLayerOpacity(source);
+      const previousOpacity = loaded.opacity ?? 1;
       const result = setNiivueVolumeOpacity(nv, loaded, nextOpacity);
-      if (result === 'mutated') needsRefresh = true;
+      if (result === 'mutated') {
+        changedVolumes.push(loaded);
+        if (previousOpacity === 0 || nextOpacity === 0) {
+          needsFullVolumeRefresh = true;
+        }
+      }
     }
 
     if (!plane) {
@@ -284,9 +291,14 @@ export function useNiivuePaneLayers({
       }
     }
 
-    if (needsRefresh) scheduleRefresh();
-    else if (needsDraw) scheduleDraw();
-  }, [latestVolumesRef, nvRef, plane, scheduleDraw, scheduleRefresh, visibilityKey]);
+    if (needsFullVolumeRefresh) {
+      scheduleRefresh();
+    } else if (changedVolumes.length > 0) {
+      const refreshed = refreshNiivueWindowingOrLayerStack(nv, changedVolumes, { sliceType, source: 'opacity-state-reconcile' });
+      if (refreshed) asNiivueInterop(nv).drawScene?.();
+      else scheduleRefresh();
+    } else if (needsDraw) scheduleDraw();
+  }, [latestVolumesRef, nvRef, plane, scheduleDraw, scheduleRefresh, sliceType, visibilityKey]);
 
   useEffect(() => {
     const nv = nvRef.current;
