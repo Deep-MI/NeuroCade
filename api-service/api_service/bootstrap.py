@@ -24,6 +24,7 @@ def bootstrap_database(engine) -> None:
     alembic_config.set_main_option("script_location", str(ROOT_DIR / "migrations"))
     alembic_config.set_main_option("prepend_sys_path", str(ROOT_DIR))
     alembic_config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_url)
+    alembic_config.attributes["configure_logger"] = False
     command.upgrade(alembic_config, "head")
 
 

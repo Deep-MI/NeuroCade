@@ -1,4 +1,4 @@
-"""Assistant catalog search and execution tools."""
+"""Assistant configured-tool search and execution tools."""
 
 from __future__ import annotations
 
@@ -13,24 +13,21 @@ from api_service.assistant.tools.definition import ToolDefinition
 from api_service.assistant.tools.registration import BOTH_SCOPES, ScopedToolRegistration
 from api_service.helpers import get_case_for_user
 from api_service.runtime.execution import case_artifact_index_target
+from api_service.runtime_tools.configured_tools import search_configured_tools
 from backend_common.db import AssistantScope
 
 
-MAX_HELP_TEXT_CHARS = 50_000
-
-
 class CatalogSearchArgs(BaseModel):
-    query: str = Field(..., description="Natural-language description of the desired neuroimaging tool or task.")
-    top_k: int = Field(5, ge=1, le=20, description="Maximum number of matching installed tools to return.")
-    records_jsonl: str | None = Field(None, description="Optional path to an installed tool index JSONL file.")
+    query: str = Field(..., description="Natural-language description of the desired configured analysis tool or task.")
+    top_k: int = Field(5, ge=1, le=20, description="Maximum number of matching configured tools to return.")
 
 
 CATALOG_TOOL_REGISTRATIONS: tuple[ScopedToolRegistration, ...] = (
     ScopedToolRegistration(
         name="tool_search",
         description=(
-            "Search installed neuroimaging runtime tools. "
-            "Use this before choosing unfamiliar command names or flags."
+            "Search configured NeuroCade runtime tools only. "
+            "Use this before tool_call to find the configured container_id and tool_id."
         ),
         parameters=CatalogSearchArgs.model_json_schema(),
         handler_name="search",
@@ -39,22 +36,16 @@ CATALOG_TOOL_REGISTRATIONS: tuple[ScopedToolRegistration, ...] = (
     ScopedToolRegistration(
         name="tool_call",
         description=(
-            "Run an installed container tool through the resolved container runtime. "
-            "Use explicit /case/... paths for current-case files. Use the `bash` tool, "
-            "not `tool_call`, for shell commands."
+            "Run a configured tool through a configured container. "
+            "Pass the exact container_id and tool_id from tool_search. Use explicit "
+            "/case/... paths for current-case files. Use the `bash` tool, not "
+            "`tool_call`, for ad hoc shell commands."
         ),
         parameters=CatalogToolCallArgs.model_json_schema(),
         handler_name="call",
         scopes=BOTH_SCOPES,
     ),
 )
-
-
-def bounded_help_text(hit: dict[str, Any], *, max_chars: int = MAX_HELP_TEXT_CHARS) -> str:
-    help_text = str(hit.get("raw_help_text") or "")
-    if len(help_text) <= max_chars:
-        return help_text
-    return help_text[:max_chars].rstrip() + "\n[help_text truncated]"
 
 
 class AssistantCatalogTools:
@@ -112,26 +103,22 @@ class AssistantCatalogTools:
         if arguments is None:
             arguments = _state
         parsed = CatalogSearchArgs.model_validate(arguments)
-        records_jsonl = self.catalog_executor.catalog_records_path(parsed.model_dump())
-        if not records_jsonl.exists():
-            return (
-                f"Error: installed tool index not found at {records_jsonl}. "
-                "Run ./scripts/compose/images.sh or restart the Compose stack."
-            )
         try:
-            from neurocade_runtime_tools.retrieval import hybrid_rank, load_jsonl_records
-
-            records = load_jsonl_records(records_jsonl)
-            hits = hybrid_rank(parsed.query, records, n_results=parsed.top_k)
+            hits = search_configured_tools(parsed.query, top_k=parsed.top_k)
         except Exception as exc:
-            return f"Error searching tool catalog: {exc}"
+            return f"Error searching configured tools: {exc}"
 
         payload: list[dict[str, Any]] = []
-        for hit in hits:
+        for tool, container, score in hits:
             row: dict[str, Any] = {
-                "name": hit.get("name"),
-                "source_package": hit.get("app"),
-                "help_text": bounded_help_text(hit),
+                "tool_id": tool.id,
+                "label": tool.label,
+                "container_id": tool.container_id,
+                "container_label": container.label if container else tool.container_id,
+                "command": tool.command,
+                "description": tool.description,
+                "aliases": tool.aliases,
+                "score": score,
             }
             payload.append(row)
         return json.dumps(payload, indent=2)

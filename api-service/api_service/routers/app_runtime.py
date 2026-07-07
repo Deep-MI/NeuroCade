@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from api_service.deps import get_context, get_db
 from api_service.gui_state import build_gui_state_session_key, resolve_gui_state_scope
 from api_service.runtime.service import LUT_PATH, runtime_service
-from api_service.schemas import GuiStateSyncRequest
+from api_service.runtime_tools.configured_tools import run_analysis_tools_payload
+from api_service.schemas import AnalysisToolSummary, GuiStateSyncRequest
 from api_service.viewer_resources import resolve_gui_resource_descriptors
 from backend_common.auth import AuthContext
 
@@ -21,6 +22,12 @@ async def freesurfer_lut(_context: AuthContext = Depends(get_context)) -> Respon
     if not LUT_PATH.is_file():
         raise HTTPException(status_code=404, detail="FreeSurferColorLUT.txt not found")
     return FileResponse(LUT_PATH, media_type="text/plain", filename="FreeSurferColorLUT.txt")
+
+
+@router.get("/analysis-tools", response_model=list[AnalysisToolSummary])
+async def analysis_tools(_context: AuthContext = Depends(get_context)) -> list[AnalysisToolSummary]:
+    """Return configured tools visible in the run_analysis UI."""
+    return [AnalysisToolSummary(**tool) for tool in run_analysis_tools_payload()]
 
 
 @router.post("/gui/state")

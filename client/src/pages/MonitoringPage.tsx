@@ -147,7 +147,7 @@ export function MonitoringPage() {
                 </span>
               )}
             </div>
-            <p className="text-sm text-[var(--nc-tx-muted)]">App health, recent errors, users, Redis, and queue state.</p>
+            <p className="text-sm text-[var(--nc-tx-muted)]">App health, recent errors, users, jobs, and queue state.</p>
           </div>
           <div className="flex items-center gap-4">
             <Link className="nc-btn" to="/">

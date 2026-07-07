@@ -40,7 +40,7 @@ for (const envPath of [
   }
 }
 
-const gatewayUrl = process.env.GATEWAY_URL ?? 'http://localhost:8005';
+const gatewayUrl = process.env.GATEWAY_URL ?? 'http://localhost:8000';
 const storageStatePath = path.resolve(
   process.env.CLERK_STORAGE_STATE_PATH ?? path.join(repoRoot, 'playwright', '.clerk', 'user.json'),
 );

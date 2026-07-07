@@ -89,7 +89,7 @@ def get_dynamic_gui_tools(gui_state: dict) -> list[RuntimeToolSpec]:
                 name="gui_load_volume",
                 description=(
                     "Load or reload an MRI volume in the web viewer so the user can "
-                    "inspect it. Use this after running a catalog processing "
+                    "inspect it. Use this after running a configured processing "
                     "tool to display the result. If the file is already loaded it will "
                     "be refreshed with the latest data on disk."
                 ),

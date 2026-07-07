@@ -78,6 +78,14 @@ class RunSummary(BaseModel):
     error_message: str | None = None
 
 
+class AnalysisToolSummary(BaseModel):
+    id: str
+    label: str
+    description: str
+    container_id: str
+    container_label: str
+
+
 class CaseSummary(BaseModel):
     id: str
     title: str

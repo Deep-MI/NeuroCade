@@ -94,12 +94,12 @@ def test_apptainer_falls_back_to_docker_uri_without_prebuilt(tmp_path, monkeypat
     assert resolved == "docker://vnmd/fastsurfer_2.4.2:20260115"
 
 
-def test_apptainer_resolves_managed_bash_sif_name(tmp_path, monkeypatch):
+def test_apptainer_resolves_python_bash_image_sif_name(tmp_path, monkeypatch):
     monkeypatch.setenv(rb.SIF_DIR_ENV, str(tmp_path))
     arch = rb._normalise_arch()
-    sif = tmp_path / f"neurocade-runtime-bash_local-{arch}.sif"
+    sif = tmp_path / f"python_3.12-bookworm-{arch}.sif"
     sif.write_text("x")
-    resolved = rb.resolve_apptainer_image("neurocade-runtime-bash:local")
+    resolved = rb.resolve_apptainer_image("python:3.12-bookworm")
     assert resolved == str(sif)
 
 

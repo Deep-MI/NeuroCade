@@ -6,7 +6,7 @@ import { isRunActive, isRunTerminal } from '../constants';
 import { useCasePolling } from './useCasePolling';
 import { useCaseUploadModal } from './useCaseUploadModal';
 import { useFastSurferRunController } from './useFastSurferRunController';
-import { type CaseSummary, type ChatMessage, type OutputVolume, type UploadState, type Volume } from '../types';
+import { type AnalysisToolSummary, type CaseSummary, type ChatMessage, type OutputVolume, type UploadState, type Volume } from '../types';
 import { loadClosedCaseVolumes, removeCaseState } from '../utils/caseStorage';
 import * as api from '../utils/api';
 import { dedupeOutputVolumes, outputVolumeToLayer, selectInitialIntensityOutputVolume, visibleOutputVolumes } from '../utils/caseLayers';
@@ -38,6 +38,7 @@ export function useCaseWorkspaceController({
   const [logs, setLogs] = useState<string>('');
   const [chatNotifications, setChatNotifications] = useState<ChatMessage[]>([]);
   const [availableCases, setAvailableCases] = useState<CaseSummary[]>([]);
+  const [analysisTools, setAnalysisTools] = useState<AnalysisToolSummary[]>([]);
 
   const [guiSessionId] = useState(createGuiSessionId);
   const suppressedRouteCaseRef = useRef<string | null>(null);
@@ -254,6 +255,15 @@ export function useCaseWorkspaceController({
   }, [fetchAvailableCases]);
 
   useEffect(() => {
+    void api.fetchAnalysisTools()
+      .then(setAnalysisTools)
+      .catch((error) => {
+        console.error('Error fetching analysis tools:', error);
+        setAnalysisTools([]);
+      });
+  }, []);
+
+  useEffect(() => {
     if (!currentCaseId) return;
     const timerId = setTimeout(() => savePersistedCaseLayers(currentCaseId, volumes), 500);
     return () => clearTimeout(timerId);
@@ -335,6 +345,7 @@ export function useCaseWorkspaceController({
     logs,
     chatNotifications,
     availableCases,
+    analysisTools,
     queueMessage: runController.queueMessage,
     hasUploadedCase,
     suggestedCaseName,

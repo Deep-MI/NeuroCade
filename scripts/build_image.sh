@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Build the NeuroCade monolith Docker image: build the SPA on the host, then
-# package it (plus the API + Apptainer) into a single image. No compose needed.
+# Build the NeuroCade monolith Docker image.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,22 +11,15 @@ load_env_file
 
 IMAGE="${NEUROCADE_IMAGE:-neurocade:local}"
 
-echo "==> Building frontend (client/dist)"
-(
-  cd client
-  export VITE_API_URL="${VITE_API_URL:-/api/app}"
-  export VITE_LOCAL_AUTH_ENABLED="${VITE_LOCAL_AUTH_ENABLED:-${LOCAL_AUTH_ENABLED:-true}}"
-  npm ci
-  npm run build
-)
-
 echo "==> Building image ${IMAGE}"
-docker build -f docker/backend.Dockerfile -t "${IMAGE}" .
-
-if [[ "${NEUROCADE_BUILD_RUNTIME_TOOLS:-1}" != "0" ]]; then
-  "$ROOT_DIR/scripts/build_runtime_tools.sh"
-fi
+docker build \
+  --build-arg "NC_VITE_API_URL=${VITE_API_URL:-/api/app}" \
+  --build-arg "NC_LOCAL_LOGIN=${VITE_LOCAL_AUTH_ENABLED:-${LOCAL_AUTH_ENABLED:-true}}" \
+  --build-arg "NC_CLERK_PUBLIC=${VITE_CLERK_PUBLISHABLE_KEY:-}" \
+  --build-arg "NC_CLERK_TEMPLATE=${VITE_CLERK_JWT_TEMPLATE:-}" \
+  -f docker/backend.Dockerfile \
+  -t "${IMAGE}" \
+  .
 
 echo "==> Done. Run with:"
-echo "    docker run --rm --privileged --device /dev/fuse \\"
-echo "      -p 127.0.0.1:8000:8000 -v \"\$PWD/neurocade-data:/data\" --env-file .env ${IMAGE}"
+echo "    ./scripts/run.sh"

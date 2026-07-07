@@ -1,5 +1,5 @@
 """
-End-to-end test: Ask the LLM to show volume header info via mri_info.
+End-to-end test for a configured mri_info tool.
 
 Flow:
   1. Seed GUI state for a processed demo case (idle, volumes loaded)
@@ -9,7 +9,7 @@ Flow:
   5. Verify the response is NOT a text explanation
 
 Prerequisites:
-  ./scripts/compose/up.sh -d
+  ./scripts/run.sh start -d
   a processed demo case must exist under the configured test outputs directory
 
 Usage:
@@ -29,6 +29,9 @@ from conftest import (
     seed_gui_state,
     utc_timestamp,
 )
+
+
+pytestmark = pytest.mark.skip(reason="mri_info is no longer preconfigured; add it to config/runtime_tools.json to enable this E2E.")
 
 
 @pytest.fixture(autouse=True)

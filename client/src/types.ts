@@ -113,6 +113,14 @@ export interface QueueStatus {
   queued: number;
 }
 
+export interface AnalysisToolSummary {
+  id: string;
+  label: string;
+  description: string;
+  container_id: string;
+  container_label: string;
+}
+
 export interface CaseListResponse {
   cases: CaseSummary[];
 }

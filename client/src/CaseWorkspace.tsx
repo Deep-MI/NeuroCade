@@ -442,6 +442,8 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   };
 
   const workspaceBackPath = initialWorkspaceId ? workspaceCasesPath(initialWorkspaceId) : '/';
+  const primaryAnalysisTool = controller.analysisTools[0] ?? null;
+  const analysisToolLabel = primaryAnalysisTool?.label ?? 'FastSurfer';
 
   return (
     <div className={`nc-shell ${isLight ? 'nc-light' : ''}`}>
@@ -489,7 +491,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
           {isRunActive(controller.runStatus) ? <Square size={13} /> : <Play size={13} />}
           <span className="hidden lg:inline">{isRunActive(controller.runStatus) ? 'Cancel' : isRunDone(controller.runStatus) ? 'Analyzed' : isRunFailed(controller.runStatus) ? 'Rerun' : 'Analyze'}</span>
           <span className="sr-only">
-            {isRunActive(controller.runStatus) ? 'Cancel Analysis' : 'Run FastSurfer Analysis'}
+            {isRunActive(controller.runStatus) ? 'Cancel Analysis' : `Run ${analysisToolLabel} Analysis`}
           </span>
         </button>
         <button type="button" onClick={() => setRightPanel((panel) => panel === 'chat' ? null : 'chat')} className={`nc-btn ${rightPanel === 'chat' ? 'nc-btn-active' : ''}`}>
@@ -584,7 +586,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         isOpen={controller.showConfirm}
         onClose={() => controller.setShowConfirm(false)}
         onConfirm={confirmRun}
-        title="Start Analysis"
+        title={`Start ${analysisToolLabel}`}
         message={controller.queueMessage}
         defaultCaseName={controller.suggestedCaseName}
         inputOptions={controller.runInputOptions}

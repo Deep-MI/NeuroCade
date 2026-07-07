@@ -10,9 +10,3 @@ requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-neurocade_runtime_tools = [
-  "prebuilt_indexes/*/*.json",
-  "prebuilt_indexes/*/*.jsonl",
-]

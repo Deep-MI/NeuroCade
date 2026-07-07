@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import Page
 
 
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8005")
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8000")
 DEFAULT_CASE_ID = os.environ.get("GUI_CASE_ID", DEMO_CASE_ID)
 SCREENSHOT_DIR = Path(__file__).parent / "screenshots"
 DEFAULT_STORAGE_STATE_PATH = Path(

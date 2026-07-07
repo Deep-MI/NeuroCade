@@ -6,7 +6,7 @@ This test drives a real browser using Playwright and interacts with the
 NeuroCade web UI exactly as a user would.
 
 Flow:
-  1. Navigate to http://localhost:8005
+  1. Navigate to http://localhost:8000
   2. Upload the configured MRI fixture via the file picker
   3. Verify the filename appears in the viewer
   4. Type "Run FastSurfer on this case" in chat, click Send
@@ -17,7 +17,7 @@ Flow:
   9. Screenshot the final state
 
 Prerequisites:
-  ./scripts/compose/up.sh -d
+  ./scripts/run.sh start -d
   pip install playwright && playwright install chromium
   A fixture MRI must exist under NEUROCADE_UPLOAD_FIXTURES_DIR
 

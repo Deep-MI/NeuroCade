@@ -1,12 +1,21 @@
-# NeuroCade monolith image: one process that serves the API + built SPA and
-# launches analysis tools via Apptainer (see MONOLITH_REFACTOR_PLAN.md §2.3).
-#
-# Running Apptainer *inside* this container requires a privileged container at
-# runtime (compose/run set `privileged: true` + /dev/fuse). The native
-# deployment (uv run uvicorn) needs none of that and is the recommended default.
-#
-# The SPA is built on the host (npm run build) and packaged here, rather than
-# built in-image — see scripts/build_image.sh, which does both in one step.
+# NeuroCade monolith image: one process serves the API + built SPA and launches
+# analysis tools via Apptainer. Running Apptainer inside Docker requires
+# `--privileged --device /dev/fuse` at runtime.
+
+FROM node:22-alpine AS client-build
+WORKDIR /app/client
+COPY client/package*.json ./
+RUN npm ci
+COPY client ./
+ARG NC_VITE_API_URL=/api/app
+ARG NC_LOCAL_LOGIN=true
+ARG NC_CLERK_PUBLIC=
+ARG NC_CLERK_TEMPLATE=
+RUN VITE_API_URL="${NC_VITE_API_URL}" \
+    VITE_LOCAL_AUTH_ENABLED="${NC_LOCAL_LOGIN}" \
+    VITE_CLERK_PUBLISHABLE_KEY="${NC_CLERK_PUBLIC}" \
+    VITE_CLERK_JWT_TEMPLATE="${NC_CLERK_TEMPLATE}" \
+    npm run build
 
 # Pinned to bookworm: the Apptainer .deb depends on libfuse3-3, which Debian
 # trixie (the current python:3.12-slim) replaced with libfuse3-4.
@@ -40,14 +49,11 @@ COPY api-service ./api-service
 COPY migrations ./migrations
 COPY config ./config
 COPY scripts/update_checker.py ./scripts/update_checker.py
-# Built SPA (host-built) served in-process via FastAPI StaticFiles (no gateway).
-COPY client/dist ./client/dist
+COPY --from=client-build /app/client/dist ./client/dist
 
 EXPOSE 8000
 
-# Generate the core catalog on every fresh start, then serve the monolith by
-# default (so `docker run <image>` just works, no compose).
 # IMPORTANT: run a SINGLE uvicorn worker. The in-process JobManager and SQLite's
 # single-writer model assume one process; do NOT add --workers / WEB_CONCURRENCY
 # (see lifespan() in api_service/main.py).
-CMD ["sh", "-c", "python -m neurocade_runtime_tools.docker_catalog && exec python -m uvicorn api_service.main:app --host 0.0.0.0 --port 8000"]
+CMD ["python", "-m", "uvicorn", "api_service.main:app", "--host", "0.0.0.0", "--port", "8000"]

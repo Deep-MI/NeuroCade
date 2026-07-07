@@ -6,7 +6,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
-source "$ROOT_DIR/scripts/install/env.sh"
+ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
+source "$ROOT_DIR/scripts/lib/env.sh"
+load_env_file
 
 KEEP_STACK_DOWN=0
 CONFIRMED=0
@@ -49,8 +51,8 @@ require_repo_local_path() {
   esac
 }
 
-HOST_DATA_DIR="$(env_config_value "$ROOT_DIR" HOST_DATA_DIR "$ROOT_DIR/neurocade-data")"
-RUNTIME_DIR="$(env_config_value "$ROOT_DIR" NEUROCADE_RUNTIME_DIR "$ROOT_DIR/.runtime")"
+HOST_DATA_DIR="${NEUROCADE_HOST_DATA_DIR:-${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}}"
+RUNTIME_DIR="${NEUROCADE_RUNTIME_DIR:-$ROOT_DIR/.runtime}"
 
 require_repo_local_path ".runtime" "$RUNTIME_DIR"
 require_repo_local_path "HOST_DATA_DIR" "$HOST_DATA_DIR"
@@ -71,8 +73,8 @@ kill_repo_service_orphans() {
   done
 }
 
-echo "Stopping Docker Compose services..."
-"$ROOT_DIR/scripts/compose/down.sh"
+echo "Stopping NeuroCade container..."
+"$ROOT_DIR/scripts/run.sh" stop
 kill_repo_service_orphans
 
 echo "Removing local runtime state..."
@@ -88,7 +90,7 @@ if [[ "$KEEP_STACK_DOWN" -eq 1 ]]; then
   exit 0
 fi
 
-echo "Starting the stack..."
-"$ROOT_DIR/scripts/compose/up.sh" -d
+echo "Starting NeuroCade..."
+"$ROOT_DIR/scripts/run.sh" start -d
 
 echo "Reset complete."

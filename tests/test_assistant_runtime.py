@@ -20,7 +20,7 @@ from api_service.assistant.prompts import build_structured_response_messages, bu
 from api_service.assistant import runtime as assistant_runtime_module  # noqa: E402
 from api_service.assistant.tools import workspace_tools as assistant_workspace_tools_module  # noqa: E402
 from api_service.assistant.tools import catalog_execution as assistant_catalog_execution_module  # noqa: E402
-from api_service.assistant.tools import catalog_tools as assistant_catalog_tools_module  # noqa: E402
+from api_service.runtime_tools.configured_tools import load_runtime_tool_config, run_analysis_tools_payload  # noqa: E402
 from api_service.assistant.runtime import AssistantRuntime  # noqa: E402
 from api_service.assistant.tools.definition import ToolDefinition  # noqa: E402
 from api_service.runtime.service import RuntimeService  # noqa: E402
@@ -29,9 +29,7 @@ from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import build_case_id  # noqa: E402
 from backend_common.db import AssistantMessage, Base, Case, RoleEnum, User, Workspace, WorkspaceMembership  # noqa: E402
 from backend_common import providers as provider_module  # noqa: E402
-from neurocade_runtime_tools.docker_catalog import generate_core_docker_catalog  # noqa: E402
 from neurocade_runtime_tools import execution as runtime_execution_module  # noqa: E402
-from neurocade_runtime_tools.container_request import RuntimeBind  # noqa: E402
 
 
 class FakeModel:
@@ -48,7 +46,7 @@ class FakeModel:
 
 
 class FakeRuntimeService(RuntimeService):
-    """Capture runtime tool discovery and execution requests."""
+    """Capture runtime tool listing and execution requests."""
 
     def __init__(self):
         self.tool_calls = []
@@ -148,25 +146,10 @@ def seeded_context(db_session, tmp_path, monkeypatch):
 
 
 def _install_managed_bash_image(tmp_path: Path, monkeypatch) -> Path:
-    """Generate a Docker catalog that includes the managed bash image."""
+    """Configure a managed bash image for tests that inspect direct bash tools."""
     image = tmp_path / "runtime-bash-image-marker"
     image.write_text("docker", encoding="utf-8")
     monkeypatch.setenv("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:test")
-    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
-    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
-    monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
-    generate_core_docker_catalog(tmp_path / "tool-catalog")
-    return image
-
-
-def _install_dcm2niix_image(tmp_path: Path, monkeypatch) -> Path:
-    """Generate a Docker catalog that includes dcm2niix."""
-    image = tmp_path / "dcm2niix-image-marker"
-    image.write_text("docker", encoding="utf-8")
-    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
-    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
-    monkeypatch.delenv("NEUROCADE_INSTALLED_TOOLS_JSONL", raising=False)
-    generate_core_docker_catalog(tmp_path / "tool-catalog")
     return image
 
 
@@ -349,89 +332,30 @@ def test_workspace_system_prompt_says_case_mount_is_unavailable(tmp_path):
     )
 
     assert "Workspace chat has no active /case mount" in prompt
-    assert "For tool discovery questions, use tool_search only" in prompt
+    assert "For configured tool questions, use tool_search only" in prompt
 
 
-def test_catalog_tool_search_returns_compact_tool_help_payload(tmp_path, monkeypatch):
-    records_path = tmp_path / "tools.jsonl"
-    records_path.write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "name": "mri_label_volume",
-                        "toolbox": "freesurfer",
-                        "app": "freesurfer",
-                        "runtime_version": "8.2.0",
-                        "container_command": "mri_label_volume",
-                        "description": "----------------------------------",
-                        "synopsis": "mri_label_volume",
-                        "raw_help_text": "mri_label_volume --label <label-id>",
-                        "arguments": [{"name": "--label", "description": "Label id to project"}],
-                        "categories": ["image segmentation"],
-                        "searchable_text": "mri_label_volume label volume freesurfer",
-                    }
-                ),
-                json.dumps(
-                    {
-                        "name": "other_tool",
-                        "toolbox": "other",
-                        "app": "other",
-                        "runtime_version": "1.0",
-                        "container_command": "other_tool",
-                        "description": "Other tool",
-                        "synopsis": "Other tool",
-                        "raw_help_text": "Other tool help",
-                        "searchable_text": "unrelated",
-                    }
-                ),
-            ]
-        ),
-        encoding="utf-8",
-    )
+def test_catalog_tool_search_returns_configured_tool_payload():
     runtime = AssistantRuntime(FakeRuntimeService())
-    monkeypatch.setattr(runtime.tools.catalog_executor, "catalog_records_path", lambda _arguments: records_path)
 
-    payload = json.loads(runtime.tools.catalog_tools.search({"query": "mri label volume", "top_k": 1}))
+    payload = json.loads(runtime.tools.catalog_tools.search({"query": "fastsurfer segmentation", "top_k": 1}))
 
     assert payload == [
         {
-            "name": "mri_label_volume",
-            "source_package": "freesurfer",
-            "help_text": "mri_label_volume --label <label-id>",
+            "tool_id": "run_fastsurfer",
+            "label": "FastSurfer",
+            "container_id": "fastsurfer",
+            "container_label": "FastSurfer",
+            "command": "/fastsurfer/run_fastsurfer.sh",
+            "description": "Run FastSurfer cortical reconstruction and segmentation.",
+            "aliases": ["fastsurfer"],
+            "score": 1.0,
         }
     ]
 
 
-def test_catalog_tool_search_help_text_is_bounded():
-    help_text = "x" * (assistant_catalog_tools_module.MAX_HELP_TEXT_CHARS + 10)
-
-    assert assistant_catalog_tools_module.bounded_help_text({"raw_help_text": help_text}).endswith(
-        "\n[help_text truncated]"
-    )
-
-
-def test_catalog_tool_call_delegates_execution_to_runtime_runner(tmp_path, monkeypatch):
-    records_path = tmp_path / "tools.jsonl"
-    records_path.write_text(
-        json.dumps(
-            {
-                "name": "mri_binarize",
-                "toolbox": "freesurfer",
-                "app": "freesurfer",
-                "runtime_version": "8.2.0",
-                "build_date": "20260331",
-                "image_path": "neurocade/freesurfer:test",
-                "docker_uri": "neurocade/freesurfer:test",
-                "container_command": "mri_binarize",
-                "aliases": [],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+def test_catalog_tool_call_delegates_configured_execution_to_runtime_runner(monkeypatch):
     runtime = AssistantRuntime(FakeRuntimeService())
-    monkeypatch.setattr(runtime.tools.catalog_executor, "catalog_records_path", lambda _arguments: records_path)
     captured = {}
 
     from api_service.assistant.tools import catalog_execution as catalog_execution_module
@@ -448,72 +372,43 @@ def test_catalog_tool_call_delegates_execution_to_runtime_runner(tmp_path, monke
     payload = json.loads(
         runtime.tools.catalog_executor.catalog_tool_call(
             {
-                "tool": "mri_binarize",
-                "tool_args": ["--i", "/case/in.mgz", "--o", "/case/out.mgz"],
+                "container_id": "fastsurfer",
+                "tool_id": "run_fastsurfer",
+                "tool_args": ["--help"],
             }
         )
     )
 
     request = captured["request"]
-    # The catalog tool now runs in-process through the selected runtime backend.
     assert request.execution_mode == "container"
-    assert request.container_run.image == "neurocade/freesurfer:test"
-    assert request.container_run.command == ["mri_binarize", "--i", "/case/in.mgz", "--o", "/case/out.mgz"]
+    assert request.container_run.image == "vnmd/fastsurfer_2.4.2:20260115"
+    assert request.container_run.command == ["/fastsurfer/run_fastsurfer.sh", "--help"]
     assert request.container_run.network_disabled is True
     assert str(request.cwd) == str(assistant_runtime_module.ROOT_DIR)
     assert request.timeout_s == 300
     assert payload["returncode"] == 0
     assert payload["stdout"] == "ok"
     assert payload["execution_backend"] == "container"
+    assert payload["execution"]["container_id"] == "fastsurfer"
+    assert payload["execution"]["tool_id"] == "run_fastsurfer"
 
 
-def test_agent_catalog_sees_dcm2niix_in_core_docker_catalog(monkeypatch, tmp_path):
-    _install_dcm2niix_image(tmp_path, monkeypatch)
-    records_jsonl = tmp_path / "tool-catalog" / "installed_tools.jsonl"
-    runtime = AssistantRuntime(FakeRuntimeService())
+def test_run_analysis_tools_come_from_configured_tools():
+    load_runtime_tool_config.cache_clear()
 
-    search_payload = json.loads(
-        runtime.tools.catalog_tools.search(
-            {
-                "query": "dcm2niix DICOM conversion",
-                "top_k": 5,
-                "records_jsonl": str(records_jsonl),
-            }
-        )
-    )
-
-    assert "dcm2niix" in [row["name"] for row in search_payload]
-    assert all(row["name"] != "bash" for row in search_payload)
-
-    captured = {}
-
-    def fake_execute(command, *, timeout_s):
-        captured["command"] = command
-        captured["timeout_s"] = timeout_s
-        return {"returncode": 0, "stdout": "dcm2niix version\n", "stderr": "", "execution_backend": "test"}
-
-    monkeypatch.setenv("NEUROCADE_INSTALLED_TOOLS_JSONL", str(records_jsonl))
-    monkeypatch.setattr(runtime.tools.catalog_executor, "execute_runtime_command", fake_execute)
-    call_payload = json.loads(
-        runtime.tools.catalog_executor.catalog_tool_call(
-            {
-                "tool": "dcm2niix",
-                "tool_args": ["--version"],
-                "records_jsonl": str(records_jsonl),
-            }
-        )
-    )
-
-    assert call_payload["returncode"] == 0
-    assert call_payload["execution"]["command"] == ["dcm2niix", "--version"]
-    assert captured["command"].image
-    assert captured["command"].command == ["dcm2niix", "--version"]
+    assert run_analysis_tools_payload() == [
+        {
+            "id": "run_fastsurfer",
+            "label": "FastSurfer",
+            "description": "Run FastSurfer cortical reconstruction and segmentation.",
+            "container_id": "fastsurfer",
+            "container_label": "FastSurfer",
+        }
+    ]
 
 
-def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_path, seeded_context):
+def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, seeded_context):
     db_session, context, workspace, case_a, _case_b = seeded_context
-    _install_dcm2niix_image(tmp_path, monkeypatch)
-    records_jsonl = tmp_path / "tool-catalog" / "installed_tools.jsonl"
     runtime = AssistantRuntime(FakeRuntimeService())
     captured = {}
 
@@ -524,7 +419,6 @@ def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_pa
         return runtime_execution_module.RuntimeExecutionResult(request=request, returncode=0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(assistant_catalog_execution_module, "execute_runtime_request", fake_execute)
-    monkeypatch.setenv("NEUROCADE_INSTALLED_TOOLS_JSONL", str(records_jsonl))
 
     payload = json.loads(
         runtime.tools.catalog_tools.call(
@@ -536,9 +430,9 @@ def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_pa
                 "case_id": case_a.id,
             },
             {
-                "tool": "dcm2niix",
-                "tool_args": ["--version"],
-                "records_jsonl": str(records_jsonl),
+                "container_id": "fastsurfer",
+                "tool_id": "run_fastsurfer",
+                "tool_args": ["--help"],
             },
         )
     )
@@ -553,75 +447,31 @@ def test_case_catalog_tool_call_passes_artifact_index_target(monkeypatch, tmp_pa
     assert target.case_id == case_a.id
     assert target.case_title == case_a.title
     assert request.container_run is not None
-    assert request.container_run.command == ["dcm2niix", "--version"]
+    assert request.container_run.command == ["/fastsurfer/run_fastsurfer.sh", "--help"]
 
 
-def test_catalog_tool_call_bash_requires_installed_index(monkeypatch, tmp_path):
+def test_catalog_tool_call_rejects_wrong_container_for_tool():
     runtime = AssistantRuntime(FakeRuntimeService())
-    monkeypatch.setenv("TOOL_CATALOG_DIR", str(tmp_path / "tool-catalog"))
-    monkeypatch.delenv("NEUROCADE_CONTAINER_INVENTORY", raising=False)
-    monkeypatch.setenv("NEUROCADE_INSTALLED_TOOLS_JSONL", str(tmp_path / "tool-catalog" / "installed_tools.jsonl"))
-    (tmp_path / "tool-catalog").mkdir()
-    (tmp_path / "tool-catalog" / "installed_tools.jsonl").write_text("", encoding="utf-8")
 
     result = runtime.tools.catalog_executor.catalog_tool_call(
         {
-            "tool": "bash",
-            "tool_args": ["-c", "rm -f /case/mri/cc_mask_*.mgz"],
-            "records_jsonl": str(tmp_path / "tool-catalog" / "installed_tools.jsonl"),
-        },
-        [RuntimeBind(tmp_path, "/case", "rw")],
+            "container_id": "bash_image",
+            "tool_id": "run_fastsurfer",
+            "tool_args": ["--help"],
+        }
     )
 
-    assert "Tool 'bash' was not found" in result
+    assert "Configured container 'bash_image' was not found" in result
 
 
-def test_catalog_tool_call_ignores_caller_supplied_records_path(monkeypatch, tmp_path):
+def test_catalog_tool_call_rejects_unknown_tool():
     runtime = AssistantRuntime(FakeRuntimeService())
-    managed_records = tmp_path / "managed.jsonl"
-    caller_records = tmp_path / "caller.jsonl"
-    managed_records.write_text(
-        json.dumps(
-            {
-                "name": "safe_tool",
-                "toolbox": "managed",
-                "app": "managed",
-                "runtime_version": "1",
-                "build_date": "20260101",
-                "image_path": "neurocade/safe:test",
-                "docker_uri": "neurocade/safe:test",
-                "container_command": "safe_tool",
-                "aliases": [],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    caller_records.write_text(
-        json.dumps(
-            {
-                "name": "unsafe_tool",
-                "toolbox": "caller",
-                "app": "caller",
-                "runtime_version": "1",
-                "build_date": "20260101",
-                "image_path": "neurocade/unsafe:test",
-                "docker_uri": "neurocade/unsafe:test",
-                "container_command": "unsafe_tool",
-                "aliases": [],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("NEUROCADE_INSTALLED_TOOLS_JSONL", str(managed_records))
 
     result = runtime.tools.catalog_executor.catalog_tool_call(
-        {"tool": "unsafe_tool", "records_jsonl": str(caller_records), "tool_args": []}
+        {"container_id": "fastsurfer", "tool_id": "unsafe_tool", "tool_args": []}
     )
 
-    assert "Tool 'unsafe_tool' was not found in" in result
-    assert str(managed_records) in result
+    assert "Configured tool 'unsafe_tool' was not found in container 'fastsurfer'" in result
 
 
 def test_run_chat_handles_round_limit(monkeypatch):
@@ -1353,24 +1203,20 @@ def test_catalog_tool_binds_workspace_output_for_workspace_scope(monkeypatch, se
 
 def test_catalog_public_execution_hides_container_image_reference():
     runtime = AssistantRuntime(FakeRuntimeService())
+    config = load_runtime_tool_config()
 
     public_execution = runtime.tools.catalog_executor.public_catalog_execution(
-        {
-            "name": "mri_binarize",
-            "toolbox": "freesurfer",
-            "app": "freesurfer",
-            "runtime_version": "8.2.0",
-            "build_date": "20260331",
-            "image_path": "neurocade/freesurfer:test",
-            "docker_uri": "neurocade/freesurfer:test",
-            "container_command": "mri_binarize",
-        },
-        "mri_binarize",
-        ["--match", "2004", "--o", "/case/mri/cc_2004.mgz"],
+        config.containers[0],
+        config.tools[0],
+        "fastsurfer",
+        ["--help"],
     )
 
     assert "image_path" not in public_execution
-    assert public_execution["command"] == ["mri_binarize", "--match", "2004", "--o", "/case/mri/cc_2004.mgz"]
+    assert "image" not in public_execution
+    assert public_execution["container_id"] == "fastsurfer"
+    assert public_execution["tool_id"] == "run_fastsurfer"
+    assert public_execution["command"] == ["/fastsurfer/run_fastsurfer.sh", "--help"]
 
 
 def test_workspace_list_cases_tool_queries_live_db_state(monkeypatch, seeded_context):

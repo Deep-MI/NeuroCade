@@ -84,7 +84,7 @@ CORE_SPECS: dict[str, ContainerSpec] = {
         runtime_version="python-3.12",
         build_date=None,
         command_names=("bash", "python3.12"),
-        docker_uri="neurocade-runtime-bash:local",
+        docker_uri="docker://python:3.12-bookworm",
     ),
     "dcm2niix": _neurocontainer_spec(
         "dcm2niix_v1.0.20240202",

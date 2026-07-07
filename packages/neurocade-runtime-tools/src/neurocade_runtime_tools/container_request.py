@@ -32,7 +32,7 @@ def core_container_image(name: str) -> str:
     if override:
         return override.removeprefix("docker://")
     if name == "bash_image":
-        return os.environ.get("NEUROCADE_BASH_IMAGE", "neurocade-runtime-bash:local")
+        return os.environ.get("NEUROCADE_BASH_IMAGE", "python:3.12-bookworm").removeprefix("docker://")
     spec = CORE_SPECS[name]
     if not spec.docker_uri:
         raise ValueError(f"Core container {name} does not define an image")

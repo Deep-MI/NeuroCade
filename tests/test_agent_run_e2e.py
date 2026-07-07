@@ -11,7 +11,7 @@ This test exercises the full backend round-trip without a browser:
   7. Verify job status transitions
 
 Prerequisites:
-  ./scripts/compose/up.sh -d
+  ./scripts/run.sh start -d
   a demo upload fixture and processed case must be configured
 
 Usage:

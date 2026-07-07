@@ -4,29 +4,37 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _write_fake_docker(bin_dir: Path, log_file: Path) -> Path:
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$DOCKER_RUN_LOG"\n'
+        'case "$1:$2" in\n'
+        "  image:inspect) exit 0 ;;\n"
+        "  ps:*) exit 0 ;;\n"
+        "  rm:-f) exit 0 ;;\n"
+        "  run:*) exit 0 ;;\n"
+        "esac\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    return docker
+
+
 def test_shell_entrypoints_parse() -> None:
     scripts = [
         "scripts/install.sh",
-        "scripts/install/common.sh",
-        "scripts/install/env.sh",
-        "scripts/install/doctor.sh",
-        "scripts/install/node.sh",
-        "scripts/install/python.sh",
         "scripts/lib/env.sh",
         "scripts/build_image.sh",
-        "scripts/build_runtime_tools.sh",
-        "scripts/compose/lib.sh",
-        "scripts/compose/up.sh",
-        "scripts/compose/down.sh",
-        "scripts/compose/images.sh",
-        "scripts/compose/logs.sh",
-        "scripts/compose/status.sh",
+        "scripts/run.sh",
         "scripts/desktop/run.sh",
         "scripts/admin/reset_app_state.sh",
         "scripts/release/build_artifacts.sh",
@@ -41,8 +49,7 @@ def test_install_scripts_drop_legacy_sidecar_config() -> None:
         path.read_text(encoding="utf-8")
         for path in [
             REPO_ROOT / "scripts" / "install.sh",
-            REPO_ROOT / "scripts" / "install" / "common.sh",
-            REPO_ROOT / "scripts" / "install" / "env.sh",
+            REPO_ROOT / "scripts" / "run.sh",
             REPO_ROOT / "scripts" / "desktop" / "run.sh",
         ]
     )
@@ -59,20 +66,15 @@ def test_install_scripts_drop_legacy_sidecar_config() -> None:
         assert term not in script_text
 
 
-def test_compose_launcher_uses_configurable_port_and_project_name() -> None:
-    compose_lib = (REPO_ROOT / "scripts" / "compose" / "lib.sh").read_text(encoding="utf-8")
-    compose_up = (REPO_ROOT / "scripts" / "compose" / "up.sh").read_text(encoding="utf-8")
-    compose_images = (REPO_ROOT / "scripts" / "compose" / "images.sh").read_text(encoding="utf-8")
-    build_runtime_tools = (REPO_ROOT / "scripts" / "build_runtime_tools.sh").read_text(encoding="utf-8")
+def test_docker_launcher_replaces_compose() -> None:
+    run_script = (REPO_ROOT / "scripts" / "run.sh").read_text(encoding="utf-8")
 
-    assert "APP_HTTP_PORT" in compose_lib
-    assert "neurocade" in compose_lib
-    assert "docker compose" in compose_lib
-    assert "compose up" in compose_up
-    assert "scripts/build_image.sh" in compose_up
-    assert "scripts/build_image.sh" in compose_images
-    assert "docker_catalog" in build_runtime_tools
-    assert "apptainer build" in build_runtime_tools
+    assert "docker run" in run_script
+    assert "--privileged" in run_script
+    assert "--device /dev/fuse" in run_script
+    assert "APP_HTTP_PORT" in run_script
+    assert "docker compose" not in run_script
+    assert run_script.index("load_env_file") < run_script.index('CONTAINER_NAME="${NEUROCADE_CONTAINER_NAME:-neurocade}"')
 
 
 def test_build_image_loads_frontend_auth_env(tmp_path) -> None:
@@ -90,25 +92,12 @@ def test_build_image_loads_frontend_auth_env(tmp_path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log_file = tmp_path / "env.log"
-    npm = bin_dir / "npm"
-    npm.write_text(
-        "\n".join(
-            [
-                "#!/usr/bin/env bash",
-                (
-                    'printf "npm:%s VITE_API_URL=%s VITE_LOCAL_AUTH_ENABLED=%s '
-                    'VITE_CLERK_PUBLISHABLE_KEY=%s VITE_CLERK_JWT_TEMPLATE=%s\\n" '
-                    '"$*" "$VITE_API_URL" "$VITE_LOCAL_AUTH_ENABLED" '
-                    '"$VITE_CLERK_PUBLISHABLE_KEY" "$VITE_CLERK_JWT_TEMPLATE" '
-                    '>> "$BUILD_IMAGE_ENV_LOG"'
-                ),
-            ]
-        ),
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$BUILD_IMAGE_ENV_LOG"\n',
         encoding="utf-8",
     )
-    npm.chmod(0o755)
-    docker = bin_dir / "docker"
-    docker.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     docker.chmod(0o755)
 
     env = os.environ.copy()
@@ -128,7 +117,6 @@ def test_build_image_loads_frontend_auth_env(tmp_path) -> None:
         {
             "BUILD_IMAGE_ENV_LOG": str(log_file),
             "ENV_FILE": str(env_file),
-            "NEUROCADE_BUILD_RUNTIME_TOOLS": "0",
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
         }
     )
@@ -136,31 +124,196 @@ def test_build_image_loads_frontend_auth_env(tmp_path) -> None:
     subprocess.run(["bash", str(REPO_ROOT / "scripts" / "build_image.sh")], check=True, env=env)
 
     log_text = log_file.read_text(encoding="utf-8")
-    assert "VITE_API_URL=/api/app" in log_text
-    assert "VITE_LOCAL_AUTH_ENABLED=false" in log_text
-    assert "VITE_CLERK_PUBLISHABLE_KEY=pk_from_env" in log_text
-    assert "VITE_CLERK_JWT_TEMPLATE=neurocade-template" in log_text
+    assert "--build-arg NC_VITE_API_URL=/api/app" in log_text
+    assert "--build-arg NC_LOCAL_LOGIN=false" in log_text
+    assert "--build-arg NC_CLERK_PUBLIC=pk_from_env" in log_text
+    assert "--build-arg NC_CLERK_TEMPLATE=neurocade-template" in log_text
 
 
-def test_install_env_uses_host_paths_for_native_runtime() -> None:
-    env_script = (REPO_ROOT / "scripts" / "install" / "env.sh").read_text(encoding="utf-8")
+def test_install_script_rejects_missing_option_values() -> None:
+    for option in ("--mode", "--llm-provider"):
+        result = subprocess.run(
+            ["bash", str(REPO_ROOT / "scripts" / "install.sh"), option, "--no-start"],
+            text=True,
+            capture_output=True,
+        )
 
-    assert 'env_line HOST_DATA_DIR "$host_data_dir"' in env_script
-    assert 'env_line_configured "$root" DATABASE_URL "sqlite+pysqlite:///$host_data_dir/neurocade.db"' in env_script
-    assert 'env_line_configured "$root" NEUROCADE_SIF_DIR "$host_data_dir/sif"' in env_script
+        assert result.returncode == 2
+        assert f"{option} requires a value." in result.stderr
 
 
-def test_container_launchers_rewrite_host_sqlite_urls() -> None:
-    compose_lib = (REPO_ROOT / "scripts" / "compose" / "lib.sh").read_text(encoding="utf-8")
-    run_container = (REPO_ROOT / "scripts" / "run_container.sh").read_text(encoding="utf-8")
-    compose_yaml = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
+def test_install_no_start_writes_env_from_temp_checkout(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
 
-    assert "NEUROCADE_CONTAINER_DATABASE_URL" in compose_lib
-    assert '"$DATABASE_URL" == sqlite:*' in compose_lib
-    assert "NEUROCADE_CONTAINER_DATABASE_URL" in compose_yaml
-    assert "DATABASE_URL: ${DATABASE_URL" not in compose_yaml
-    assert "CONTAINER_DATABASE_URL" in run_container
-    assert '"$DATABASE_URL" == sqlite:*' in run_container
+    env = os.environ.copy()
+    env.update(
+        {
+            "LLM_BACKEND_URL": "https://llm.example.test",
+            "LLM_BACKEND_MODEL": "model-from-env",
+            "FREESURFER_LICENSE": "",
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            str(scripts_dir / "install.sh"),
+            "--mode",
+            "local",
+            "--llm-provider",
+            "openai-compatible",
+            "--no-start",
+            "--yes",
+        ],
+        check=True,
+        cwd=checkout,
+        env=env,
+    )
+
+    env_text = (checkout / ".env").read_text(encoding="utf-8")
+    assert "APP_BASE_URL=http://localhost:8000" in env_text
+    assert "DATABASE_URL=sqlite+pysqlite:///" in env_text
+    assert "NEUROCADE_CONTAINER_DATABASE_URL=sqlite+pysqlite:////data/neurocade.db" in env_text
+    assert "LLM_BACKEND_URL=https://llm.example.test" in env_text
+    assert "LLM_BACKEND_MODEL=model-from-env" in env_text
+
+
+def test_container_launcher_uses_container_database_url() -> None:
+    run_script = (REPO_ROOT / "scripts" / "run.sh").read_text(encoding="utf-8")
+
+    assert 'CONTAINER_DATABASE_URL="${NEUROCADE_CONTAINER_DATABASE_URL:-sqlite+pysqlite:////data/neurocade.db}"' in run_script
+    assert "sqlite+pysqlite:////data/neurocade.db" in run_script
+    assert "-e HOST_DATA_DIR=/data" in run_script
+    assert "NEUROCADE_SAMPLE_CASE_URL" in run_script
+    assert "NEUROCADE_SKIP_SAMPLE_CASE" in run_script
+
+
+def test_docker_launcher_downloads_missing_sample_case_with_app_image(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+
+    env_file = checkout / ".env"
+    host_data_dir = tmp_path / "data"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"NEUROCADE_HOST_DATA_DIR={host_data_dir}",
+                "NEUROCADE_IMAGE=neurocade:test",
+                "NEUROCADE_SAMPLE_CASE_URL=https://example.test/sample.tar.gz",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DOCKER_RUN_LOG": str(log_file),
+            "ENV_FILE": str(env_file),
+            "NEUROCADE_HOST_DATA_DIR": str(host_data_dir),
+            "FREESURFER_LICENSE": "",
+            "NEUROCADE_IMAGE": "neurocade:test",
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+        }
+    )
+
+    subprocess.run(["bash", str(scripts_dir / "run.sh"), "start"], check=True, env=env, cwd=checkout)
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "-e SAMPLE_CASE_URL=https://example.test/sample.tar.gz" in log_text
+    assert f"-v {checkout / 'sample_case'}:/sample_case" in log_text
+    assert "python -c" in log_text
+
+
+def test_docker_launcher_handles_missing_freesurfer_license(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    host_data_dir = tmp_path / "data"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"NEUROCADE_HOST_DATA_DIR={host_data_dir}",
+                "FREESURFER_LICENSE=",
+                "NEUROCADE_IMAGE=neurocade:test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DOCKER_RUN_LOG": str(log_file),
+            "ENV_FILE": str(env_file),
+            "NEUROCADE_HOST_DATA_DIR": str(host_data_dir),
+            "FREESURFER_LICENSE": "",
+            "NEUROCADE_IMAGE": "neurocade:test",
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+        }
+    )
+
+    subprocess.run(["bash", str(REPO_ROOT / "scripts" / "run.sh"), "start"], check=True, env=env)
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "/fs_license.txt:ro" not in log_text
+    assert "-e FREESURFER_LICENSE=" in log_text
+
+
+def test_docker_launcher_mounts_external_freesurfer_license(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    host_data_dir = tmp_path / "data"
+    license_file = tmp_path / "license.txt"
+    license_file.write_text("license\n", encoding="utf-8")
+    env_file.write_text(
+        "\n".join(
+            [
+                f"NEUROCADE_HOST_DATA_DIR={host_data_dir}",
+                f"FREESURFER_LICENSE={license_file}",
+                "NEUROCADE_IMAGE=neurocade:test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DOCKER_RUN_LOG": str(log_file),
+            "ENV_FILE": str(env_file),
+            "NEUROCADE_HOST_DATA_DIR": str(host_data_dir),
+            "FREESURFER_LICENSE": str(license_file),
+            "NEUROCADE_IMAGE": "neurocade:test",
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+        }
+    )
+
+    subprocess.run(["bash", str(REPO_ROOT / "scripts" / "run.sh"), "start"], check=True, env=env)
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert f"-v {license_file}:/fs_license.txt:ro" in log_text
+    assert "-e FREESURFER_LICENSE=/fs_license.txt" in log_text
 
 
 def test_env_example_documents_runtime_backend() -> None:
@@ -168,5 +321,6 @@ def test_env_example_documents_runtime_backend() -> None:
 
     # Apptainer is the default tool runtime; the runtime-runner sidecar is gone.
     assert "NEUROCADE_RUNTIME_BACKEND=" in env_example
-    for term in ("RUNTIME_RUNNER_TOKEN=", "RUNTIME_RUNNER_URL=", "REDIS_URL="):
+    removed_catalog_env = "NEUROCADE_" + "INSTALLED_TOOLS_JSONL"
+    for term in ("RUNTIME_RUNNER_TOKEN=", "RUNTIME_RUNNER_URL=", "REDIS_URL=", removed_catalog_env):
         assert term not in env_example

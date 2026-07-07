@@ -14,16 +14,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = Field(default="NeuroCade API", validation_alias=AliasChoices("NEUROCADE_APP_NAME", "APP_NAME"))
-    app_base_url: str = Field(default="http://localhost:8005", alias="APP_BASE_URL")
+    app_base_url: str = Field(default="http://localhost:8000", alias="APP_BASE_URL")
     deployment_profile: str = Field(default="local", alias="DEPLOYMENT_PROFILE")
     app_public_url: str | None = Field(default=None, alias="APP_PUBLIC_URL")
     app_allowed_hosts: str = Field(default="", alias="APP_ALLOWED_HOSTS")
 
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
-
-    api_service_url: str = Field(default="http://127.0.0.1:58080", alias="API_SERVICE_URL")
-    container_inventory: Path = Field(default=ROOT_DIR / "llm-data" / "tool-catalog" / "installed_containers.json", alias="NEUROCADE_CONTAINER_INVENTORY")
-    installed_tools_jsonl: Path = Field(default=ROOT_DIR / "llm-data" / "tool-catalog" / "installed_tools.jsonl", alias="NEUROCADE_INSTALLED_TOOLS_JSONL")
 
     fs_data_root: Path = Field(default=ROOT_DIR / "neurocade-data", alias="HOST_DATA_DIR")
     outputs_dir_override: Path | None = Field(default=None, exclude=True)

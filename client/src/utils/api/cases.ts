@@ -1,4 +1,5 @@
 import type {
+  AnalysisToolSummary,
   ArtifactListItem,
   CaseListResponse,
   FastSurferParams,
@@ -79,6 +80,10 @@ export async function fetchCases(workspaceId?: string | null): Promise<CaseListR
       artifact_count: caseItem.artifact_count ?? 0,
     })),
   };
+}
+
+export async function fetchAnalysisTools(): Promise<AnalysisToolSummary[]> {
+  return appJson<AnalysisToolSummary[]>('/analysis-tools', 'Failed to fetch analysis tools');
 }
 
 export async function fetchStatus(caseId: string): Promise<StatusResponse> {

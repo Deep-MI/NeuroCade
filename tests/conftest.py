@@ -1,10 +1,10 @@
 """
 Shared pytest fixtures for NeuroCade end-to-end tests.
 
-These fixtures talk to a running local NeuroCade stack (gateway on port 8005).
-Start the stack before running tests:
+These fixtures talk to a running local NeuroCade app on port 8000.
+Start the app before running tests:
 
-    ./scripts/compose/up.sh -d
+    ./scripts/run.sh start -d
     pytest tests/ -v
 """
 
@@ -26,7 +26,6 @@ import requests
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8000")
 API_TOKEN = os.environ.get("API_TOKEN", "static-token-12345")
-PROXY_SERVICE = os.environ.get("PROXY_SERVICE", "api-service")
 DEFAULT_STORAGE_STATE_PATH = Path(
     os.environ.get(
         "PLAYWRIGHT_STORAGE_STATE",
@@ -212,7 +211,7 @@ def _reset_job_manager():
 
 @pytest.fixture(scope="session")
 def gateway_url():
-    """Base URL of the local app gateway."""
+    """Base URL of the local app."""
     return GATEWAY_URL
 
 
@@ -262,13 +261,13 @@ def demo_run_upload_filename():
 
 @pytest.fixture(scope="session")
 def services_up(gateway_url):
-    """Verify the local stack is reachable (session-scoped, runs once)."""
+    """Verify the local app is reachable (session-scoped, runs once)."""
     try:
         r = requests.get(f"{gateway_url}/api/app/healthz", timeout=5)
         r.raise_for_status()
     except Exception as exc:
         pytest.skip(
-            f"NeuroCade stack not reachable at {gateway_url}: {exc}"
+            f"NeuroCade app not reachable at {gateway_url}: {exc}"
         )
 
 
@@ -755,15 +754,12 @@ def parse_sse_response(body: str) -> dict:
     return final_payload
 
 
-def docker_logs_since(
-    service: str = PROXY_SERVICE,
-    since: str | None = None,
-) -> str:
-    """Fetch local stack service logs."""
-    cmd = [str(REPO_ROOT / "scripts" / "compose" / "logs.sh")]
+def docker_logs_since(since: str | None = None) -> str:
+    """Fetch local container logs."""
+    cmd = ["docker", "logs"]
     if since:
         cmd.extend(["--since", since])
-    cmd.append(service)
+    cmd.append(os.environ.get("NEUROCADE_CONTAINER_NAME", "neurocade"))
     try:
         out = subprocess.check_output(
             cmd, stderr=subprocess.STDOUT, timeout=10
@@ -818,4 +814,3 @@ def assert_no_text_explanation(content: str) -> None:
 def get_response_content(result: dict) -> str:
     """Extract assistant content from a assistant turn response."""
     return result.get("message", {}).get("content", "")
-

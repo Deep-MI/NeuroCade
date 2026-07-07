@@ -45,11 +45,11 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-Local Compose checks:
+Local Docker checks:
 
 ```bash
-./scripts/compose/images.sh
-./scripts/compose/up.sh -d
+./scripts/run.sh build
+./scripts/run.sh start -d
 ```
 
 ## Project Boundaries
@@ -76,8 +76,8 @@ Local Compose checks:
 - Avoid inline role-set checks in routers.
 - Avoid router-to-router imports and task/worker imports from router modules.
 - Keep unrestricted shell/Python execution out of the web assistant. Container
-  execution should route through approved runtime tools and the local installed-tool
-  index.
+  execution should route through approved runtime tools and the on-demand core
+  tool catalog.
 
 ## Assistant Tooling
 
@@ -98,13 +98,14 @@ Contributor-owned tool groups:
 
 Do not reintroduce MCP server dependencies for assistant tools.
 
-## Runtime Tool Index
+## Runtime Tools
 
-Runtime container status and the generated installed-tool index are managed locally:
+The monolith runs in one Docker container. Runtime tools are registered on demand
+from pinned package metadata:
 
 ```bash
-./scripts/compose/status.sh
-./scripts/compose/images.sh
+./scripts/run.sh status
+./scripts/run.sh logs
 ```
 
 ## Release Checklist
@@ -118,14 +119,14 @@ Before tagging or publishing a release:
 - Confirm `APP_BASE_URL`, `APP_PUBLIC_URL`, and `APP_ALLOWED_HOSTS` match the
   deployed origin.
 - Confirm `LOCAL_AUTH_ENABLED=false` for `internal` and `demo`.
-- Confirm Clerk, Postgres, Redis, LLM, Docker runtime, and monitoring settings are correct
-  for the deployment profile.
+- Confirm Clerk, LLM, Docker runtime, and monitoring settings are correct for
+  the deployment profile.
 - Run frontend lint/build and focused backend/runtime tests.
 - Run the full Python test suite when release time allows.
-- Confirm `docker compose config` renders and the image builds.
+- Confirm `./scripts/build_image.sh` completes.
 - Confirm runtime commands run rootless (no `--fakeroot`/`--writable`) unless GPU/runtime settings explicitly require otherwise.
 - Confirm artifact download routes require authorization.
-- Build Docker images and refresh the installed-tool index.
+- Build the Docker image.
 
 Smoke tests:
 
@@ -150,17 +151,16 @@ Profiles:
 Install/update flow:
 
 ```bash
-./scripts/install.sh --doctor --mode <profile> --yes
-./scripts/compose/images.sh
-./scripts/compose/up.sh -d
+./scripts/install.sh --mode <profile> --yes
+./scripts/run.sh start -d
 ```
 
 Useful logs:
 
-- `./scripts/compose/logs.sh -f` (or `docker logs -f neurocade`)
-- App container logs for the single `app` service
+- `./scripts/run.sh logs` (or `docker logs -f neurocade`)
+- App logs from the single `neurocade` container
 
-Backups should include Postgres, `.env`, `.runtime`, and `neurocade-data`.
+Backups should include `.env` and `neurocade-data`.
 
 ## GitHub Repository Settings
 

@@ -12,7 +12,7 @@ Flow:
   8. Verify status becomes 'canceled'
 
 Prerequisites:
-  ./scripts/compose/up.sh -d
+  ./scripts/run.sh start -d
   At least one MRI fixture must be available via NEUROCADE_UPLOAD_FIXTURES_DIR
 
 Usage:

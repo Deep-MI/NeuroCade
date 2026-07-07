@@ -1,10 +1,10 @@
 """Assistant tool registry construction.
 
 This module composes the assistant's available tools from runtime GUI tools,
-file tools, installed catalog tools, active-case container tools, and workspace
-batch tools. The registry differs by assistant scope: workspace chat gets
-workspace-safe tools, while case chat also gets GUI/runtime and case-mounted
-execution tools.
+file tools, configured container tools, active-case container tools, and
+workspace batch tools. The registry differs by assistant scope: workspace chat
+gets workspace-safe tools, while case chat also gets GUI/runtime and
+case-mounted execution tools.
 """
 
 from __future__ import annotations
@@ -59,9 +59,9 @@ class AssistantToolBuilder:
     async def build(self, state: dict[str, Any]) -> tuple[list[ToolDefinition], list[dict[str, Any]]]:
         """Build executable tool definitions and serialized model tool specs.
 
-        Workspace scope combines workspace, file, and catalog tools. Case scope
+        Workspace scope combines workspace, file, and configured tools. Case scope
         fetches GUI/runtime tools for the active GUI state and adds file,
-        case-container, and catalog tools.
+        case-container, and configured tools.
         """
         catalog_definitions = self.catalog_tools.build_tools(state)
         file_definitions = self.file_tools.build_tools(state)

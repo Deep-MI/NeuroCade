@@ -10,25 +10,24 @@ It can be used as a local app or installed on a server and acccessed via a web-b
 Install NeuroCade locally:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --desktop
+bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local
 ```
 
-The one-line installer clones the latest stable release by default. Add
-`--prerelease` for the latest beta release or `--dev` for the repository default
-branch.
+The installer requires Docker, writes `.env`, builds the single NeuroCade image,
+and starts one container.
 
 If `curl` is unavailable:
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --desktop
+bash <(wget -qO- https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local
 ```
 
 From an existing checkout:
 
 ```bash
-./scripts/install.sh --mode local --desktop
-./scripts/desktop/run.sh
+./scripts/install.sh --mode local
+./scripts/run.sh status
 ```
 
-For server install choose --mode internal. This is intended for local networks
-More detailed install instructions are located at [INSTALL.md](INSTALL.md)
+For server installs, choose `--mode internal`. More detailed install
+instructions are in [INSTALL.md](INSTALL.md).

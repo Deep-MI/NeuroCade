@@ -133,37 +133,30 @@ def test_classify_volume_metadata_distinguishes_segmentation_and_intensity():
     assert mask["lut"] == "binary"
 
 
-def test_compose_stack_exposes_clerk_audience_to_backend_services():
-    compose_text = Path("compose.yaml").read_text()
-    assert "CLERK_AUDIENCE" in compose_text
-    assert "VITE_CLERK_JWT_TEMPLATE" in compose_text
+def test_docker_launcher_exposes_clerk_environment():
+    run_text = Path("scripts/run.sh").read_text()
+    assert "--env-file" in run_text
 
 
-def test_compose_stack_uses_container_database_url():
-    compose_text = Path("compose.yaml").read_text()
+def test_docker_launcher_uses_container_database_url():
+    run_text = Path("scripts/run.sh").read_text()
 
-    assert "NEUROCADE_CONTAINER_DATABASE_URL" in compose_text
-    assert "DATABASE_URL: ${DATABASE_URL" not in compose_text
-    assert "sqlite+pysqlite:////data/neurocade.db" in compose_text
+    assert "NEUROCADE_CONTAINER_DATABASE_URL" in run_text
+    assert "sqlite+pysqlite:////data/neurocade.db" in run_text
 
 
-def test_compose_stack_pins_project_python_version():
+def test_docker_image_pins_project_python_version():
     backend_dockerfile = Path("docker/backend.Dockerfile").read_text()
-    installer_text = Path("scripts/install/python.sh").read_text()
+    build_script = Path("scripts/build_image.sh").read_text()
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
     assert pyproject["project"]["requires-python"] == ">=3.12,<3.13"
     assert pyproject["tool"]["uv"]["package"] is False
     assert pyproject["tool"]["pyright"]["pythonVersion"] == "3.12"
     assert not Path("pyrightconfig.json").exists()
-    assert "NEUROCADE_PYTHON_VERSION" not in installer_text
-    assert "ensure_uv_state_dir" in installer_text
-    assert "XDG_CONFIG_HOME" in installer_text
-    assert "UV_CACHE_DIR" in installer_text
-    assert "UV_INSTALL_DIR" in installer_text
-    assert "INSTALLER_NO_MODIFY_PATH=1" in installer_text
-    assert ".runtime/uv/bin" in installer_text
+    assert "npm ci" not in build_script
     assert "python:3.12-slim" in backend_dockerfile
     assert "uv pip install" in backend_dockerfile
+    assert "node:22-alpine" in backend_dockerfile
 
 
 def test_pyproject_is_python_dependency_source_of_truth():
@@ -182,16 +175,16 @@ def test_pyproject_is_python_dependency_source_of_truth():
     }
 
 
-def test_compose_stack_does_not_inject_dead_proxy_url_into_backend_services():
-    compose_text = Path("compose.yaml").read_text()
-    assert "LLM_PROXY_URL" not in compose_text
+def test_docker_launcher_does_not_inject_dead_proxy_url():
+    run_text = Path("scripts/run.sh").read_text()
+    assert "LLM_PROXY_URL" not in run_text
 
 
-def test_compose_stack_uses_single_data_root_variable():
-    compose_text = Path("compose.yaml").read_text()
-    assert "HOST_DATA_DIR" in compose_text
-    assert "NEUROCADE_DATA_ROOT" not in compose_text
-    assert "FASTSURFER_DATA_ROOT" not in compose_text
+def test_docker_launcher_uses_single_data_root_variable():
+    run_text = Path("scripts/run.sh").read_text()
+    assert "HOST_DATA_DIR" in run_text
+    assert "NEUROCADE_DATA_ROOT" not in run_text
+    assert "FASTSURFER_DATA_ROOT" not in run_text
 
 
 def test_env_example_documents_clerk_audience():

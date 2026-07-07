@@ -1,5 +1,6 @@
 """Provide API service main behavior for NeuroCade."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -20,6 +21,9 @@ import api_service.runtime.fastsurfer_tasks  # noqa: F401
 import api_service.workspace_batch.tasks  # noqa: F401
 
 
+startup_logger = logging.getLogger("uvicorn.error")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Validate startup configuration and prepare the application database.
@@ -31,16 +35,26 @@ async def lifespan(_app: FastAPI):
     contention. Run ``uvicorn`` with the default single worker (no ``--workers``,
     no ``WEB_CONCURRENCY``); see ``docker/backend.Dockerfile``.
     """
-    logger.info("Starting NeuroCade backend (single-process model: one worker, in-process jobs + SQLite).")
-    validate_auth_configuration()
-    bootstrap_database(engine)
-    with SessionLocal() as startup_db:
-        seed_demo_state(startup_db)
-    reconcile_interrupted_runs(SessionLocal)
-    if not os.environ.get("PYTEST_CURRENT_TEST"):
-        start_update_checker()
-    if allow_local_auth():
-        logger.warning("Local auth fallback is enabled; do not use this configuration outside local deployments.")
+    startup_logger.info("Starting NeuroCade backend (single-process model: one worker, in-process jobs + SQLite).")
+    try:
+        startup_logger.info("Validating auth configuration.")
+        validate_auth_configuration()
+        startup_logger.info("Applying database migrations.")
+        bootstrap_database(engine)
+        startup_logger.info("Seeding local demo state.")
+        with SessionLocal() as startup_db:
+            seed_demo_state(startup_db)
+        startup_logger.info("Reconciling interrupted runs.")
+        reconcile_interrupted_runs(SessionLocal)
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            startup_logger.info("Starting update checker.")
+            start_update_checker()
+        if allow_local_auth():
+            logger.warning("Local auth fallback is enabled; do not use this configuration outside local deployments.")
+        startup_logger.info("NeuroCade backend startup checks complete.")
+    except Exception:
+        startup_logger.exception("NeuroCade backend startup failed.")
+        raise
     try:
         yield
     finally:

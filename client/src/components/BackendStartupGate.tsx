@@ -24,7 +24,7 @@ function isFrontendDevServer() {
 }
 
 function localGatewayUrl() {
-  return `${window.location.protocol}//${window.location.hostname === '127.0.0.1' ? '127.0.0.1' : 'localhost'}:8005`
+  return `${window.location.protocol}//${window.location.hostname === '127.0.0.1' ? '127.0.0.1' : 'localhost'}:8000`
 }
 
 function formatElapsed(ms: number) {
@@ -75,7 +75,7 @@ function BackendStartupScreen({
         ? `Starting ${APP_DISPLAY_NAME} services`
         : `Connecting to ${APP_DISPLAY_NAME} services`
   const detail = timedOut
-    ? 'The web UI loaded, but the API never became reachable. The most common cause is that the local Docker Compose stack is not running.'
+    ? 'The web UI loaded, but the API never became reachable. The most common cause is that the local backend container is not running.'
     : devFrontendOnly
       ? 'You are viewing the Vite frontend directly. Start the local NeuroCade backend, then open the app URL so the API and viewer are connected.'
       : local
@@ -83,8 +83,8 @@ function BackendStartupScreen({
         : 'The workspace will open automatically when the API is healthy.'
   const gatewayUrl = localGatewayUrl()
   const recoveryCommand = devFrontendOnly
-    ? './scripts/install.sh --mode local\n./scripts/desktop/run_backend.sh\n# then open http://localhost:8000'
-    : './scripts/desktop/run_backend.sh\n# or as a container: ./scripts/run_container.sh'
+    ? './scripts/run.sh start\n# then open http://localhost:8000'
+    : './scripts/run.sh start'
   const checks = [
     {
       label: 'Web UI',
@@ -173,7 +173,7 @@ function BackendStartupScreen({
               className="nc-btn nc-btn-active"
             >
               <ExternalLink className="h-4 w-4" aria-hidden="true" />
-              Open local gateway
+              Open local app
             </a>
           )}
           <button

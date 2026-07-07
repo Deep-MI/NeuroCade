@@ -9,8 +9,7 @@ __pycache__
 *.pyc
 node_modules
 client/node_modules
-# client/dist is intentionally NOT ignored: the host-built SPA is packaged into
-# the image (see docker/backend.Dockerfile / scripts/build_image.sh).
+# client sources are built inside docker/backend.Dockerfile.
 client/.vite
 build
 fastsurfer-data

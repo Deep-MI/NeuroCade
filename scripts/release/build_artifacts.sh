@@ -30,16 +30,15 @@ build_client_artifact() {
 }
 
 build_docker_release_manifest() {
-  local target="$ARTIFACT_ROOT/neurocade-docker-compose-${VERSION}.txt"
+  local target="$ARTIFACT_ROOT/neurocade-docker-${VERSION}.txt"
   cat >"$target" <<EOF
-NeuroCade Docker Compose release
+NeuroCade Docker release
 Version: $VERSION
 
-The Docker-first local install builds application images from this source tree:
-  ./scripts/compose/images.sh
-  ./scripts/compose/up.sh -d
+The Docker local install builds and runs one application container:
+  ./scripts/run.sh start --build -d
 
-Runtime services and neuroimaging tools are packaged as Docker images.
+Runtime tool metadata is packaged with the app and loaded on demand.
 EOF
   add_checksum "$target"
 }

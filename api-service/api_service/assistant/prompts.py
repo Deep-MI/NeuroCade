@@ -231,19 +231,19 @@ def build_system_prompt(
             "use the case_file_tree tool."
         )
         session_lines.append(
-            "Tool rule: use tool_search before choosing unfamiliar neuroimaging commands. "
-            "Then call tool_call once you know the command name and all file arguments use explicit "
-            "/case/... paths for current-case files. tool_call runs the resolved command."
+            "Configured tool rule: use tool_search before tool_call. tool_search returns only tools "
+            "configured by NeuroCade and includes the container_id and tool_id required by tool_call. "
+            "All current-case file arguments must use explicit /case/... paths."
         )
         if {"python_run", "bash"}.issubset(tool_names):
             session_lines.append(
                 "Python/Bash rule: for custom case-local scripts, use write to create files under /case, "
                 "then python_run to execute an existing script. Use bash for shell operations that are not "
-                "covered by cataloged neuroimaging tools."
+                "covered by configured neuroimaging tools."
             )
     if scope == AssistantScope.workspace.value:
         session_lines.append(
-            "Workspace chat has no active /case mount. For tool discovery questions, use tool_search only. "
+            "Workspace chat has no active /case mount. For configured tool questions, use tool_search only. "
             "To inspect case files from workspace chat, use workspace_case_file_tree with an explicit case_id, "
             "or ask the user to open/select a case first."
         )
