@@ -7,6 +7,8 @@ import type { WindowSetting } from './paneSyncKeys';
 import type { DrawingOptions, DrawingSession } from './nativeDrawing';
 import { resolveSurfaceLayerColorMode, SURFACE_COLOR_MODE_LABELS, surfaceColorModeAvailable } from '../utils/surfaceColors';
 
+const SHOW_MANUAL_LABELING = false;
+
 function titleCaseColormap(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
@@ -601,7 +603,7 @@ export function LayerPanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {renderLayerSection('intensity', groupedLayers.intensity)}
         {renderLayerSection('segmentation', groupedLayers.segmentation)}
-        {renderDrawingTools()}
+        {SHOW_MANUAL_LABELING && renderDrawingTools()}
         {renderLayerSection('surface', groupedLayers.surface)}
       </div>
       <div

@@ -20,7 +20,6 @@ const HELP_TOOLS = [
   ['Measure', 'Right-drag on a 2D slice to draw a distance line with millimeter length.'],
   ['Ax / Cor / Sag / 3D / Grid', 'Switch between orthogonal slice views, volume rendering, and multiplanar layout.'],
   ['Reset', 'Restore view scale, pan, clip plane, render angle, and intensity windowing.'],
-  ['Draw', 'Use the Drawing tool in the layer pane to start a blank drawing or edit a same-grid segmentation copy, then choose Pen or Magic Wand and save as a segmentation.'],
 ];
 
 interface ViewerHelpDialogProps {
