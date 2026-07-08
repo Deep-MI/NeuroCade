@@ -6,7 +6,6 @@ import { appFetchUrl } from '../utils/api';
 import {
   asNiivueInterop,
   type NiivueInterop,
-  type NiivueLabelLut,
   type NiivueMeshInterop,
   type NiivueVolumeInterop,
   type SurfaceCompanionLayer,
@@ -21,11 +20,7 @@ import { resolveSurfaceLayerColorMode, surfaceColor } from '../utils/surfaceColo
 import type { ViewerSliceType } from './viewerControls';
 import { labelInfoFromLut, type LabelLookupResult } from './labelLookup';
 import { reorderLoadedVolumes, setLoadedVolumeOpacity } from './loadedVolumeDisplay';
-
-// NIfTI intent code Niivue uses to route label maps through its atlas shader.
-const LABEL_INTENT_CODE = 1002;
-const NIFTI_INTENT_NONE = 0;
-const RGBA32_DATATYPE_CODE = 2304;
+import { applySegmentationRgbaRendering } from './segmentationRgba';
 
 interface ViewerTile {
   axCorSag: ViewerSliceType;
@@ -69,99 +64,8 @@ export function layerType(volume: Volume): LayerType {
   return volume.type ?? 'intensity';
 }
 
-function isLabelVolume(volume: Volume): boolean {
+function isSegmentationVolume(volume: Volume): boolean {
   return volume.type === 'segmentation';
-}
-
-export function shouldUseVoxelExactLabelRendering(volume: Volume): boolean {
-  return volume.type === 'segmentation';
-}
-
-function intentCodeForLabelVolume(volume: Volume): number {
-  // Niivue's atlas shader softens label boundaries by averaging alpha with
-  // neighbouring voxels. Segmentation overlays should display
-  // categorical voxel values exactly, so keep the label LUT but avoid the atlas
-  // intent for them.
-  return shouldUseVoxelExactLabelRendering(volume) ? NIFTI_INTENT_NONE : LABEL_INTENT_CODE;
-}
-
-function loadedVolumeDims(loaded: NiivueVolumeInterop): [number, number, number] | null {
-  const dims = loaded.dims ?? loaded.hdr?.dims;
-  const x = Math.trunc(dims?.[1] ?? 0);
-  const y = Math.trunc(dims?.[2] ?? 0);
-  const z = Math.trunc(dims?.[3] ?? 0);
-  return x > 0 && y > 0 && z > 0 ? [x, y, z] : null;
-}
-
-function fallbackLabelColor(label: number): [number, number, number, number] {
-  const value = Math.abs(Math.trunc(label));
-  return [
-    (value * 53 + 97) % 256,
-    (value * 97 + 61) % 256,
-    (value * 193 + 29) % 256,
-    255,
-  ];
-}
-
-function labelColor(label: number, labelLut: NiivueLabelLut): [number, number, number, number] {
-  if (label <= 0) return [0, 0, 0, 0];
-  const min = labelLut.min ?? 0;
-  const offset = (label - min) * 4;
-  if (offset >= 0 && offset + 3 < labelLut.lut.length) {
-    const alpha = labelLut.lut[offset + 3];
-    if (alpha > 0) {
-      return [
-        labelLut.lut[offset],
-        labelLut.lut[offset + 1],
-        labelLut.lut[offset + 2],
-        alpha,
-      ];
-    }
-  }
-  return fallbackLabelColor(label);
-}
-
-function voxelExactLabelKey(volume: Volume, rawData: ArrayLike<number>, labelLut: NiivueLabelLut): string {
-  return `${volume.id}:${volume.type}:${rawData.length}:${labelLut.min ?? 0}:${labelLut.max ?? 0}:${labelLut.lut.length}`;
-}
-
-export function applyVoxelExactLabelRendering(loaded: NiivueVolumeInterop, volume: Volume, labelLut: NiivueLabelLut | null | undefined): void {
-  if (!shouldUseVoxelExactLabelRendering(volume) || !labelLut) return;
-  const dims = loadedVolumeDims(loaded);
-  if (!dims) return;
-  const rawData = loaded.__rawLabelData ?? loaded.img;
-  if (!rawData) return;
-
-  const key = voxelExactLabelKey(volume, rawData, labelLut);
-  if (loaded.__voxelExactLabelKey === key && loaded.hdr?.datatypeCode === RGBA32_DATATYPE_CODE) return;
-
-  const voxelCount = dims[0] * dims[1] * dims[2];
-  const rgba = new Uint8Array(voxelCount * 4);
-  const count = Math.min(voxelCount, rawData.length);
-  for (let index = 0; index < count; index += 1) {
-    const label = Math.round(Number(rawData[index]) || 0);
-    const [red, green, blue, alpha] = labelColor(label, labelLut);
-    const offset = index * 4;
-    rgba[offset] = red;
-    rgba[offset + 1] = green;
-    rgba[offset + 2] = blue;
-    rgba[offset + 3] = alpha;
-  }
-
-  loaded.__rawLabelData = rawData;
-  loaded.__rawLabelDims = dims;
-  loaded.__rawLabelColormap = labelLut;
-  loaded.__voxelExactLabelKey = key;
-  loaded.img = rgba;
-  loaded.colormapLabel = null;
-  if (loaded.hdr) {
-    loaded.hdr.datatypeCode = RGBA32_DATATYPE_CODE;
-    loaded.hdr.intent_code = NIFTI_INTENT_NONE;
-    loaded.hdr.cal_min = 0;
-    loaded.hdr.cal_max = 255;
-  }
-  loaded.cal_min = 0;
-  loaded.cal_max = 255;
 }
 
 // Desired Niivue volume order, bottom-to-top (ascending index = background →
@@ -204,7 +108,7 @@ export function clampOpacity(value: number | undefined, fallback = 0.75) {
 // Default opacity for a layer when none is set: segmentations are translucent
 // overlays, everything else is opaque.
 export function layerDefaultOpacity(volume: Volume): number {
-  return isLabelVolume(volume) ? 0.55 : 1;
+  return isSegmentationVolume(volume) ? 0.55 : 1;
 }
 
 // Opacity to hand Niivue for a layer, honouring its visibility (hidden = 0).
@@ -291,11 +195,10 @@ function surfaceRgba(surface: SurfaceLayer): [number, number, number, number] {
   ];
 }
 
-// Niivue's default tile sizing (calculateSliceDimensions) *fits* the slice into
-// the tile, letterboxing non-square slices. This is the "cover" counterpart: it
-// scales the slice to fill the tile's larger axis and overflow the other. Each
-// pane is a single full-canvas slice, so the canvas framebuffer clips the
-// overflow — no per-tile scissor needed.
+// NiiVue 0.69 fills top-level single-slice canvases better than 0.68, but it
+// still does not expose an explicit cover/contain/fill option for custom
+// per-pane canvases. This is the "cover" counterpart to calculateSliceDimensions:
+// scale the slice to fill the larger axis and let the canvas clip overflow.
 function coverSliceDimensions(sliceType: number, volScale: number[], containerWidth: number, containerHeight: number): [number, number] {
   let xScale: number;
   let yScale: number;
@@ -315,10 +218,8 @@ function coverSliceDimensions(sliceType: number, volScale: number[], containerWi
     : [containerWidth, containerWidth / aspectRatio];
 }
 
-// Patches a single-plane instance so its slice *covers* the canvas (fills it
-// without stretching; the framebuffer clips the overflow). Only the cover-dims
-// override is needed here because every pane is one full-canvas slice — there
-// are no neighbouring tiles to bleed into, so no scissor is required.
+// Keep this patch narrowly scoped to our single-plane instances. Re-check with
+// screenshots before removing it after future NiiVue layout changes.
 export function installCoverRendering(nv: Niivue) {
   const patch = nv as unknown as {
     calculateWidthHeight?: (sliceType: number, volScale: number[], containerWidth: number, containerHeight: number) => [number, number];
@@ -469,16 +370,9 @@ export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: A
     loaded.id = volume.id;
     loaded.name = volume.name || volume.filename;
     loaded.url = volume.url;
-    const labelLut = colormapLabel ?? (isLabelVolume(volume) ? getBinarySegmentationLabelLut() : null);
-    if (shouldUseVoxelExactLabelRendering(volume)) {
-      applyVoxelExactLabelRendering(loaded, volume, labelLut);
-    } else {
-      loaded.colormapLabel = labelLut;
-    }
+    const labelLut = colormapLabel ?? (isSegmentationVolume(volume) ? getBinarySegmentationLabelLut() : null);
+    applySegmentationRgbaRendering(loaded, volume, labelLut);
     loaded.colorbarVisible = false;
-    if (isLabelVolume(volume) && !shouldUseVoxelExactLabelRendering(volume) && loaded.hdr) {
-      loaded.hdr.intent_code = intentCodeForLabelVolume(volume);
-    }
     if (volume.type === undefined || volume.type === 'intensity') {
       applyBrightnessContrast(loaded, volume);
     }
@@ -516,7 +410,7 @@ export async function addNiivueSurfaceLayer(nv: Niivue, surface: SurfaceLayer, s
 
 function getCurrentLabelInfo(mm: number[], loadedVolumes: NiivueVolumeInterop[], sourceVolumes: Volume[]): LabelLookupResult {
   const visibleSegmentationIds = sourceVolumes
-    .filter((volume) => volume.visible && isLabelVolume(volume))
+    .filter((volume) => volume.visible && isSegmentationVolume(volume))
     .map((volume) => volume.id);
 
   const labelVolumes = visibleSegmentationIds

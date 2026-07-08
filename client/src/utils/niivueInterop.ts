@@ -32,7 +32,7 @@ export interface NiivueVolumeInterop {
   __rawLabelData?: ArrayLike<number>;
   __rawLabelDims?: [number, number, number];
   __rawLabelColormap?: NiivueLabelLut | null;
-  __voxelExactLabelKey?: string;
+  __segmentationRgbaKey?: string;
   modulationImage?: number | null;
   modulateAlpha?: number;
   colormapNegative?: string;
@@ -146,10 +146,13 @@ export interface NiivueInterop extends NiivueDrawingInterop {
     atlasActiveIndex?: number;
     atlasOutline?: number;
     isAdditiveBlend?: boolean;
+    isClipAllVolumes?: boolean;
     multiplanarShowRender?: number;
     multiplanarLayout?: number;
     meshThicknessOn2D?: number;
     isSliceMM?: boolean;
+    smoothDrawing?: number;
+    windowingGainFactor?: number;
   };
 }
 

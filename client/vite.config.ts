@@ -6,10 +6,10 @@ export default defineConfig({
   plugins: [react()],
   cacheDir: '/tmp/vite-cache',
   server: {
-    allowedHosts: ['kronecker.dzne.ds', 'hopper.dzne.de', 'hopper.dzne.ds', 'germain.dzne.de', 'gateway', 'client'],
+    allowedHosts: ['kronecker.dzne.ds', 'hopper.dzne.de', 'hopper.dzne.ds', 'germain.dzne.de'],
     proxy: {
       '/api/app': {
-        target: process.env.VITE_API_PROXY_TARGET ?? 'http://api-service:8000',
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8000',
         changeOrigin: true,
       },
     },

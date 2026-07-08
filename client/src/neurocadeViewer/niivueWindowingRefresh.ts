@@ -440,6 +440,9 @@ export function installNiivueWindowingRefreshPatch(nvSource: Niivue): void {
       const volume = nv.volumes[volIdx] ?? null;
       pendingWindowingVolume = volume;
       try {
+        // NiiVue 0.69 fixed the mouse/touch coordinate-space bug in its own
+        // windowing handler. This wrapper only swaps the resulting refresh onto
+        // NeuroCade's fast scalar-background path when the layer is supported.
         originalWindowingHandler(x, y, volIdx);
       } finally {
         pendingWindowingVolume = null;

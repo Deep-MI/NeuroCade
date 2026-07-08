@@ -16,10 +16,8 @@ import {
 import {
   addNiivueSurfaceLayer,
   addNiivueVolumeLayer,
-  applyVoxelExactLabelRendering,
   effectiveLayerOpacity,
   enforceVolumeRenderOrder,
-  shouldUseVoxelExactLabelRendering,
   setNiivueVolumeOpacity,
   surfaceDisplayKey,
   syncNiivueSurfaceDisplay,
@@ -28,6 +26,7 @@ import {
 import { refreshNiivueWindowingOrLayerStack, scheduleNiivueWindowingTexturePrime } from './niivueWindowingRefresh';
 import type { WindowSetting } from './paneSyncKeys';
 import { selectLoadedReferenceVolume } from './referenceVolume';
+import { applySegmentationRgbaRendering } from './segmentationRgba';
 import { syncSurfaceReferenceTransforms } from './surfaceTransforms';
 import type { ViewerSliceType } from './viewerControls';
 
@@ -318,18 +317,13 @@ export function useNiivuePaneLayers({
         needsRefresh = true;
       }
       const colormapLabel = resolveCachedVolumeLabelColormap(source, loaded);
-      if (shouldUseVoxelExactLabelRendering(source)) {
+      if (source.type === 'segmentation') {
         if (colormapLabel) {
-          applyVoxelExactLabelRendering(loaded, source, colormapLabel);
+          applySegmentationRgbaRendering(loaded, source, colormapLabel);
           needsRefresh = true;
         } else if (inferredSegmentationLut(source) === 'freesurfer') {
           needsFreesurferLabelRefresh = true;
         }
-      } else if (colormapLabel && loaded.colormapLabel !== colormapLabel) {
-        loaded.colormapLabel = colormapLabel;
-        needsRefresh = true;
-      } else if (inferredSegmentationLut(source) === 'freesurfer' && !colormapLabel) {
-        needsFreesurferLabelRefresh = true;
       }
       if (source.type === undefined || source.type === 'intensity') {
         const beforeMin = loaded.cal_min;
@@ -351,14 +345,10 @@ export function useNiivuePaneLayers({
           const activeSources = latestVolumesRef.current;
           for (const loaded of asNiivueInterop(activeNv).volumes) {
             const source = activeSources.find((volume) => volume.id === loaded.id);
-            if (source && inferredSegmentationLut(source) === 'freesurfer') {
+            if (source?.type === 'segmentation' && inferredSegmentationLut(source) === 'freesurfer') {
               loaded.colormap = resolveVolumeColormap(source);
               const labelLut = getCachedFreesurferLabelLut(maxLabelForVolume(loaded)) ?? null;
-              if (shouldUseVoxelExactLabelRendering(source)) {
-                applyVoxelExactLabelRendering(loaded, source, labelLut);
-              } else {
-                loaded.colormapLabel = labelLut;
-              }
+              applySegmentationRgbaRendering(loaded, source, labelLut);
               loaded.colorbarVisible = false;
             }
           }
