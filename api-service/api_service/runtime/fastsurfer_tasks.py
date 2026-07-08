@@ -17,7 +17,6 @@ from neurocade_runtime_tools.container_request import (
     build_container_request,
     core_container_image,
     container_gpu_enabled,
-    freesurfer_license_bind_env,
 )
 from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest, RuntimeExecutionPolicy, RuntimeExecutionRequest
 
@@ -69,21 +68,15 @@ def _build_fastsurfer_request(
     output_dir: str,
     *,
     enable_gpu: bool,
-    license_bind_env: tuple[RuntimeBind, dict[str, str]] | None = None,
 ) -> RuntimeContainerRunRequest:
     """Build a backend-agnostic container request that runs FastSurfer."""
     binds = [
         RuntimeBind(HOST_DATA_DIR, "/data", "ro"),
         RuntimeBind(output_dir, "/output", "rw"),
     ]
-    env = None
-    if license_bind_env is not None:
-        license_bind, env = license_bind_env
-        binds.append(license_bind)
     return build_container_request(
         image=core_container_image("fastsurfer"),
         binds=binds,
-        env=env,
         disable_network=True,
         gpu=enable_gpu,
         command=fastsurfer_args,
@@ -122,8 +115,6 @@ def run_fastsurfer_task(
         raise ValueError("output_case_dir_name must be a path-safe case directory name")
     runtime_input_path = _container_data_path(input_path)
     fastsurfer_args = ["/fastsurfer/run_fastsurfer.sh", "--t1", runtime_input_path, "--sd", "/output", "--sid", storage_case_name]
-    freesurfer_license = freesurfer_license_bind_env(data_root=HOST_DATA_DIR)
-    surface_pipeline_requested = surf_only or not seg_only
 
     if seg_only:
         fastsurfer_args.append("--seg_only")
@@ -139,9 +130,6 @@ def run_fastsurfer_task(
         fastsurfer_args.append("--no_hypothal")
     if three_t:
         fastsurfer_args.append("--3T")
-    if freesurfer_license is not None:
-        license_bind, _license_env = freesurfer_license
-        fastsurfer_args.extend(["--fs_license", license_bind.container_path])
 
     fastsurfer_args.extend(
         [
@@ -176,14 +164,6 @@ def run_fastsurfer_task(
 
     write_status("running")
 
-    if surface_pipeline_requested and freesurfer_license is None:
-        error_message = (
-            "A FreeSurfer license is required for FastSurfer surface reconstruction. "
-            "Set FREESURFER_LICENSE or place license.txt in HOST_DATA_DIR."
-        )
-        write_status("error", error_message)
-        return {"status": "failed", "error": error_message, "case_id": case_id}
-
     artifact_index_targets = (
         (
             RuntimeArtifactIndexTarget(
@@ -204,7 +184,6 @@ def run_fastsurfer_task(
             fastsurfer_args,
             output_dir,
             enable_gpu=enable_gpu,
-            license_bind_env=freesurfer_license,
         )
         request = RuntimeExecutionRequest(
             argv=[],

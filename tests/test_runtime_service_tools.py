@@ -19,7 +19,6 @@ from api_service.runtime_tools import handlers as handler_module  # noqa: E402
 from api_service.runtime_tools import container_commands as container_commands_module  # noqa: E402
 from api_service.runtime_tools import read_stats as read_stats_module  # noqa: E402
 from api_service.runtime_tools.types import ToolTextContent  # noqa: E402
-from neurocade_runtime_tools.container_paths import license_path  # noqa: E402
 from neurocade_runtime_tools.execution import (  # noqa: E402
     RuntimeContainerRunRequest,
     RuntimeExecutionRequest,
@@ -250,75 +249,33 @@ def test_fastsurfer_worker_writes_to_local_case_slug(monkeypatch, tmp_path):
     assert not (output_dir / "workspace-1__case-a").exists()
 
 
-def test_license_path_prefers_configured_path(monkeypatch, tmp_path):
-    data_root = tmp_path / "neurocade-data"
-    data_root.mkdir()
-    fallback_license = data_root / "license.txt"
-    configured_license = tmp_path / "configured-license.txt"
-    fallback_license.write_text("fallback", encoding="utf-8")
-    configured_license.write_text("configured", encoding="utf-8")
-
-    monkeypatch.setattr(fastsurfer_tasks_module, "HOST_DATA_DIR", str(data_root))
-    monkeypatch.setenv("FREESURFER_LICENSE", str(configured_license))
-
-    assert license_path(root=ROOT, data_root=data_root) == configured_license.resolve()
-
-
-def test_license_path_falls_back_to_host_data(monkeypatch, tmp_path):
-    data_root = tmp_path / "neurocade-data"
-    data_root.mkdir()
-    fallback_license = data_root / "license.txt"
-    fallback_license.write_text("fallback", encoding="utf-8")
-
-    monkeypatch.setattr(fastsurfer_tasks_module, "HOST_DATA_DIR", str(data_root))
-    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
-
-    assert license_path(root=ROOT, data_root=data_root) == fallback_license.resolve()
-
-
-def test_workspace_case_bash_mounts_current_license(monkeypatch, tmp_path):
+def test_workspace_case_bash_does_not_mount_freesurfer_license(monkeypatch, tmp_path):
     data_root = tmp_path / "neurocade-data"
     case_dir = data_root / "output" / "workspaces" / "workspace-1" / "cases" / "case-a"
     case_dir.mkdir(parents=True)
-    runtime_license = data_root / "license.txt"
+    (data_root / "license.txt").write_text("ignored", encoding="utf-8")
 
     monkeypatch.setattr(container_commands_module, "HOST_DATA_DIR", str(data_root))
     monkeypatch.setattr(container_commands_module, "ROOT_DIR", tmp_path)
-    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
 
-    cmd_without_license = container_commands_module._docker_run_workspace_case_bash(
+    cmd = container_commands_module._docker_run_workspace_case_bash(
         "echo ok",
         case_dir=str(case_dir),
     )
-    assert all(bind.container_path != "/fs_license.txt" for bind in cmd_without_license.binds)
-    assert cmd_without_license.command[-1] == "echo ok"
-
-    runtime_license.write_text("runtime-license", encoding="utf-8")
-    cmd_with_license = container_commands_module._docker_run_workspace_case_bash(
-        "echo ok",
-        case_dir=str(case_dir),
-    )
-
-    assert any(
-        str(bind.host_path) == str(runtime_license.resolve()) and bind.container_path == "/fs_license.txt" and bind.mode == "ro"
-        for bind in cmd_with_license.binds
-    )
-    assert cmd_with_license.env is not None
-    assert cmd_with_license.env["FS_LICENSE"] == "/fs_license.txt"
-    assert cmd_with_license.command[-1] == "echo ok"
+    assert all(bind.container_path != "/fs_license.txt" for bind in cmd.binds)
+    assert "FS_LICENSE" not in cmd.env
+    assert cmd.command[-1] == "echo ok"
 
 
-def test_fastsurfer_worker_binds_and_passes_freesurfer_license(monkeypatch, tmp_path):
+def test_fastsurfer_worker_uses_container_default_license(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     data_root = tmp_path / "neurocade-data"
     output_dir = data_root / "output"
-    license_path = data_root / "license.txt"
-    license_path.parent.mkdir(parents=True)
-    license_path.write_text("license", encoding="utf-8")
+    data_root.mkdir()
+    (data_root / "license.txt").write_text("ignored", encoding="utf-8")
 
     monkeypatch.setattr(fastsurfer_tasks_module, "HOST_DATA_DIR", str(data_root))
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
 
     def fake_execute_runtime_request(request, *, run_completion_hooks=True):
         captured["request"] = request
@@ -337,31 +294,26 @@ def test_fastsurfer_worker_binds_and_passes_freesurfer_license(monkeypatch, tmp_
     request = cast(RuntimeExecutionRequest, captured["request"])
     assert result["status"] == "completed"
     assert request.container_run is not None
-    assert any(
-        str(bind.host_path) == str(license_path.resolve()) and bind.container_path == "/fs_license.txt" and bind.mode == "ro"
-        for bind in request.container_run.binds
-    )
-    assert request.container_run.env is not None
-    assert request.container_run.env["FS_LICENSE"] == "/fs_license.txt"
-    assert "--fs_license" in request.container_run.command
-    assert request.container_run.command[request.container_run.command.index("--fs_license") + 1] == "/fs_license.txt"
+    assert all(bind.container_path != "/fs_license.txt" for bind in request.container_run.binds)
+    assert "FS_LICENSE" not in request.container_run.env
+    assert "--fs_license" not in request.container_run.command
 
 
-@pytest.mark.parametrize(("seg_only", "surf_only"), [(False, False), (True, True)])
-def test_fastsurfer_worker_fails_surface_pipeline_without_license(monkeypatch, tmp_path, seg_only, surf_only):
+@pytest.mark.parametrize(("seg_only", "surf_only"), [(False, False), (False, True), (True, False)])
+def test_fastsurfer_worker_runs_without_license_file(monkeypatch, tmp_path, seg_only, surf_only):
+    captured: dict[str, object] = {}
     data_root = tmp_path / "neurocade-data"
     output_dir = data_root / "output"
     data_root.mkdir()
 
     monkeypatch.setattr(fastsurfer_tasks_module, "HOST_DATA_DIR", str(data_root))
     monkeypatch.setattr(fastsurfer_tasks_module, "resolve_fastsurfer_device", lambda: "cpu")
-    monkeypatch.setattr(fastsurfer_tasks_module, "freesurfer_license_bind_env", lambda **_kwargs: None)
-    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
 
-    def fail_execute_runtime_request(*_args, **_kwargs):
-        raise AssertionError("FastSurfer should fail before Docker execution")
+    def fake_execute_runtime_request(request, *, run_completion_hooks=True):
+        captured["request"] = request
+        return RuntimeExecutionResult(request=request, returncode=0)
 
-    monkeypatch.setattr(fastsurfer_tasks_module, "execute_runtime_request", fail_execute_runtime_request)
+    monkeypatch.setattr(fastsurfer_tasks_module, "execute_runtime_request", fake_execute_runtime_request)
 
     result = fastsurfer_tasks_module.run_fastsurfer_task(
         case_id="workspace-1__case-a",
@@ -372,8 +324,12 @@ def test_fastsurfer_worker_fails_surface_pipeline_without_license(monkeypatch, t
         surf_only=surf_only,
     )
 
-    assert result["status"] == "failed"
-    assert "FreeSurfer license is required" in result["error"]
+    request = cast(RuntimeExecutionRequest, captured["request"])
+    assert result["status"] == "completed"
+    assert request.container_run is not None
+    assert all(bind.container_path != "/fs_license.txt" for bind in request.container_run.binds)
+    assert "FS_LICENSE" not in request.container_run.env
+    assert "--fs_license" not in request.container_run.command
 
 
 def test_runtime_service_exposes_expected_llm_tools(runtime_case):

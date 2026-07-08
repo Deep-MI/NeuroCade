@@ -17,7 +17,6 @@ from neurocade_runtime_tools.container_request import (
     build_container_request,
     core_container_image,
     container_gpu_enabled,
-    freesurfer_license_bind_env,
 )
 from neurocade_runtime_tools.execution import (
     RuntimeArtifactIndexTarget,
@@ -229,15 +228,9 @@ def _docker_run_workspace_bash(
 ) -> RuntimeContainerRunRequest:
     """Build a Docker request for a workspace-scoped bash command."""
     binds, _host_workspace_dir = _resolve_workspace_bash_mounts(cases_dir, workspace_dir)
-    license_bind_env = freesurfer_license_bind_env(root=ROOT_DIR, data_root=HOST_DATA_DIR)
-    env = None
-    if license_bind_env is not None:
-        license_bind, env = license_bind_env
-        binds.append(license_bind)
     return build_container_request(
         image=image or core_container_image("bash_image"),
         binds=binds,
-        env=env,
         disable_network=True,
         gpu=container_gpu_enabled(),
         command=["/bin/bash", "-lc", bash_cmd],
@@ -254,15 +247,9 @@ def _docker_run_workspace_case_bash(
     binds = [
         RuntimeBind(case_dir, CONTAINER_CASE_ROOT, "rw"),
     ]
-    license_bind_env = freesurfer_license_bind_env(root=ROOT_DIR, data_root=HOST_DATA_DIR)
-    env = None
-    if license_bind_env is not None:
-        license_bind, env = license_bind_env
-        binds.append(license_bind)
     return build_container_request(
         image=image or core_container_image("bash_image"),
         binds=binds,
-        env=env,
         disable_network=True,
         gpu=container_gpu_enabled(),
         command=["/bin/bash", "-lc", bash_cmd],

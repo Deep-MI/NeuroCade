@@ -100,7 +100,6 @@ def test_assistant_runtime_commands_are_no_network(monkeypatch, tmp_path):
     case_dir.mkdir()
     monkeypatch.setattr(container_commands_module, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(container_commands_module, "HOST_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.delenv("FREESURFER_LICENSE", raising=False)
     command = container_commands_module._docker_run_workspace_case_bash(
         "curl https://example.org",
         case_dir=str(case_dir),

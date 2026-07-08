@@ -31,33 +31,6 @@ Default command is `start`. The script requires Docker only.
 EOF
 }
 
-LICENSE_MOUNT_SOURCE=""
-CONTAINER_FREESURFER_LICENSE=""
-
-prepare_license_mount() {
-  LICENSE_MOUNT_SOURCE=""
-
-  if [[ -f "$HOST_DATA_DIR/license.txt" ]]; then
-    CONTAINER_FREESURFER_LICENSE="/data/license.txt"
-    return
-  fi
-
-  CONTAINER_FREESURFER_LICENSE="${FREESURFER_LICENSE:-}"
-  if [[ -z "$CONTAINER_FREESURFER_LICENSE" ]]; then
-    return
-  fi
-
-  local license_path="$CONTAINER_FREESURFER_LICENSE"
-  if [[ "$license_path" != /* ]]; then
-    license_path="$ROOT_DIR/$license_path"
-  fi
-
-  if [[ -f "$license_path" ]]; then
-    LICENSE_MOUNT_SOURCE="$license_path"
-    CONTAINER_FREESURFER_LICENSE="/fs_license.txt"
-  fi
-}
-
 docker_image_exists() {
   docker image inspect "$IMAGE" >/dev/null 2>&1
 }
@@ -178,7 +151,6 @@ case "$command" in
     fi
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     mkdir -p "$HOST_DATA_DIR/output" "$HOST_DATA_DIR/sif"
-    prepare_license_mount
 
     run_args=(docker run --name "$CONTAINER_NAME")
     if [[ "$detach" -eq 1 ]]; then
@@ -194,13 +166,11 @@ case "$command" in
       -v "${HOST_DATA_DIR}:/data"
     )
     [[ -d "$SAMPLE_CASE_DIR" ]] && run_args+=(-v "${SAMPLE_CASE_DIR}:/app/sample_case:ro")
-    [[ -n "$LICENSE_MOUNT_SOURCE" ]] && run_args+=(-v "${LICENSE_MOUNT_SOURCE}:/fs_license.txt:ro")
     [[ -f "$ENV_FILE" ]] && run_args+=(--env-file "$ENV_FILE")
     run_args+=(
       -e HOST_DATA_DIR=/data
       -e NEUROCADE_SIF_DIR=/data/sif
       -e "DATABASE_URL=${CONTAINER_DATABASE_URL}"
-      -e "FREESURFER_LICENSE=${CONTAINER_FREESURFER_LICENSE}"
       -e "NEUROCADE_RUNTIME_BACKEND=${NEUROCADE_RUNTIME_BACKEND:-apptainer}"
       -e "OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       "$IMAGE"

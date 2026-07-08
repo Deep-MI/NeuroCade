@@ -95,7 +95,6 @@ pytest tests/ -v
 | `GATEWAY_URL` | `http://localhost:8000` | Local app URL |
 | `API_TOKEN` | `static-token-12345` | Bearer token for API requests |
 | `HEADED` | (unset) | Set to `1` or `true` to show the Playwright browser |
-| `FREESURFER_LICENSE` | (unset) | Path to a valid FreeSurfer license file |
 
 ## Screenshots
 

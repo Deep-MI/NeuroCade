@@ -166,17 +166,6 @@ require_option_value() {
   fi
 }
 
-copy_license_if_available() {
-  local host_data_dir="$1" source_path="${2:-}" target
-  target="$host_data_dir/license.txt"
-  [[ -n "$source_path" && -f "$source_path" ]] || return 0
-  mkdir -p "$host_data_dir"
-  if [[ "$source_path" != "$target" ]]; then
-    cp "$source_path" "$target"
-    chmod 600 "$target" || true
-  fi
-}
-
 write_env() {
   local root="$1" mode="$2" provider="$3" env_path
   env_path="$root/.env"
@@ -248,8 +237,6 @@ write_env() {
     require_value "Clerk JWT template name" "$clerk_jwt_template"
   fi
 
-  local license_path
-  license_path="$(prompt "FreeSurfer license path (optional)" "$(configured_or_default "$root" FREESURFER_LICENSE "${FREESURFER_LICENSE:-}")")"
   local app_host allowed_hosts
   app_host="${app_base_url#*://}"
   app_host="${app_host%%/*}"
@@ -259,7 +246,6 @@ write_env() {
     allowed_hosts="$app_host,$allowed_hosts"
   fi
   mkdir -p "$host_data_dir/output"
-  copy_license_if_available "$host_data_dir" "$license_path"
   [[ -f "$env_path" ]] && cp "$env_path" "$env_path.backup.$(date +%Y%m%d%H%M%S)"
 
   {
@@ -301,7 +287,6 @@ write_env() {
     env_line ANTHROPIC_MODEL "$anthropic_model"
     env_line GOOGLE_API_KEY "$google_key"
     env_line GOOGLE_MODEL "$google_model"
-    env_line FREESURFER_LICENSE "$([[ -f "$host_data_dir/license.txt" ]] && printf '%s/license.txt' "$host_data_dir")"
   } >"$env_path"
   chmod 600 "$env_path"
 }

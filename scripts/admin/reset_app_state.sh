@@ -81,8 +81,8 @@ echo "Removing local runtime state..."
 rm -rf "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 mkdir -p "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 
-echo "Wiping $HOST_DATA_DIR contents except license.txt..."
-find "$HOST_DATA_DIR" -mindepth 1 -maxdepth 1 ! -name 'license.txt' -exec rm -rf {} +
+echo "Wiping $HOST_DATA_DIR contents..."
+find "$HOST_DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 mkdir -p "$HOST_DATA_DIR/output"
 
 if [[ "$KEEP_STACK_DOWN" -eq 1 ]]; then

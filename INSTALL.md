@@ -19,7 +19,6 @@ The installer:
 
 - writes `.env`
 - creates `neurocade-data/`
-- copies a FreeSurfer license to `neurocade-data/license.txt` when provided
 - downloads the curated sample case into `sample_case/` when it is missing
 - builds the single Docker image
 - starts one container with `scripts/run.sh`
@@ -56,7 +55,6 @@ NEUROCADE_HOST_DATA_DIR=/path/to/NeuroCade/neurocade-data
 DATABASE_URL=sqlite+pysqlite:////path/to/NeuroCade/neurocade-data/neurocade.db
 NEUROCADE_CONTAINER_DATABASE_URL=sqlite+pysqlite:////data/neurocade.db
 NEUROCADE_RUNTIME_BACKEND=apptainer
-FREESURFER_LICENSE=/path/to/NeuroCade/neurocade-data/license.txt
 ```
 
 `DATABASE_URL` is the host-side path used by local/admin tooling.
@@ -93,16 +91,3 @@ Supported installer choices:
 
 For host-local Ollama, use `http://host.docker.internal:11434`; the run script
 adds the Docker host gateway mapping.
-
-## FreeSurfer License
-
-FastSurfer and FreeSurfer workflows need a FreeSurfer license. Register at:
-
-https://surfer.nmr.mgh.harvard.edu/registration.html
-
-Then either rerun the installer with the license path, set `FREESURFER_LICENSE`,
-or place the file at:
-
-```text
-neurocade-data/license.txt
-```

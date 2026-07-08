@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .container_paths import FREESURFER_LICENSE_CONTAINER_PATH, license_path
 from .container_specs import CORE_SPECS
 from .execution import RuntimeBind, RuntimeContainerRunRequest
 
@@ -51,18 +50,6 @@ def _validate_container_path(value: str, *, label: str) -> str:
     if "," in cleaned or any(part in cleaned for part in ("\n", "\r", "\t")):
         raise ValueError(f"{label} contains unsupported characters")
     return cleaned
-
-
-def freesurfer_license_bind_env(
-    *,
-    root: Path | None = None,
-    data_root: str | Path | None = None,
-) -> tuple[RuntimeBind, dict[str, str]] | None:
-    """Return the FreeSurfer license bind and environment for a container request."""
-    resolved = license_path(root=root, data_root=data_root)
-    if resolved is None:
-        return None
-    return RuntimeBind(resolved, FREESURFER_LICENSE_CONTAINER_PATH, "ro"), {"FS_LICENSE": FREESURFER_LICENSE_CONTAINER_PATH}
 
 
 def build_container_request(

@@ -38,7 +38,7 @@ def _sample_request() -> RuntimeContainerRunRequest:
         image="docker://vnmd/fastsurfer_2.4.2:20260115",
         command=["/fastsurfer/run_fastsurfer.sh", "--t1", "/data/in.nii"],
         binds=[RuntimeBind("/host/data", "/data", "ro"), RuntimeBind("/host/out", "/output", "rw")],
-        env={"FS_LICENSE": "/data/license.txt"},
+        env={"TOOL_ENV": "enabled"},
         gpu_enabled=True,
     )
 
@@ -50,7 +50,7 @@ def test_docker_backend_builds_expected_argv():
     assert "--network" in argv and "none" in argv
     assert "type=bind,src=/host/data,dst=/data,readonly" in argv
     assert "type=bind,src=/host/out,dst=/output" in argv
-    assert "--env" in argv and "FS_LICENSE=/data/license.txt" in argv
+    assert "--env" in argv and "TOOL_ENV=enabled" in argv
     # image precedes the in-container command
     image_idx = argv.index("vnmd/fastsurfer_2.4.2:20260115")
     assert argv[image_idx + 1] == "/fastsurfer/run_fastsurfer.sh"
@@ -64,7 +64,7 @@ def test_apptainer_backend_builds_expected_argv():
     assert "--nv" in argv  # gpu
     assert "--bind" in argv and "/host/data:/data:ro" in argv
     assert "/host/out:/output" in argv
-    assert "--env" in argv and "FS_LICENSE=/data/license.txt" in argv
+    assert "--env" in argv and "TOOL_ENV=enabled" in argv
     # image (docker:// fallback) precedes the command
     assert "docker://vnmd/fastsurfer_2.4.2:20260115" in argv
 

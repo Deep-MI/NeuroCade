@@ -154,7 +154,6 @@ def test_install_no_start_writes_env_from_temp_checkout(tmp_path) -> None:
         {
             "LLM_BACKEND_URL": "https://llm.example.test",
             "LLM_BACKEND_MODEL": "model-from-env",
-            "FREESURFER_LICENSE": "",
         }
     )
 
@@ -180,6 +179,13 @@ def test_install_no_start_writes_env_from_temp_checkout(tmp_path) -> None:
     assert "NEUROCADE_CONTAINER_DATABASE_URL=sqlite+pysqlite:////data/neurocade.db" in env_text
     assert "LLM_BACKEND_URL=https://llm.example.test" in env_text
     assert "LLM_BACKEND_MODEL=model-from-env" in env_text
+
+
+def test_install_script_does_not_manage_freesurfer_license() -> None:
+    install_script = (REPO_ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+
+    assert "FreeSurfer license" not in install_script
+    assert "FREESURFER_LICENSE" not in install_script
 
 
 def test_container_launcher_uses_container_database_url() -> None:
@@ -224,7 +230,6 @@ def test_docker_launcher_downloads_missing_sample_case_with_app_image(tmp_path) 
             "DOCKER_RUN_LOG": str(log_file),
             "ENV_FILE": str(env_file),
             "NEUROCADE_HOST_DATA_DIR": str(host_data_dir),
-            "FREESURFER_LICENSE": "",
             "NEUROCADE_IMAGE": "neurocade:test",
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
         }
@@ -238,45 +243,7 @@ def test_docker_launcher_downloads_missing_sample_case_with_app_image(tmp_path) 
     assert "python -c" in log_text
 
 
-def test_docker_launcher_handles_missing_freesurfer_license(tmp_path) -> None:
-    env_file = tmp_path / ".env"
-    host_data_dir = tmp_path / "data"
-    env_file.write_text(
-        "\n".join(
-            [
-                f"NEUROCADE_HOST_DATA_DIR={host_data_dir}",
-                "FREESURFER_LICENSE=",
-                "NEUROCADE_IMAGE=neurocade:test",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    log_file = tmp_path / "docker.log"
-    _write_fake_docker(bin_dir, log_file)
-
-    env = os.environ.copy()
-    env.update(
-        {
-            "DOCKER_RUN_LOG": str(log_file),
-            "ENV_FILE": str(env_file),
-            "NEUROCADE_HOST_DATA_DIR": str(host_data_dir),
-            "FREESURFER_LICENSE": "",
-            "NEUROCADE_IMAGE": "neurocade:test",
-            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
-        }
-    )
-
-    subprocess.run(["bash", str(REPO_ROOT / "scripts" / "run.sh"), "start"], check=True, env=env)
-
-    log_text = log_file.read_text(encoding="utf-8")
-    assert "/fs_license.txt:ro" not in log_text
-    assert "-e FREESURFER_LICENSE=" in log_text
-
-
-def test_docker_launcher_mounts_external_freesurfer_license(tmp_path) -> None:
+def test_docker_launcher_does_not_manage_freesurfer_license(tmp_path) -> None:
     env_file = tmp_path / ".env"
     host_data_dir = tmp_path / "data"
     license_file = tmp_path / "license.txt"
@@ -312,8 +279,8 @@ def test_docker_launcher_mounts_external_freesurfer_license(tmp_path) -> None:
     subprocess.run(["bash", str(REPO_ROOT / "scripts" / "run.sh"), "start"], check=True, env=env)
 
     log_text = log_file.read_text(encoding="utf-8")
-    assert f"-v {license_file}:/fs_license.txt:ro" in log_text
-    assert "-e FREESURFER_LICENSE=/fs_license.txt" in log_text
+    assert "/fs_license.txt" not in log_text
+    assert "FREESURFER_LICENSE" not in log_text
 
 
 def test_env_example_documents_runtime_backend() -> None:
