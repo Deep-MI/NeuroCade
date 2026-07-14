@@ -481,7 +481,7 @@ input[type="range"]::-moz-focus-outer {
 }
 
 .nc-viewer-orientation-labels {
-  --nc-viewer-orientation-offset: 14px;
+  --nc-viewer-orientation-offset: 7px;
   position: absolute;
   inset: 0;
   z-index: 3;

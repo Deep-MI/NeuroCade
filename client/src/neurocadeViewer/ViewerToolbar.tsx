@@ -1,5 +1,5 @@
 import React from 'react';
-import { HelpCircle, Move, RotateCcw, Ruler, SlidersHorizontal } from 'lucide-react';
+import { Compass, HelpCircle, Move, RotateCcw, Ruler, SlidersHorizontal } from 'lucide-react';
 
 import type { LocationInfo } from '../types';
 import {
@@ -12,8 +12,10 @@ interface ViewerToolbarProps {
   dragMode: ViewerDragMode;
   viewMode: NeuroCadeViewMode;
   location: LocationInfo | null;
+  showOrientationLabels: boolean;
   onDragModeChange: (mode: ViewerDragMode) => void;
   onViewModeChange: (mode: NeuroCadeViewMode) => void;
+  onToggleOrientationLabels: () => void;
   onOpenHelp: () => void;
   onResetView: () => void;
 }
@@ -28,8 +30,10 @@ export function ViewerToolbar({
   dragMode,
   viewMode,
   location,
+  showOrientationLabels,
   onDragModeChange,
   onViewModeChange,
+  onToggleOrientationLabels,
   onOpenHelp,
   onResetView,
 }: ViewerToolbarProps) {
@@ -89,6 +93,17 @@ export function ViewerToolbar({
           </div>
         )}
         <div className="nc-viewer-toolbar-group" role="group" aria-label="Display options">
+          <button
+            type="button"
+            className={`nc-viewer-toolbar-btn nc-viewer-toolbar-icon ${showOrientationLabels ? 'is-active' : ''}`}
+            onClick={onToggleOrientationLabels}
+            title={showOrientationLabels ? 'Hide orientation labels' : 'Show orientation labels'}
+            aria-label={showOrientationLabels ? 'Hide orientation labels' : 'Show orientation labels'}
+            aria-pressed={showOrientationLabels}
+            data-testid="viewer-toggle-orientation-labels"
+          >
+            <Compass size={14} />
+          </button>
           <button
             type="button"
             className="nc-viewer-toolbar-btn nc-viewer-toolbar-icon"

@@ -68,6 +68,7 @@ interface NiivuePaneProps {
   externalCoordinate?: [number, number, number] | null;
   reportLocation?: boolean;
   hidden?: boolean;
+  showOrientationLabels?: boolean;
   className?: string;
   onReady: (nv: Niivue | null, sliceType: ViewerSliceType) => void;
   onLocationChange?: (location: LocationInfo, mm: number[]) => void;
@@ -119,6 +120,7 @@ export function NiivuePane({
   externalCoordinate,
   reportLocation,
   hidden,
+  showOrientationLabels = true,
   className,
   onReady,
   onLocationChange,
@@ -380,7 +382,7 @@ export function NiivuePane({
       onMouseLeave={emitWindowingGestureChanges}
     >
       <canvas ref={canvasRef} className="nc-viewer-canvas" />
-      {orientationLabels && (
+      {showOrientationLabels && orientationLabels && (
         <div className="nc-viewer-orientation-labels" aria-hidden="true">
           <span className="nc-viewer-orientation-label nc-viewer-orientation-label-top">{orientationLabels.top}</span>
           <span className="nc-viewer-orientation-label nc-viewer-orientation-label-right">{orientationLabels.right}</span>

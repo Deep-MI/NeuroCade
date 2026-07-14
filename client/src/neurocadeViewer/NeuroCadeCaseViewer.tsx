@@ -101,6 +101,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const [viewMode, setViewMode] = useState<NeuroCadeViewMode>('multi');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dragMode, setDragMode] = useState<ViewerDragMode>('pan');
+  const [showOrientationLabels, setShowOrientationLabels] = useState(true);
   const [helpOpen, setHelpOpen] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<LocationInfo | null>(null);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
@@ -477,6 +478,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
               externalCoordinate={externalCoordinate}
               reportLocation={sliceType === primarySliceType}
               hidden={!activePaneSet.has(sliceType)}
+              showOrientationLabels={showOrientationLabels}
               onReady={handlePaneReady}
               onLocationChange={handlePaneLocation}
               onIntensityWindowChange={syncIntensityWindow}
@@ -501,8 +503,10 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           dragMode={dragMode}
           viewMode={viewMode}
           location={currentLocation}
+          showOrientationLabels={showOrientationLabels}
           onDragModeChange={handleDragModeChange}
           onViewModeChange={handleViewModeChange}
+          onToggleOrientationLabels={() => setShowOrientationLabels((visible) => !visible)}
           onOpenHelp={() => setHelpOpen(true)}
           onResetView={resetView}
         />
