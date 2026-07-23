@@ -83,7 +83,6 @@ def _build_fastsurfer_request(
     )
 
 
-@job_manager.task(RUN_FASTSURFER_TASK)
 def run_fastsurfer_task(
     case_id: str,
     input_path: str,
@@ -244,3 +243,8 @@ def run_fastsurfer_task(
         write_status("error", str(exc))
         completion.complete(request)
         return {"status": "failed", "error": str(exc), "case_id": case_id}
+
+
+def register_fastsurfer_task() -> None:
+    """Register the FastSurfer job handler with the in-process worker."""
+    job_manager.register(RUN_FASTSURFER_TASK, run_fastsurfer_task)

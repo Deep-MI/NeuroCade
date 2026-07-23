@@ -13,12 +13,10 @@ from api_service.jobs.update_checker import start_update_checker
 from api_service.middleware import register_app_middleware
 from api_service.routers import app_runtime, artifacts, assistant, assistant_turns, auth, cases, monitoring, providers, workspaces
 from api_service.runtime import logger
+from api_service.runtime.fastsurfer_tasks import register_fastsurfer_task
+from api_service.workspace_batch.tasks import register_workspace_batch_tasks
 from backend_common.auth import allow_local_auth, validate_auth_configuration
 from backend_common.db import SessionLocal, engine
-
-# Import task modules so their @job_manager.task handlers register on startup.
-import api_service.runtime.fastsurfer_tasks  # noqa: F401
-import api_service.workspace_batch.tasks  # noqa: F401
 
 
 startup_logger = logging.getLogger("uvicorn.error")
@@ -37,6 +35,8 @@ async def lifespan(_app: FastAPI):
     """
     startup_logger.info("Starting NeuroCade backend (single-process model: one worker, in-process jobs + SQLite).")
     try:
+        register_fastsurfer_task()
+        register_workspace_batch_tasks()
         startup_logger.info("Validating auth configuration.")
         validate_auth_configuration()
         startup_logger.info("Applying database migrations.")
