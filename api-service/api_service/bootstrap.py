@@ -34,13 +34,11 @@ def seed_demo_state(db: Session) -> None:
         return
     user = db.get(User, settings.local_auth_user_id)
     if user is None:
-        user = User(
-            id=settings.local_auth_user_id,
-            external_auth_id=settings.local_auth_user_id,
-            email=settings.local_auth_email,
-            full_name=settings.local_auth_name,
-        )
+        user = User(id=settings.local_auth_user_id)
         db.add(user)
+    user.external_auth_id = settings.local_auth_user_id
+    user.email = settings.local_auth_email
+    user.full_name = settings.local_auth_name
     db.flush()
     ensure_personal_workspace(db, user)
 

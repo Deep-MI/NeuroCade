@@ -20,7 +20,7 @@ The installer:
 - writes `.env`
 - creates `neurocade-data/`
 - downloads the curated sample case into `sample_case/` when it is missing
-- builds the single Docker image
+- pulls the published NeuroCade image from GHCR
 - starts one container with `scripts/run.sh`
 
 No Docker Compose, host Python virtualenv, or host Node.js install is required.
@@ -28,8 +28,9 @@ No Docker Compose, host Python virtualenv, or host Node.js install is required.
 ## Runtime Commands
 
 ```bash
-./scripts/run.sh start -d       # build if needed and start in the background
-./scripts/run.sh start --build -d
+./scripts/run.sh start -d       # pull if needed and start in the background
+./scripts/run.sh pull           # update the configured published image
+./scripts/run.sh start --build -d # build the current checkout for development
 ./scripts/run.sh status
 ./scripts/run.sh logs
 ./scripts/run.sh stop
@@ -42,6 +43,8 @@ The app is available at `http://localhost:8000` by default.
 `sample_case/FastSurfer_Rhineland_0000` is missing, it uses the NeuroCade Docker
 image to download the release artifact before starting the app. Set
 `NEUROCADE_SKIP_SAMPLE_CASE=true` to skip this step.
+The sample archive is pinned independently of app releases and verified against
+`NEUROCADE_SAMPLE_CASE_SHA256`.
 
 ## Configuration
 
@@ -51,15 +54,35 @@ The installer writes `.env`. The most important values are:
 APP_BASE_URL=http://localhost:8000
 APP_HTTP_BIND=127.0.0.1
 APP_HTTP_PORT=8000
-NEUROCADE_HOST_DATA_DIR=/path/to/NeuroCade/neurocade-data
+NEUROCADE_IMAGE=ghcr.io/deep-mi/neurocade:latest
+HOST_DATA_DIR=/path/to/NeuroCade/neurocade-data
 DATABASE_URL=sqlite+pysqlite:////path/to/NeuroCade/neurocade-data/neurocade.db
-NEUROCADE_CONTAINER_DATABASE_URL=sqlite+pysqlite:////data/neurocade.db
 NEUROCADE_RUNTIME_BACKEND=apptainer
 ```
 
-`DATABASE_URL` is the host-side path used by local/admin tooling.
-`NEUROCADE_CONTAINER_DATABASE_URL` is the same SQLite database through the
-container mount at `/data/neurocade.db`.
+Use `ghcr.io/deep-mi/neurocade:beta` for the current prerelease channel, or an
+exact release tag such as `ghcr.io/deep-mi/neurocade:v2026.7.23-beta.1` for a
+reproducible deployment.
+
+```bash
+./scripts/install.sh --mode local --image ghcr.io/deep-mi/neurocade:v2026.7.23-beta.1
+```
+
+`DATABASE_URL` is the host-side path used by local/admin tooling. The launcher
+maps the same SQLite database to `/data/neurocade.db` inside Docker.
+
+## Apple Silicon
+
+Apple Silicon Macs run the NeuroDesk runtime containers through amd64 emulation.
+The installer writes `NEUROCADE_DOCKER_PLATFORM=linux/amd64` automatically on
+Darwin arm64 hosts; Docker Desktop must have Rosetta support enabled. Analysis
+is slower than on native Linux amd64, and GPU execution is not supported on
+macOS. Override the setting only when you have an alternative compatible
+runtime:
+
+```bash
+NEUROCADE_DOCKER_PLATFORM=linux/amd64
+```
 
 ## Tool Runtime
 

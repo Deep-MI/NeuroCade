@@ -57,8 +57,8 @@ function loadedVolumeDims(loaded: NiivueVolumeInterop): [number, number, number]
 
 function segmentationRgbaKey(volume: Volume, rawData: ArrayLike<number>, labelLut: NiivueLabelLut): string {
   let lutHash = 0;
-  for (let index = 0; index < labelLut.lut.length; index += 1) {
-    lutHash = ((lutHash * 31) + labelLut.lut[index]) >>> 0;
+  for (const value of labelLut.lut) {
+    lutHash = ((lutHash * 31) + value) >>> 0;
   }
   const lutName = volume.type === 'segmentation' ? volume.lut ?? '' : '';
   const customLutUrl = volume.type === 'segmentation' ? volume.customLutUrl ?? '' : '';

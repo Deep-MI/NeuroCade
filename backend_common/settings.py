@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     dicom_zip_max_entries: int = Field(default=5000, alias="DICOM_ZIP_MAX_ENTRIES")
     dicom_zip_max_expanded_bytes: int = Field(default=4 * 1024 * 1024 * 1024, alias="DICOM_ZIP_MAX_EXPANDED_BYTES")
 
-    clerk_publishable_key: str | None = Field(default=None, alias="VITE_CLERK_PUBLISHABLE_KEY")
+    clerk_publishable_key: str | None = Field(default=None, alias="CLERK_PUBLISHABLE_KEY")
+    clerk_jwt_template: str | None = Field(default=None, alias="CLERK_JWT_TEMPLATE")
     clerk_secret_key: str | None = Field(default=None, alias="CLERK_SECRET_KEY")
     clerk_jwks_url: str | None = Field(default=None, alias="CLERK_JWKS_URL")
     clerk_issuer: str | None = Field(default=None, alias="CLERK_ISSUER")

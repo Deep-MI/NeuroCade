@@ -9,14 +9,16 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/lib/env.sh"
 load_env_file
 
-IMAGE="${NEUROCADE_IMAGE:-neurocade:local}"
+IMAGE="${NEUROCADE_IMAGE:-ghcr.io/deep-mi/neurocade:latest}"
+DOCKER_PLATFORM="${NEUROCADE_DOCKER_PLATFORM:-}"
+
+build_args=(docker build)
+if [[ -n "$DOCKER_PLATFORM" ]]; then
+  build_args+=(--platform "$DOCKER_PLATFORM")
+fi
 
 echo "==> Building image ${IMAGE}"
-docker build \
-  --build-arg "NC_VITE_API_URL=${VITE_API_URL:-/api/app}" \
-  --build-arg "NC_LOCAL_LOGIN=${VITE_LOCAL_AUTH_ENABLED:-${LOCAL_AUTH_ENABLED:-true}}" \
-  --build-arg "NC_CLERK_PUBLIC=${VITE_CLERK_PUBLISHABLE_KEY:-}" \
-  --build-arg "NC_CLERK_TEMPLATE=${VITE_CLERK_JWT_TEMPLATE:-}" \
+"${build_args[@]}" \
   -f docker/backend.Dockerfile \
   -t "${IMAGE}" \
   .

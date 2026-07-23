@@ -263,7 +263,7 @@ def test_workspace_case_bash_does_not_mount_freesurfer_license(monkeypatch, tmp_
         case_dir=str(case_dir),
     )
     assert all(bind.container_path != "/fs_license.txt" for bind in cmd.binds)
-    assert "FS_LICENSE" not in cmd.env
+    assert "FS_LICENSE" not in (cmd.env or {})
     assert cmd.command[-1] == "echo ok"
 
 
@@ -295,7 +295,7 @@ def test_fastsurfer_worker_uses_container_default_license(monkeypatch, tmp_path)
     assert result["status"] == "completed"
     assert request.container_run is not None
     assert all(bind.container_path != "/fs_license.txt" for bind in request.container_run.binds)
-    assert "FS_LICENSE" not in request.container_run.env
+    assert "FS_LICENSE" not in (request.container_run.env or {})
     assert "--fs_license" not in request.container_run.command
 
 
@@ -328,7 +328,7 @@ def test_fastsurfer_worker_runs_without_license_file(monkeypatch, tmp_path, seg_
     assert result["status"] == "completed"
     assert request.container_run is not None
     assert all(bind.container_path != "/fs_license.txt" for bind in request.container_run.binds)
-    assert "FS_LICENSE" not in request.container_run.env
+    assert "FS_LICENSE" not in (request.container_run.env or {})
     assert "--fs_license" not in request.container_run.command
 
 

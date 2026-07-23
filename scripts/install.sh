@@ -5,6 +5,7 @@ set -euo pipefail
 APP_DISPLAY_NAME="NeuroCade"
 ARCHIVE_URL="${NEUROCADE_ARCHIVE_URL:-https://github.com/Deep-MI/NeuroCade/archive/refs/heads/main.tar.gz}"
 DEFAULT_INSTALL_DIR="${NEUROCADE_INSTALL_DIR:-$HOME/NeuroCade}"
+DEFAULT_IMAGE="ghcr.io/deep-mi/neurocade:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
 
 usage() {
@@ -20,6 +21,7 @@ From a checkout:
 Options:
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
+  --image IMAGE                   Published image tag or digest. Default: ghcr.io/deep-mi/neurocade:latest.
   --no-start                      Write .env and build nothing.
   --yes                           Accept defaults for omitted prompts.
   --help                          Show this help.
@@ -78,21 +80,13 @@ prompt() {
   printf '%s\n' "${value:-$default_value}"
 }
 
-env_quote() {
-  local value="${1:-}"
-  if [[ "$value" =~ ^[A-Za-z0-9_./:@%+=,-]*$ ]]; then
-    printf '%s' "$value"
-  else
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//\$/\\\$}"
-    value="${value//\`/\\\`}"
-    printf '"%s"' "$value"
-  fi
-}
-
 env_line() {
-  printf '%s=%s\n' "$1" "$(env_quote "${2:-}")"
+  local value="${2:-}"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    echo "Environment values must fit on one line: $1" >&2
+    return 1
+  fi
+  printf '%s=%s\n' "$1" "$value"
 }
 
 env_file_value() {
@@ -139,6 +133,15 @@ normalize_provider() {
   esac
 }
 
+default_docker_platform() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  if [[ "$os" == "Darwin" && "$arch" =~ ^(arm64|aarch64)$ ]]; then
+    printf 'linux/amd64\n'
+  fi
+}
+
 require_docker() {
   command -v docker >/dev/null 2>&1 || {
     echo "Docker is required. Install Docker Engine or Docker Desktop, then rerun this installer." >&2
@@ -167,14 +170,16 @@ require_option_value() {
 }
 
 write_env() {
-  local root="$1" mode="$2" provider="$3" env_path
+  local root="$1" mode="$2" provider="$3" image_override="${4:-}" env_path
   env_path="$root/.env"
-  local host_data_dir app_base_url app_bind app_port local_auth
+  local host_data_dir app_base_url app_bind app_port docker_platform image local_auth
   local clerk_publishable="" clerk_secret="" clerk_jwks="" clerk_issuer="" clerk_audience="" clerk_jwt_template=""
-  host_data_dir="$(configured_or_default "$root" NEUROCADE_HOST_DATA_DIR "$root/neurocade-data")"
+  host_data_dir="$(configured_or_default "$root" HOST_DATA_DIR "$root/neurocade-data")"
   if [[ "$host_data_dir" != /* ]]; then
     host_data_dir="$root/$host_data_dir"
   fi
+  docker_platform="$(configured_or_default "$root" NEUROCADE_DOCKER_PLATFORM "$(default_docker_platform)")"
+  image="${image_override:-$(configured_or_default "$root" NEUROCADE_IMAGE "$DEFAULT_IMAGE")}"
 
   case "$mode" in
     local)
@@ -191,7 +196,7 @@ write_env() {
       ;;
     demo)
       app_base_url="$(prompt "Public demo URL" "$(configured_or_default "$root" APP_BASE_URL "https://demo.neurocade.example.org")")"
-      app_bind="$(configured_or_default "$root" APP_HTTP_BIND "127.0.0.1")"
+      app_bind="$(configured_or_default "$root" APP_HTTP_BIND "0.0.0.0")"
       app_port="$(configured_or_default "$root" APP_HTTP_PORT "8000")"
       local_auth="false"
       ;;
@@ -223,12 +228,12 @@ write_env() {
   esac
 
   if [[ "$mode" != "local" ]]; then
-    clerk_publishable="$(prompt "Clerk publishable key" "$(configured_or_default "$root" VITE_CLERK_PUBLISHABLE_KEY "")" true)"
+    clerk_publishable="$(prompt "Clerk publishable key" "$(configured_or_default "$root" CLERK_PUBLISHABLE_KEY "")" true)"
     clerk_secret="$(prompt "Clerk secret key" "$(configured_or_default "$root" CLERK_SECRET_KEY "")" true)"
     clerk_jwks="$(prompt "Clerk JWKS URL" "$(configured_or_default "$root" CLERK_JWKS_URL "")")"
     clerk_issuer="$(prompt "Clerk issuer URL" "$(configured_or_default "$root" CLERK_ISSUER "")")"
     clerk_audience="$(prompt "Clerk audience" "$(configured_or_default "$root" CLERK_AUDIENCE "neurocade")")"
-    clerk_jwt_template="$(prompt "Clerk JWT template name" "$(configured_or_default "$root" VITE_CLERK_JWT_TEMPLATE "$clerk_audience")")"
+    clerk_jwt_template="$(prompt "Clerk JWT template name" "$(configured_or_default "$root" CLERK_JWT_TEMPLATE "$clerk_audience")")"
     require_value "Clerk publishable key" "$clerk_publishable"
     require_value "Clerk secret key" "$clerk_secret"
     require_value "Clerk JWKS URL" "$clerk_jwks"
@@ -258,17 +263,17 @@ write_env() {
     env_line APP_HTTP_BIND "$app_bind"
     env_line APP_HTTP_PORT "$app_port"
     env_line HOST_DATA_DIR "$host_data_dir"
-    env_line NEUROCADE_HOST_DATA_DIR "$host_data_dir"
     env_line NEUROCADE_SIF_DIR "$host_data_dir/sif"
+    env_line NEUROCADE_IMAGE "$image"
+    env_line NEUROCADE_DOCKER_PLATFORM "$docker_platform"
     env_line DATABASE_URL "sqlite+pysqlite:///$host_data_dir/neurocade.db"
-    env_line NEUROCADE_CONTAINER_DATABASE_URL "sqlite+pysqlite:////data/neurocade.db"
     env_line NEUROCADE_RUNTIME_BACKEND "apptainer"
     env_line LOCAL_AUTH_ENABLED "$local_auth"
     env_line LOCAL_AUTH_USER_ID "local-user"
     env_line LOCAL_AUTH_EMAIL "local@example.com"
     env_line LOCAL_AUTH_NAME "Local User"
-    env_line VITE_CLERK_PUBLISHABLE_KEY "$clerk_publishable"
-    env_line VITE_CLERK_JWT_TEMPLATE "$clerk_jwt_template"
+    env_line CLERK_PUBLISHABLE_KEY "$clerk_publishable"
+    env_line CLERK_JWT_TEMPLATE "$clerk_jwt_template"
     env_line CLERK_SECRET_KEY "$clerk_secret"
     env_line CLERK_JWKS_URL "$clerk_jwks"
     env_line CLERK_ISSUER "$clerk_issuer"
@@ -295,6 +300,7 @@ bootstrap_checkout "$@"
 
 MODE="local"
 LLM_PROVIDER="openai-compatible"
+IMAGE_OVERRIDE=""
 START=1
 ASSUME_YES=0
 
@@ -310,6 +316,11 @@ while [[ $# -gt 0 ]]; do
       LLM_PROVIDER="$2"
       shift 2
       ;;
+    --image)
+      require_option_value "$1" "${2:-}"
+      IMAGE_OVERRIDE="$2"
+      shift 2
+      ;;
     --no-start) START=0; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -322,11 +333,11 @@ cd "$ROOT_DIR"
 MODE="$(normalize_mode "$MODE")"
 LLM_PROVIDER="$(normalize_provider "$LLM_PROVIDER")"
 
-write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER"
+write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$IMAGE_OVERRIDE"
 
 if [[ "$START" -eq 1 ]]; then
   require_docker
-  "$ROOT_DIR/scripts/run.sh" start --build -d
+  "$ROOT_DIR/scripts/run.sh" start -d
 fi
 
 echo

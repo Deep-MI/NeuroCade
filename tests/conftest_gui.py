@@ -44,9 +44,9 @@ def _check_playwright():
         pytest.skip("Playwright not installed. Run: pip install playwright && playwright install chromium")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def browser(_check_playwright):
-    """Launch a Chromium browser (session-scoped, reused across all GUI tests)."""
+    """Launch one Chromium browser per GUI test module."""
     assert sync_playwright is not None
     executable_path = (
         os.environ.get("CHROMIUM_EXECUTABLE_PATH")
@@ -133,7 +133,7 @@ def page(services_up, browser):
     page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
     page.wait_for_function(
         """() => {
-          const hasCaseCard = Array.from(document.querySelectorAll('a,button')).some((el) => el.textContent?.includes('Case ID:'));
+          const hasCaseCard = !!document.querySelector('[data-testid^="workspace-case-title-"]');
           const hasUploadButton = Array.from(document.querySelectorAll('button')).some((el) => el.textContent?.includes('Choose MRI File'));
           const hasChatInput = !!document.querySelector('input.chat-input');
           const hasWorkspaceTitle = Array.from(document.querySelectorAll('h1')).some((el) => el.textContent?.includes('NeuroCade Workspaces'));
@@ -145,9 +145,9 @@ def page(services_up, browser):
     if "/sign-in" in page.url or "NeuroCade Sign In" in page.locator("body").inner_text(timeout=5_000):
         pytest.skip("Saved Clerk Playwright storage state is not authenticated; sign in and refresh PLAYWRIGHT_STORAGE_STATE to run GUI tests.")
     if "/cases/" not in page.url.rstrip("/"):
-        case_card = page.locator(f"a:has-text('Case ID: {target_case_id}'), button:has-text('Case ID: {target_case_id}')").first
+        case_card = page.get_by_test_id(f"workspace-case-title-{target_case_id}")
         if case_card.count() == 0:
-            case_card = page.locator("a:has-text('Case ID:'), button:has-text('Case ID:')").first
+            case_card = page.locator("[data-testid^='workspace-case-title-']").first
         case_card.wait_for(state="visible", timeout=20_000)
         case_card.click()
     page.wait_for_url("**/workspaces/*/cases/*", timeout=30_000)

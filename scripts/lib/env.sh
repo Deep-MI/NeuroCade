@@ -13,14 +13,6 @@ load_env_file() {
     key="${key%"${key##*[![:space:]]}"}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     [[ -n "${!key+x}" ]] && continue
-    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
-      value="${value#\"}"
-      value="${value%\"}"
-      value="${value//\\\"/\"}"
-      value="${value//\\\$/\$}"
-      value="${value//\\\`/\`}"
-      value="${value//\\\\/\\}"
-    fi
     export "$key=$value"
   done <"$env_file"
 }

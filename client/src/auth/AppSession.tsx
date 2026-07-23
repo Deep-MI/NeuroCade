@@ -4,11 +4,8 @@ import { Navigate, useLocation } from 'react-router-dom';
 
 import { SessionContext } from './sessionContext';
 import type { SessionState } from './sessionContext';
+import { useFrontendConfig } from './frontendConfigContext';
 import { fetchSession, setAccessTokenProvider } from '../utils/api';
-
-function localAuthBypassEnabled(): boolean {
-  return import.meta.env.VITE_LOCAL_AUTH_ENABLED === 'true';
-}
 
 function SessionProviderInner({ children, refreshKey = 'dev', enabled = true }: PropsWithChildren<{ refreshKey?: string; enabled?: boolean }>) {
   const [session, setSession] = useState<SessionState['session']>(null);
@@ -40,8 +37,8 @@ function SessionProviderInner({ children, refreshKey = 'dev', enabled = true }: 
 }
 
 export function AppSessionProvider({ children }: PropsWithChildren) {
-  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-  if (publishableKey && !localAuthBypassEnabled()) {
+  const { clerk_publishable_key: publishableKey, local_auth_enabled: localAuthEnabled } = useFrontendConfig();
+  if (publishableKey && !localAuthEnabled) {
     return (
       <ClerkProvider
         publishableKey={publishableKey}
@@ -60,7 +57,8 @@ export function AppSessionProvider({ children }: PropsWithChildren) {
 
 function ClerkSessionProvider({ children }: PropsWithChildren) {
   const { getToken, isLoaded, userId } = useAuth();
-  const jwtTemplate = import.meta.env.VITE_CLERK_JWT_TEMPLATE?.trim();
+  const { clerk_jwt_template: configuredJwtTemplate } = useFrontendConfig();
+  const jwtTemplate = configuredJwtTemplate?.trim();
 
   useLayoutEffect(() => {
     setAccessTokenProvider(() => {
@@ -87,7 +85,8 @@ function DevSessionProvider({ children }: PropsWithChildren) {
 }
 
 export function SessionActions() {
-  if (!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || localAuthBypassEnabled()) {
+  const { clerk_publishable_key: publishableKey, local_auth_enabled: localAuthEnabled } = useFrontendConfig();
+  if (!publishableKey || localAuthEnabled) {
     return null;
   }
   return (
@@ -105,9 +104,9 @@ export function SessionActions() {
 }
 
 export function RequireAuth({ children }: PropsWithChildren) {
-  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+  const { clerk_publishable_key: publishableKey, local_auth_enabled: localAuthEnabled } = useFrontendConfig();
 
-  if (!publishableKey || localAuthBypassEnabled()) {
+  if (!publishableKey || localAuthEnabled) {
     return <>{children}</>;
   }
 

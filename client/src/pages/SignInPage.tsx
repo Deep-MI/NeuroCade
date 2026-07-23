@@ -1,6 +1,7 @@
 import { SignIn, SignedIn, SignedOut } from '@clerk/clerk-react';
 import { Navigate, useLocation } from 'react-router-dom';
 
+import { useFrontendConfig } from '../auth/frontendConfigContext';
 import { useAppSession } from '../auth/sessionContext';
 import { APP_DISPLAY_NAME } from '../constants';
 import { workspaceCasesPath } from '../utils/caseRoutes';
@@ -14,12 +15,8 @@ function redirectTargetFromState(state: unknown, fallback: string): string {
   return typeof from === 'string' ? from : fallback;
 }
 
-function localAuthBypassEnabled(): boolean {
-  return import.meta.env.VITE_LOCAL_AUTH_ENABLED === 'true';
-}
-
 export function SignInPage() {
-  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ?? '';
+  const { clerk_publishable_key: publishableKey, local_auth_enabled: localAuthEnabled } = useFrontendConfig();
   const { session, loading } = useAppSession();
   const location = useLocation();
   const defaultWorkspacePath = session?.default_workspace_id
@@ -27,7 +24,7 @@ export function SignInPage() {
     : '/';
   const redirectTarget = redirectTargetFromState(location.state, defaultWorkspacePath);
 
-  if (localAuthBypassEnabled()) {
+  if (localAuthEnabled) {
     return loading ? (
       <div className="nc-app-page px-6 py-10 text-sm text-[var(--nc-tx-muted)]">Loading session...</div>
     ) : (

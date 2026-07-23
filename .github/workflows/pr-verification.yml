@@ -45,8 +45,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: uv venv --python 3.12 .venv
-      - run: uv pip install -r pyproject.toml --extra test
+      - run: uv sync --locked --extra test
       - name: Compile changed Python surfaces
         run: |
           . .venv/bin/activate

@@ -7,42 +7,41 @@ WORKDIR /app/client
 COPY client/package*.json ./
 RUN npm ci
 COPY client ./
-ARG NC_VITE_API_URL=/api/app
-ARG NC_LOCAL_LOGIN=true
-ARG NC_CLERK_PUBLIC=
-ARG NC_CLERK_TEMPLATE=
-RUN VITE_API_URL="${NC_VITE_API_URL}" \
-    VITE_LOCAL_AUTH_ENABLED="${NC_LOCAL_LOGIN}" \
-    VITE_CLERK_PUBLISHABLE_KEY="${NC_CLERK_PUBLIC}" \
-    VITE_CLERK_JWT_TEMPLATE="${NC_CLERK_TEMPLATE}" \
-    npm run build
+RUN npm run build
 
 # Pinned to bookworm: the Apptainer .deb depends on libfuse3-3, which Debian
 # trixie (the current python:3.12-slim) replaced with libfuse3-4.
 FROM python:3.12-slim-bookworm
 
+LABEL org.opencontainers.image.source="https://github.com/Deep-MI/NeuroCade"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app/api-service:/app:/app/packages/neurocade-runtime-tools/src
+    PYTHONPATH=/app/api-service:/app:/app/packages/neurocade-runtime-tools/src \
+    UV_PROJECT_ENVIRONMENT=/opt/neurocade-venv \
+    PATH="/opt/neurocade-venv/bin:$PATH"
 
 WORKDIR /app
 
 # Apptainer is the tool runtime. squashfs-tools/fuse2fs/uidmap support its
 # rootless SIF execution; the .deb is pulled from the official release.
 ARG APPTAINER_VERSION=1.3.6
+ARG APPTAINER_SHA256=2723b2928cfc30edf687723c49556ec4e013f0bf7cdb43a5a76bca7bd3c70792
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl uidmap fuse2fs squashfs-tools \
-    && arch="$(dpkg --print-architecture)" \
     && curl -fsSL -o /tmp/apptainer.deb \
-        "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_${arch}.deb" \
+        "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_amd64.deb" \
+    && echo "${APPTAINER_SHA256}  /tmp/apptainer.deb" | sha256sum -c - \
     && apt-get install -y --no-install-recommends /tmp/apptainer.deb \
     && rm -f /tmp/apptainer.deb \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 COPY packages/neurocade-runtime-tools ./packages/neurocade-runtime-tools
-RUN pip install --no-cache-dir uv \
-    && uv pip install --system -r pyproject.toml
+RUN pip install --no-cache-dir uv==0.8.17 \
+    && uv sync --locked --no-dev --no-editable \
+    && pip uninstall -y uv \
+    && rm -rf /root/.cache/uv
 
 COPY backend_common ./backend_common
 COPY api-service ./api-service

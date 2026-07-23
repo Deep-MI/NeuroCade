@@ -138,11 +138,11 @@ def test_docker_launcher_exposes_clerk_environment():
     assert "--env-file" in run_text
 
 
-def test_docker_launcher_uses_container_database_url():
+def test_docker_launcher_uses_mounted_sqlite_database():
     run_text = Path("scripts/run.sh").read_text()
 
-    assert "NEUROCADE_CONTAINER_DATABASE_URL" in run_text
     assert "sqlite+pysqlite:////data/neurocade.db" in run_text
+    assert "NEUROCADE_CONTAINER_DATABASE_URL" not in run_text
 
 
 def test_docker_image_pins_project_python_version():
@@ -155,8 +155,10 @@ def test_docker_image_pins_project_python_version():
     assert not Path("pyrightconfig.json").exists()
     assert "npm ci" not in build_script
     assert "python:3.12-slim" in backend_dockerfile
-    assert "uv pip install" in backend_dockerfile
+    assert "uv sync --locked --no-dev --no-editable" in backend_dockerfile
+    assert "pip uninstall -y uv" in backend_dockerfile
     assert "node:22-alpine" in backend_dockerfile
+    assert Path("uv.lock").exists()
 
 
 def test_pyproject_is_python_dependency_source_of_truth():
@@ -190,7 +192,9 @@ def test_docker_launcher_uses_single_data_root_variable():
 def test_env_example_documents_clerk_audience():
     env_example = Path(".env.example").read_text()
     assert "CLERK_AUDIENCE=" in env_example
-    assert "VITE_CLERK_JWT_TEMPLATE=" in env_example
+    assert "CLERK_PUBLISHABLE_KEY=" in env_example
+    assert "CLERK_JWT_TEMPLATE=" in env_example
+    assert "VITE_CLERK" not in env_example
 
 
 def test_env_example_documents_monitoring_admin_allowlist():

@@ -1,12 +1,12 @@
 """Provide API service auth behavior for NeuroCade."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from api_service.deps import get_context, get_db
 from api_service.helpers import log_event
 from api_service.monitoring.security import is_monitoring_admin
 from api_service.runtime import settings
-from api_service.schemas import SessionBootstrap, UserSummary
+from api_service.schemas import FrontendConfig, SessionBootstrap, UserSummary
 from backend_common.deployment_policy import get_deployment_policy
 from backend_common.auth import AuthContext
 from backend_common.db import Case, Workspace, WorkspaceMembership
@@ -15,6 +15,17 @@ from sqlalchemy.orm import Session
 
 
 router = APIRouter(prefix="/api/app", tags=["auth"])
+
+
+@router.get("/frontend-config", response_model=FrontendConfig)
+def frontend_config(response: Response) -> FrontendConfig:
+    """Return the public configuration required before authentication."""
+    response.headers["Cache-Control"] = "no-store"
+    return FrontendConfig(
+        local_auth_enabled=settings.local_auth_enabled,
+        clerk_publishable_key=settings.clerk_publishable_key,
+        clerk_jwt_template=settings.clerk_jwt_template,
+    )
 
 
 @router.get("/session", response_model=SessionBootstrap)

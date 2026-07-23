@@ -408,16 +408,17 @@ def test_viewer_interaction_timing_report(browser, services_up):
 
         # Cases back navigation stays part of this timing report because the
         # original slowdown was observed returning from a case to cases.
+        def wait_for_cases() -> None:
+            page.wait_for_url("**/workspaces/*/cases", timeout=15_000)
+            page.locator("input[placeholder='Filter cases...']").wait_for(state="visible", timeout=15_000)
+
         _measure_control_click(
             page,
             timings,
             "navigation:back-to-cases",
             TARGETS_MS["cases_back"],
             page.locator("[data-testid='case-workspace-back']"),
-            lambda: (
-                page.wait_for_url("**/workspaces/*/cases", timeout=15_000),
-                page.locator("input[placeholder='Filter cases...']").wait_for(state="visible", timeout=15_000),
-            ),
+            wait_for_cases,
         )
     finally:
         api_5xx = [event for event in network_events if event.get("status", 0) >= 500 and "/api/" in event.get("url", "")]

@@ -78,6 +78,29 @@ def test_allow_local_auth_requires_local_profile(monkeypatch):
     assert allow_local_auth() is False
 
 
+def test_frontend_config_exposes_runtime_auth_mode_without_secrets(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from api_service.routers import auth as auth_router
+
+    monkeypatch.setattr(auth_router.settings, "local_auth_enabled", False)
+    monkeypatch.setattr(auth_router.settings, "clerk_publishable_key", "pk_test_public")
+    monkeypatch.setattr(auth_router.settings, "clerk_jwt_template", "neurocade")
+    monkeypatch.setattr(auth_router.settings, "clerk_secret_key", "secret")
+
+    application = FastAPI()
+    application.include_router(auth_router.router)
+    response = TestClient(application).get("/api/app/frontend-config")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "local_auth_enabled": False,
+        "clerk_publishable_key": "pk_test_public",
+        "clerk_jwt_template": "neurocade",
+    }
+
+
 def test_deployment_policy_profiles_expose_expected_flags(monkeypatch):
     from backend_common import settings as settings_module
 

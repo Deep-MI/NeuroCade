@@ -12,6 +12,12 @@ class UserSummary(BaseModel):
     full_name: str
 
 
+class FrontendConfig(BaseModel):
+    local_auth_enabled: bool
+    clerk_publishable_key: str | None = None
+    clerk_jwt_template: str | None = None
+
+
 class SessionBootstrap(BaseModel):
     user: UserSummary
     role: str

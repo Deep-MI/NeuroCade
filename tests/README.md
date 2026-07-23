@@ -17,7 +17,7 @@ Unit, integration, API E2E, and browser E2E tests that validate the full NeuroCa
 3. **Python dependencies:**
    ```bash
    uv venv --project . .venv && source .venv/bin/activate
-   uv pip install -r pyproject.toml --extra test
+   uv sync --locked --extra test
    playwright install chromium   # only for GUI tests
    ```
 
@@ -110,7 +110,7 @@ GUI tests save screenshots to `tests/screenshots/`. These are useful for debuggi
 
 2. **GUI tests fail with "Playwright not installed":**
    ```bash
-   uv pip install -r pyproject.toml --extra test
+   uv sync --locked --extra test
    playwright install chromium
    ```
 

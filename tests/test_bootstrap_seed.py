@@ -47,6 +47,15 @@ def test_seed_demo_state_creates_dev_user_and_default_workspace(tmp_path, monkey
         assert workspace.name == "personal-workspace"
         assert db.query(WorkspaceMembership).filter_by(workspace_id="personal-workspace", user_id="demo-user").count() == 1
 
+        user.email = "stale@example.com"
+        user.full_name = '"Demo User"'
+        db.commit()
+        bootstrap_module.seed_demo_state(db)
+        db.refresh(user)
+
+        assert user.email == "demo@example.com"
+        assert user.full_name == "Demo User"
+
 
 def test_personal_workspace_bootstrap_can_use_clerk_readable_user_slug(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}", future=True)

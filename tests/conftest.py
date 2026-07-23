@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 from backend_common.case_storage import UPLOAD_SUFFIXES, case_slug_from_id, upload_extension  # noqa: E402
 
-_host_data_dir = os.environ.get("NEUROCADE_HOST_DATA_DIR") or os.environ.get("HOST_DATA_DIR")
+_host_data_dir = os.environ.get("HOST_DATA_DIR")
 if not _host_data_dir or _host_data_dir == "/data":
     _host_data_dir = str(REPO_ROOT / "neurocade-data")
 DATA_ROOT = Path(_host_data_dir)

@@ -51,7 +51,7 @@ require_repo_local_path() {
   esac
 }
 
-HOST_DATA_DIR="${NEUROCADE_HOST_DATA_DIR:-${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}}"
+HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
 RUNTIME_DIR="${NEUROCADE_RUNTIME_DIR:-$ROOT_DIR/.runtime}"
 
 require_repo_local_path ".runtime" "$RUNTIME_DIR"

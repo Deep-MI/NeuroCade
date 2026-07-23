@@ -20,7 +20,7 @@ Backend and test setup:
 ```bash
 uv venv --project . .venv
 source .venv/bin/activate
-uv pip install -r pyproject.toml --extra test
+uv sync --locked --extra test
 ```
 
 Database migrations use Alembic with config at `config/alembic.ini`:

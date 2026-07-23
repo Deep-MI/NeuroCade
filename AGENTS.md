@@ -30,7 +30,7 @@ Python and integration work should start with the project configuration:
 
 - `.env`: repository config file for Docker, backend, and token settings. It is not a Python virtualenv.
 - `uv venv --project . .venv && source .venv/bin/activate`: create and activate the local project virtualenv from `pyproject.toml`.
-- `uv pip install -r pyproject.toml --extra test`: install Python dependencies into `.venv`.
+- `uv sync --locked --extra test`: install the locked Python dependencies into `.venv`.
 - `source .venv/bin/activate && playwright install chromium`: install browser binaries needed for GUI tests.
 - `source .venv/bin/activate && alembic -c config/alembic.ini upgrade head`: apply database migrations manually when needed.
 - `source .venv/bin/activate && pytest tests/test_runtime_service_tools.py tests/test_assistant_file_tools.py tests/test_assistant_runtime.py tests/test_app_architecture.py -v`: run focused backend/runtime tests from the local `.venv`.
