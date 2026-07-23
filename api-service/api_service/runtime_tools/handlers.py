@@ -27,7 +27,6 @@ from .output_resources import (
     output_descriptor_path_from_file,
     output_resource_descriptor,
 )
-from .read_stats import handle_read_stats as handle_read_stats
 from .types import ToolTextContent, error_response, text_response
 
 load_dotenv(ROOT_DIR / ".env")

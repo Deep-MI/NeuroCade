@@ -13,7 +13,7 @@ from .handlers import handle_gui_review_segmentation as handle_gui_review_segmen
 from .handlers import handle_gui_run_fastsurfer as handle_gui_run_fastsurfer
 from .handlers import handle_gui_select_volume as handle_gui_select_volume
 from .handlers import handle_lut_lookup as handle_lut_lookup
-from .handlers import handle_read_stats as handle_read_stats
+from .read_stats import handle_read_stats as handle_read_stats
 from .schemas import STATIC_TOOLS as STATIC_TOOLS
 from .schemas import get_dynamic_gui_tools as get_dynamic_gui_tools
 from .types import RuntimeToolSpec as RuntimeToolSpec
