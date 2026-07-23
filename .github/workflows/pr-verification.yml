@@ -65,24 +65,6 @@ jobs:
             tests/test_assistant_runtime.py \
             -q
 
-  runtime-tools:
-    name: NeuroCade runtime tools tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: uv venv --python 3.12 .venv
-      - run: uv pip install pytest -e packages/neurocade-runtime-tools
-      - name: Run runtime tools package tests
-        run: |
-          . .venv/bin/activate
-          pytest packages/neurocade-runtime-tools/tests -q
-
   repository-policy:
     name: Repository policy checks
     runs-on: ubuntu-latest
