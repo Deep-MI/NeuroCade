@@ -168,7 +168,9 @@ def test_pyproject_is_python_dependency_source_of_truth():
 
     assert not Path("api-service/requirements.txt").exists()
     assert not Path("tests/requirements.txt").exists()
-    assert "fastapi==0.128.8" in dependencies
+    assert "fastapi==0.139.2" in dependencies
+    assert "starlette==1.3.1" in dependencies
+    assert "python-multipart==0.0.32" in dependencies
     assert "neurocade-runtime-tools" in dependencies
     assert "pytest>=8.0" in test_dependencies
     assert pyproject["tool"]["uv"]["sources"]["neurocade-runtime-tools"] == {
