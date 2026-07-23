@@ -8,13 +8,13 @@ never needs to shell out to ``mri_segstats``.
 from __future__ import annotations
 
 import os
-
-from .types import ToolTextContent
+from contextlib import suppress
 
 from backend_common.case_storage import case_slug_from_id
 from backend_common.settings import get_settings
 
 from .lut import resolve_label
+from .types import ToolTextContent
 
 _OUTPUT_DIR = str(get_settings().outputs_dir)
 
@@ -54,7 +54,7 @@ def parse_stats_file(path: str) -> dict:
             if line.startswith("# Measure "):
                 parts = line[len("# Measure ") :].split(",")
                 if len(parts) >= 4:
-                    try:
+                    with suppress(ValueError, IndexError):
                         measures.append(
                             {
                                 "name": parts[0].strip(),
@@ -64,8 +64,6 @@ def parse_stats_file(path: str) -> dict:
                                 "unit": parts[4].strip() if len(parts) > 4 else "",
                             }
                         )
-                    except (ValueError, IndexError):
-                        pass
                 continue
 
             # Skip all other comment lines
@@ -75,7 +73,7 @@ def parse_stats_file(path: str) -> dict:
             # Data rows: "  1   2  475086  247745.444  Left-Cerebral-White-Matter  ..."
             parts = line.split()
             if len(parts) >= 5:
-                try:
+                with suppress(ValueError, IndexError):
                     rows.append(
                         {
                             "index": int(parts[0]),
@@ -85,8 +83,6 @@ def parse_stats_file(path: str) -> dict:
                             "struct_name": parts[4],
                         }
                     )
-                except (ValueError, IndexError):
-                    pass
 
     return {"measures": measures, "rows": rows}
 

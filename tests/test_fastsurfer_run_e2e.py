@@ -23,18 +23,18 @@ import time
 
 import pytest
 import requests
-
 from conftest import (
     assert_no_text_explanation,
     assert_tool_executed,
     chat_send,
-    runtime_logs_since,
     get_case_runs,
     get_response_content,
     require_app_auth_headers,
+    runtime_logs_since,
     seed_gui_state,
     utc_timestamp,
 )
+
 
 @pytest.fixture(autouse=True)
 def require_services(services_up):
@@ -58,10 +58,7 @@ class TestFastSurferRunCancel:
         """Poll job status until it matches one of the targets or timeout."""
         deadline = time.time() + timeout
         last_status = "unknown"
-        if isinstance(target_statuses, str):
-            expected = {target_statuses}
-        else:
-            expected = set(target_statuses)
+        expected = {target_statuses} if isinstance(target_statuses, str) else set(target_statuses)
         while time.time() < deadline:
             try:
                 runs = get_case_runs(case_id, self.gateway_url)

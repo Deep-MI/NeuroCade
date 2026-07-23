@@ -9,7 +9,6 @@ import importlib
 import sys
 from pathlib import Path
 
-
 RUNTIME_MODULES = (
     "fastapi",
     "uvicorn",

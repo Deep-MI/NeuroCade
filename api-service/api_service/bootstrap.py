@@ -8,7 +8,6 @@ from backend_common.db import Base, User
 from backend_common.settings import ROOT_DIR, get_settings
 from backend_common.workspace_bootstrap import ensure_personal_workspace
 
-
 settings = get_settings()
 
 

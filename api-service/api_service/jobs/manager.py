@@ -23,10 +23,11 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from neurocade_runtime_tools.execution import _terminate_process_group, process_observer
 

@@ -6,12 +6,12 @@ and Redis. They run fully in-process (no Docker/Apptainer/stack required).
 
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -19,17 +19,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
+from neurocade_runtime_tools import execution as execution_module
+from neurocade_runtime_tools import runtime_backends as rb
 from neurocade_runtime_tools.execution import (
     RuntimeBind,
     RuntimeContainerRunRequest,
     RuntimeExecutionRequest,
+    _terminate_process_group,
     execute_runtime_request,
     process_observer,
 )
-from neurocade_runtime_tools import execution as execution_module
-from neurocade_runtime_tools import runtime_backends as rb
-from neurocade_runtime_tools.execution import _terminate_process_group
-
 
 # --- runtime backends -----------------------------------------------------
 

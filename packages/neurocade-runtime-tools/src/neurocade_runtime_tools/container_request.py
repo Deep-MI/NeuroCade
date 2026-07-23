@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Mapping, Sequence
 
 from .container_specs import CORE_SPECS
 from .execution import RuntimeBind, RuntimeContainerRunRequest

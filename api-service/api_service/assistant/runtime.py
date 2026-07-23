@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -12,14 +13,13 @@ from sqlalchemy.orm import Session
 from api_service.assistant.conversation_store import AssistantConversationStore, done_payload  # noqa: E402
 from api_service.assistant.loop import AssistantLoop  # noqa: E402
 from api_service.assistant.tools import AssistantToolBuilder  # noqa: E402
+from api_service.helpers import get_case_for_user, get_workspace_for_user  # noqa: E402
 from api_service.runtime.service import RuntimeService, runtime_service  # noqa: E402
 from api_service.schemas import ChatMessageSummary  # noqa: E402
-from api_service.helpers import get_case_for_user, get_workspace_for_user  # noqa: E402
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.db import AssistantScope, Case, Workspace  # noqa: E402
 from backend_common.providers import ModelConfig, ProviderRole, provider_registry  # noqa: E402
 from backend_common.settings import ROOT_DIR, get_settings  # noqa: E402
-
 
 settings = get_settings()
 logger = logging.getLogger(__name__)

@@ -1,8 +1,8 @@
 """Test assistant history behavior for NeuroCade."""
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.assistant.conversation_store import persist_turn  # noqa: E402
+
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import build_case_id  # noqa: E402
 from backend_common.db import AssistantMessage, AssistantScope, AssistantThread, Base, Case, RoleEnum, User, Workspace  # noqa: E402

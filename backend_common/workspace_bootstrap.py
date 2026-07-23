@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from backend_common.case_storage import slugify_storage_name
 from backend_common.db import RoleEnum, User, Workspace, WorkspaceMembership
 
-
 DEFAULT_PERSONAL_WORKSPACE_ID = "personal-workspace"
 
 

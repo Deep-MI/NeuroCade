@@ -17,7 +17,6 @@ from backend_common.db import (
 )
 from backend_common.run_statuses import ACTIVE_RUN_STATUSES
 
-
 ACTIVE_CASE_RUN_STATUSES = ACTIVE_RUN_STATUSES
 
 

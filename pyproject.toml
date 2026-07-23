@@ -30,6 +30,7 @@ test = [
   "httpx2>=2.9,<3",
   "playwright>=1.40",
   "pyright>=1.1.409",
+  "ruff==0.16.0",
 ]
 
 [tool.uv.sources]
@@ -37,6 +38,20 @@ neurocade-runtime-tools = { path = "packages/neurocade-runtime-tools", editable 
 
 [tool.uv]
 package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 140
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# FastAPI intentionally calls Depends/File in parameter defaults. UP042 and
+# UP047 can change runtime enum or typing behavior and need dedicated reviews.
+ignore = ["B008", "E501", "UP042", "UP047"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests adjust sys.path before importing application modules.
+"tests/**/*.py" = ["E402"]
 
 [tool.pyright]
 include = [

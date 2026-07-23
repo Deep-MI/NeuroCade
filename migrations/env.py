@@ -9,7 +9,6 @@ from sqlalchemy import engine_from_config, pool
 
 from backend_common.db import Base
 
-
 config = context.config
 
 if config.config_file_name is not None and config.attributes.get("configure_logger", True):

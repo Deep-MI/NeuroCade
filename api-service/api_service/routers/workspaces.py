@@ -23,23 +23,22 @@ from api_service.workspace_batch import cancel_workspace_batch_run, list_workspa
 from backend_common.auth import AuthContext
 from backend_common.case_storage import delete_workspace_storage, validate_workspace_name
 from backend_common.concurrency import lock_cases_for_update, lock_workspace_for_update
-from backend_common.deployment_policy import get_deployment_policy
 from backend_common.db import (
     Artifact,
     AssistantCheckpoint,
     AssistantMessage,
+    AssistantScope,
     AssistantThread,
     AuditEvent,
     Case,
     CaseEvent,
     RoleEnum,
     Run,
-    AssistantScope,
     Workspace,
     WorkspaceMembership,
 )
+from backend_common.deployment_policy import get_deployment_policy
 from backend_common.run_statuses import ACTIVE_RUN_STATUSES
-
 
 router = APIRouter(prefix="/api/app", tags=["workspaces"])
 
@@ -195,7 +194,6 @@ def update_workspace(
     workspace = lock_workspace_for_update(db, workspace)
 
     changed = False
-    old_name = workspace.name
     cases_to_move: list[Case] = []
     workspace_storage_move = None
     request_name = getattr(request, "name", None)

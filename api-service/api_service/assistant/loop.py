@@ -17,12 +17,11 @@ from typing import Any
 from fastapi import HTTPException
 from langchain_core.messages import BaseMessage
 
-from api_service.assistant.structured_response import AssistantStructuredResponse, AssistantToolCall, coerce_structured_response
 from api_service.assistant.prompts import build_structured_response_messages, build_system_prompt, stringify_content
-from api_service.assistant.tools.definition import ToolDefinition
+from api_service.assistant.structured_response import AssistantStructuredResponse, AssistantToolCall, coerce_structured_response
 from api_service.assistant.tools import AssistantToolBuilder
+from api_service.assistant.tools.definition import ToolDefinition
 from backend_common.providers import ProviderRole, provider_registry
-
 
 logger = logging.getLogger(__name__)
 AssistantState = dict[str, Any]

@@ -23,16 +23,15 @@ from uuid import uuid4
 
 import pytest
 import requests
-
 from conftest import (
     UPLOAD_FIXTURES_DIR,
     assert_tool_executed,
     chat_send,
-    runtime_logs_since,
     get_case_runs,
     get_case_summary_by_case_id,
     get_response_content,
     require_app_auth_headers,
+    runtime_logs_since,
     seed_gui_state,
     utc_timestamp,
 )

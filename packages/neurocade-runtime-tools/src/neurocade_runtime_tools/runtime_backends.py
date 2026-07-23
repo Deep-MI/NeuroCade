@@ -28,7 +28,8 @@ import platform
 from pathlib import Path
 from typing import Protocol
 
-from .container_request import _validate_container_path as _validate_path, container_image_name
+from .container_request import _validate_container_path as _validate_path
+from .container_request import container_image_name
 from .execution import RuntimeContainerRunRequest
 
 RUNTIME_BACKEND_ENV = "NEUROCADE_RUNTIME_BACKEND"

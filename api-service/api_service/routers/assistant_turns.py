@@ -17,7 +17,6 @@ from api_service.runtime import logger
 from api_service.schemas import AssistantTurnRequest
 from backend_common.auth import AuthContext
 
-
 router = APIRouter(tags=["assistant-turns"])
 
 

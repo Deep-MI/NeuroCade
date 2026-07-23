@@ -1,11 +1,11 @@
 """Test security hardening behavior for NeuroCade."""
 
-from concurrent.futures import ThreadPoolExecutor
 import json
-from pathlib import Path
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -17,13 +17,25 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
+from api_service import bootstrap as bootstrap_module  # noqa: E402
 from api_service.helpers import get_case_for_user  # noqa: E402
 from api_service.services import get_run_for_user, get_workspace_batch_run_for_user  # noqa: E402
+
+from backend_common import sample_seed as sample_seed_module  # noqa: E402
 from backend_common.auth import allow_local_auth, get_auth_context, validate_auth_configuration  # noqa: E402
 from backend_common.case_storage import build_case_id, case_storage_dir, ensure_case_storage_layout  # noqa: E402
-from backend_common.db import AssistantScope, Artifact, Base, Case, RoleEnum, User, Run, RunStatus, Workspace, WorkspaceMembership  # noqa: E402
-from backend_common import sample_seed as sample_seed_module  # noqa: E402
-from api_service import bootstrap as bootstrap_module  # noqa: E402
+from backend_common.db import (  # noqa: E402
+    Artifact,
+    AssistantScope,
+    Base,
+    Case,
+    RoleEnum,
+    Run,
+    RunStatus,
+    User,
+    Workspace,
+    WorkspaceMembership,
+)
 from backend_common.deployment_policy import get_deployment_policy  # noqa: E402
 
 
@@ -79,9 +91,9 @@ def test_allow_local_auth_requires_local_profile(monkeypatch):
 
 
 def test_frontend_config_exposes_runtime_auth_mode_without_secrets(monkeypatch):
+    from api_service.routers import auth as auth_router
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from api_service.routers import auth as auth_router
 
     monkeypatch.setattr(auth_router.settings, "local_auth_enabled", False)
     monkeypatch.setattr(auth_router.settings, "clerk_publishable_key", "pk_test_public")

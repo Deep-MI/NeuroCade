@@ -1,7 +1,5 @@
 """Initialize the runtime tools package."""
 
-from .schemas import STATIC_TOOLS as STATIC_TOOLS
-from .schemas import get_dynamic_gui_tools as get_dynamic_gui_tools
 from .container_commands import execute_workspace_bash as execute_workspace_bash
 from .container_commands import execute_workspace_case_bash as execute_workspace_case_bash
 from .container_commands import run_synchronous_runtime_task as run_synchronous_runtime_task
@@ -16,6 +14,8 @@ from .handlers import handle_gui_run_fastsurfer as handle_gui_run_fastsurfer
 from .handlers import handle_gui_select_volume as handle_gui_select_volume
 from .handlers import handle_lut_lookup as handle_lut_lookup
 from .handlers import handle_read_stats as handle_read_stats
+from .schemas import STATIC_TOOLS as STATIC_TOOLS
+from .schemas import get_dynamic_gui_tools as get_dynamic_gui_tools
 from .types import RuntimeToolSpec as RuntimeToolSpec
 from .types import ToolTextContent as ToolTextContent
 

@@ -1,8 +1,7 @@
 """current app schema baseline"""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "20260412000001"
 down_revision = None

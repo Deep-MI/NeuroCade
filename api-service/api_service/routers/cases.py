@@ -20,9 +20,17 @@ from api_service.deps import get_context, get_db
 from api_service.helpers import get_workspace_for_user
 from api_service.policies import require_workspace_manage
 from api_service.runtime.service import runtime_service
-from api_service.schemas import ArtifactSummary, RunSummary, CaseDetail, CaseRenameRequest, CaseRenameResponse, CaseSummary, StartRunRequest, UploadResponse
+from api_service.schemas import (
+    ArtifactSummary,
+    CaseDetail,
+    CaseRenameRequest,
+    CaseRenameResponse,
+    CaseSummary,
+    RunSummary,
+    StartRunRequest,
+    UploadResponse,
+)
 from backend_common.auth import AuthContext
-
 
 router = APIRouter(prefix="/api/app", tags=["cases"])
 

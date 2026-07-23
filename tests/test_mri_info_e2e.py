@@ -19,17 +19,15 @@ Usage:
 import time
 
 import pytest
-
 from conftest import (
     assert_no_text_explanation,
     assert_tool_executed,
     chat_send,
-    runtime_logs_since,
     get_response_content,
+    runtime_logs_since,
     seed_gui_state,
     utc_timestamp,
 )
-
 
 pytestmark = pytest.mark.skip(reason="mri_info is no longer preconfigured; add it to config/runtime_tools.json to enable this E2E.")
 

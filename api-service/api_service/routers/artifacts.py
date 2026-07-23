@@ -1,13 +1,13 @@
 """Provide API service artifacts behavior for NeuroCade."""
 
-from pathlib import Path
 import tempfile
 import zipfile
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from api_service.artifacts.service import (
     filter_existing_artifacts,
@@ -16,18 +16,17 @@ from api_service.artifacts.service import (
 )
 from api_service.deps import get_context, get_db
 from api_service.helpers import (
+    ensure_case_storage_synced,
     get_case_for_user,
     get_workspace_for_user,
     log_event,
-    ensure_case_storage_synced,
 )
-from api_service.runtime import settings
 from api_service.policies import require_case_read, require_workspace_read
+from api_service.runtime import settings
 from api_service.schemas import ArtifactSummary
 from backend_common.auth import AuthContext
 from backend_common.case_storage import case_storage_dir
 from backend_common.db import Artifact
-
 
 router = APIRouter(prefix="/api/app", tags=["artifacts"])
 
@@ -109,9 +108,8 @@ def download_case_archive(
     workspace = ensure_case_storage_synced(db, case)
     case_dir = case_storage_dir(settings, workspace.id, case.id)
 
-    archive_file = tempfile.NamedTemporaryFile(prefix=f"case-{case.id}-", suffix=".zip", delete=False)
-    archive_path = Path(archive_file.name)
-    archive_file.close()
+    with tempfile.NamedTemporaryFile(prefix=f"case-{case.id}-", suffix=".zip", delete=False) as archive_file:
+        archive_path = Path(archive_file.name)
     _write_case_archive(case_dir, archive_path, case.title)
 
     log_event(db, context, "case.downloaded", case_id=case.id, details={"mode": "archive"})

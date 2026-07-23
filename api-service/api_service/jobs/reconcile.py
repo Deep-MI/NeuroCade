@@ -9,7 +9,7 @@ marked ``failed`` on startup so the UI does not show perpetually-active runs.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 

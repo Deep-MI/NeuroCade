@@ -95,7 +95,7 @@ async def stream_assistant_events(
             chunk = await asyncio.wait_for(queue.get(), timeout=min(0.25, remaining_seconds))
             _count_sse_event(request_id, started_at, event_counts, chunk)
             yield chunk
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
 
     try:

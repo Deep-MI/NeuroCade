@@ -8,15 +8,11 @@ import re
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-from api_service.runtime.execution import execute_runtime_request
-from backend_common.case_storage import case_slug_from_id
-from backend_common.settings import ROOT_DIR, get_settings
 from neurocade_runtime_tools.container_request import (
     RuntimeBind,
     build_container_request,
-    core_container_image,
     container_gpu_enabled,
+    core_container_image,
 )
 from neurocade_runtime_tools.execution import (
     RuntimeArtifactIndexTarget,
@@ -25,6 +21,10 @@ from neurocade_runtime_tools.execution import (
     RuntimeExecutionRequest,
     RuntimeWorkspaceArtifactSyncTarget,
 )
+
+from api_service.runtime.execution import execute_runtime_request
+from backend_common.case_storage import case_slug_from_id
+from backend_common.settings import ROOT_DIR, get_settings
 
 from .case_resolver import (
     CONTAINER_CASE_ROOT,

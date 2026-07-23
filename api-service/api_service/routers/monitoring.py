@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -18,8 +18,8 @@ from api_service.runtime.service import runtime_service
 from api_service.schemas import (
     MonitoringAuditEventSummary,
     MonitoringClientErrorRequest,
-    MonitoringEventSummary,
     MonitoringEventsResponse,
+    MonitoringEventSummary,
     MonitoringHealth,
     MonitoringIngestResponse,
     MonitoringStatusItem,
@@ -30,7 +30,6 @@ from backend_common.auth import AuthContext
 from backend_common.db import AppEvent, Artifact, AssistantScope, AuditEvent, Case, Run, User, Workspace
 from backend_common.run_statuses import ACTIVE_RUN_STATUSES
 
-
 router = APIRouter(prefix="/api/app/monitoring", tags=["monitoring"])
 
 ServiceStatus = Literal["ok", "degraded", "down", "unknown"]
@@ -38,7 +37,7 @@ OverallStatus = Literal["ok", "degraded", "down"]
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _service_status(

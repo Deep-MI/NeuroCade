@@ -8,7 +8,6 @@ from api_service.deps import get_context, get_db
 from api_service.schemas import AssistantHistoryClearResponse, AssistantHistoryResponse
 from backend_common.auth import AuthContext
 
-
 router = APIRouter(prefix="/api/app", tags=["assistant"])
 
 

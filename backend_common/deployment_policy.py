@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from backend_common.settings import Settings, get_settings
 
-
 DeploymentProfile = Literal["local", "internal", "demo"]
 VALID_DEPLOYMENT_PROFILES: set[str] = {"local", "internal", "demo"}
 _INSECURE_CREDENTIAL_VALUES = frozenset(

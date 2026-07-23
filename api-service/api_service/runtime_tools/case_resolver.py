@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from backend_common.case_storage import case_slug_from_id, case_storage_dir, ensure_case_storage_layout
 from backend_common.db import Case, Workspace
 
-
 CONTAINER_CASE_ROOT = "/case"
 
 

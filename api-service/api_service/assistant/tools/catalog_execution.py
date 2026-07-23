@@ -8,6 +8,13 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request
+from neurocade_runtime_tools.execution import (
+    RuntimeArtifactIndexTarget,
+    RuntimeContainerRunRequest,
+    RuntimeExecutionPolicy,
+    RuntimeExecutionRequest,
+)
 from pydantic import BaseModel, Field
 
 from api_service.helpers import get_case_for_user, get_workspace_for_user
@@ -16,8 +23,6 @@ from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT, resolve
 from api_service.runtime_tools.configured_tools import ConfiguredContainer, ConfiguredTool, resolve_configured_tool
 from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope
-from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request
-from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest, RuntimeExecutionPolicy, RuntimeExecutionRequest
 
 
 class CatalogToolCallArgs(BaseModel):

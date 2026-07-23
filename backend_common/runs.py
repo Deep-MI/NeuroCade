@@ -6,7 +6,6 @@ from typing import Literal
 
 from backend_common.db import AssistantScope, Run
 
-
 WORKSPACE_BATCH_ACTION = "workspace_batch_bash"
 WORKSPACE_COMMAND_ACTION = "workspace_bash"
 WORKSPACE_RUN_ACTIONS = frozenset({WORKSPACE_BATCH_ACTION, WORKSPACE_COMMAND_ACTION})

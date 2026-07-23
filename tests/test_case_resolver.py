@@ -1,8 +1,8 @@
 """Test case resolver behavior for NeuroCade."""
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,6 +16,7 @@ from api_service.runtime_tools.case_resolver import (  # noqa: E402
     resolve_case_mount_from_db,
     resolve_case_mount_from_gui_state,
 )
+
 from backend_common.case_storage import build_case_id  # noqa: E402
 from backend_common.db import Base, Case, User, Workspace  # noqa: E402
 

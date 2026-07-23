@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from api_service.artifacts.service import serialize_artifact
-from api_service.schemas import RunSummary, CaseDetail, CaseSummary
-from backend_common.db import Run, Artifact, AssistantThread, Case, RoleEnum
+from api_service.schemas import CaseDetail, CaseSummary, RunSummary
+from backend_common.db import Artifact, AssistantThread, Case, RoleEnum, Run
 
 
 def _metadata_list(values: object) -> list[str]:

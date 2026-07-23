@@ -5,13 +5,14 @@ from __future__ import annotations
 from uuid import uuid4
 
 from fastapi import HTTPException
+from neurocade_runtime_tools.execution import RuntimeExecutionRequest, RuntimeWorkspaceArtifactSyncTarget
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api_service.artifacts.service import filter_existing_artifacts, serialize_artifact
-from api_service.runtime.service import runtime_service
 from api_service.runtime import settings
 from api_service.runtime.execution import case_artifact_index_target, complete_workspace_run_files, submit_runtime_request
+from api_service.runtime.service import runtime_service
 from api_service.schemas import (
     WorkspaceBatchCaseSummary,
     WorkspaceBatchRunDetail,
@@ -22,13 +23,29 @@ from api_service.workspace_batch.filesystem import (
 )
 from api_service.workspace_batch.queries import (
     analysis_id_from_run as _analysis_id_from_run,
-    child_runs_for_run as _child_runs_for_run,
+)
+from api_service.workspace_batch.queries import (
     artifacts_for_run as _artifacts_for_run,
+)
+from api_service.workspace_batch.queries import (
+    child_runs_for_run as _child_runs_for_run,
+)
+from api_service.workspace_batch.queries import (
     command_from_run as _command_from_run,
+)
+from api_service.workspace_batch.queries import (
     report_name_from_run as _report_name_from_run,
+)
+from api_service.workspace_batch.queries import (
     run_counts as _run_counts,
+)
+from api_service.workspace_batch.queries import (
     select_cases_for_batch as _select_cases_for_batch,
+)
+from api_service.workspace_batch.queries import (
     selected_cases_for_run as _selected_cases_for_run,
+)
+from api_service.workspace_batch.queries import (
     workspace_case_rows as _workspace_case_rows,
 )
 from backend_common.auth import AuthContext
@@ -49,7 +66,6 @@ from backend_common.runs import (
     is_workspace_wide_action,
     workspace_execution_mode,
 )
-from neurocade_runtime_tools.execution import RuntimeExecutionRequest, RuntimeWorkspaceArtifactSyncTarget
 
 WORKSPACE_BATCH_QUEUE = "workspace_batch"
 ACTIVE_CASE_RUN_STATUSES = ACTIVE_RUN_STATUSES

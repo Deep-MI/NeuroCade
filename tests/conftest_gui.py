@@ -23,8 +23,7 @@ import shutil
 
 import pytest
 import requests
-from gui_helpers import DEFAULT_CASE_ID, DEFAULT_STORAGE_STATE_PATH, GATEWAY_URL, SCREENSHOT_DIR
-from gui_helpers import get_auth_headers
+from gui_helpers import DEFAULT_CASE_ID, DEFAULT_STORAGE_STATE_PATH, GATEWAY_URL, SCREENSHOT_DIR, get_auth_headers
 
 # Lazy-import playwright so non-GUI tests don't fail when it's not installed
 try:

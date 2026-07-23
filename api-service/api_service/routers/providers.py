@@ -7,7 +7,6 @@ from api_service.schemas import ProviderSummary
 from backend_common.auth import AuthContext
 from backend_common.providers import provider_registry
 
-
 router = APIRouter(prefix="/api/app/providers", tags=["providers"])
 
 

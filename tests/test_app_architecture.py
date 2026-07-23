@@ -1,8 +1,8 @@
 """Test app architecture behavior for NeuroCade."""
 
-from pathlib import Path
 import sys
 import tomllib
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api-service"))
 from backend_common import providers as provider_module
 from backend_common.providers import ProviderRole, provider_registry
 from backend_common.scan import classify_volume_metadata
-from backend_common.settings import Settings, get_settings
+from backend_common.settings import Settings
 
 
 def _settings_without_env_file() -> Settings:
@@ -151,6 +151,8 @@ def test_docker_image_pins_project_python_version():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
     assert pyproject["project"]["requires-python"] == ">=3.12,<3.13"
     assert pyproject["tool"]["uv"]["package"] is False
+    assert pyproject["tool"]["ruff"]["target-version"] == "py312"
+    assert pyproject["tool"]["ruff"]["lint"]["select"] == ["E", "F", "I", "UP", "B", "SIM"]
     assert pyproject["tool"]["pyright"]["pythonVersion"] == "3.12"
     assert not Path("pyrightconfig.json").exists()
     assert "npm ci" not in build_script
@@ -173,6 +175,7 @@ def test_pyproject_is_python_dependency_source_of_truth():
     assert "python-multipart==0.0.32" in dependencies
     assert "neurocade-runtime-tools" in dependencies
     assert "pytest>=8.0" in test_dependencies
+    assert "ruff==0.16.0" in test_dependencies
     assert pyproject["tool"]["uv"]["sources"]["neurocade-runtime-tools"] == {
         "path": "packages/neurocade-runtime-tools",
         "editable": True,
@@ -207,11 +210,11 @@ def test_env_example_documents_monitoring_admin_allowlist():
 
 
 def test_spa_mount_serves_vite_public_files(monkeypatch, tmp_path):
+    from api_service.main import _mount_client
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     import backend_common.settings as settings_module
-    from api_service.main import _mount_client
 
     dist_dir = tmp_path / "client" / "dist"
     assets_dir = dist_dir / "assets"

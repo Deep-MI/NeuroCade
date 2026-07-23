@@ -1,18 +1,17 @@
 """Provide API service auth behavior for NeuroCade."""
 
 from fastapi import APIRouter, Depends, Response
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from api_service.deps import get_context, get_db
 from api_service.helpers import log_event
 from api_service.monitoring.security import is_monitoring_admin
 from api_service.runtime import settings
 from api_service.schemas import FrontendConfig, SessionBootstrap, UserSummary
-from backend_common.deployment_policy import get_deployment_policy
 from backend_common.auth import AuthContext
 from backend_common.db import Case, Workspace, WorkspaceMembership
-from sqlalchemy import func
-from sqlalchemy.orm import Session
-
+from backend_common.deployment_policy import get_deployment_policy
 
 router = APIRouter(prefix="/api/app", tags=["auth"])
 

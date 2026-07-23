@@ -2,31 +2,33 @@
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
-from .types import ToolTextContent, error_response, text_response
+
 from dotenv import load_dotenv
+
 from backend_common.settings import ROOT_DIR, get_settings
 
 from .case_resolver import (
     CONTAINER_CASE_ROOT,
 )
 from .container_commands import (
+    _VOLUME_FILE_SUFFIXES,
     FOCUS_LABEL_DEFAULT_SEGMENTATION,
     LOCAL_OUTPUT_ROOT,
-    _VOLUME_FILE_SUFFIXES,
     _current_case_relative_output_path,
     _looks_like_segmentation,
     _resolve_case_mount_local_dir,
 )
 from .lut import get_by_id, search_lut
-from .read_stats import handle_read_stats as handle_read_stats
 from .output_resources import (
-    output_resource_descriptor,
     output_descriptor_path_from_file,
+    output_resource_descriptor,
 )
+from .read_stats import handle_read_stats as handle_read_stats
+from .types import ToolTextContent, error_response, text_response
 
 load_dotenv(ROOT_DIR / ".env")
 settings = get_settings()
@@ -249,10 +251,7 @@ def handle_gui_load_volume(arguments: dict, gui_state: dict) -> list[ToolTextCon
         descriptor_path = output_descriptor_path_from_file(file_path)
 
     # Validate the file exists on disk before telling the frontend to load it
-    if descriptor_path.startswith("outputs/"):
-        disk_path = os.path.join(LOCAL_OUTPUT_ROOT, file_path)
-    else:
-        disk_path = None
+    disk_path = os.path.join(LOCAL_OUTPUT_ROOT, file_path) if descriptor_path.startswith("outputs/") else None
     if disk_path and not os.path.isfile(disk_path):
         return error_response(
             f"file not found on disk: {file_path}. Check the exact filename with the available_layers tool or case artifacts endpoint."
@@ -423,8 +422,8 @@ def _format_focus_label_missing_segmentation(
         ) + "."
     else:
         available_text = (
-            f"No segmentation volumes were found under "
-            f"`/case/mri/`."
+            "No segmentation volumes were found under "
+            "`/case/mri/`."
         )
 
     if segmentation_spec["used_default"]:
@@ -507,7 +506,7 @@ def handle_gui_select_volume(
         "segmentation_volume": segmentation,
     }
 
-    desc = f"intensity={'none' if not intensity else intensity}, segmentation={'none' if not segmentation else segmentation}"
+    desc = f"intensity={intensity if intensity else 'none'}, segmentation={segmentation if segmentation else 'none'}"
     return text_response(f"Successfully requested frontend to SELECT_VOLUMES: {desc}.")
 
 

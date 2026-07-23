@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -774,7 +774,7 @@ runtime_logs_since = docker_logs_since
 
 def utc_timestamp() -> str:
     """Return current UTC time as an ISO string for log filtering."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def assert_tool_executed(logs: str, tool_name: str | None = None) -> bool:

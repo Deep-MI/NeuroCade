@@ -50,6 +50,10 @@ jobs:
         run: |
           . .venv/bin/activate
           python -m compileall backend_common api-service/api_service packages/neurocade-runtime-tools/src scripts
+      - name: Run Python lint
+        run: |
+          . .venv/bin/activate
+          ruff check .
       - name: Run Python type check
         run: |
           . .venv/bin/activate

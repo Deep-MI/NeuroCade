@@ -1,13 +1,13 @@
 """Provide shared backend case storage utilities for NeuroCade."""
 
 from __future__ import annotations
+
 import re
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from backend_common.db import Artifact, Case, Workspace
-
 
 UPLOAD_SUFFIXES = (".nii.gz", ".nii", ".mgz")
 SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$")

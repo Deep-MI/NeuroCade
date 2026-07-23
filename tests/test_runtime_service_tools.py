@@ -1,22 +1,21 @@
 """Test runtime service tools behavior for NeuroCade."""
 
 import asyncio
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import cast
 
 import pytest
-from fastapi import HTTPException
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
-from api_service.runtime import service as runtime_module  # noqa: E402
 from api_service.runtime import fastsurfer_tasks as fastsurfer_tasks_module  # noqa: E402
+from api_service.runtime import service as runtime_module  # noqa: E402
 from api_service.runtime.service import RuntimeService  # noqa: E402
-from api_service.runtime_tools import handlers as handler_module  # noqa: E402
 from api_service.runtime_tools import container_commands as container_commands_module  # noqa: E402
+from api_service.runtime_tools import handlers as handler_module  # noqa: E402
 from api_service.runtime_tools import read_stats as read_stats_module  # noqa: E402
 from api_service.runtime_tools.types import ToolTextContent  # noqa: E402
 from neurocade_runtime_tools.execution import (  # noqa: E402

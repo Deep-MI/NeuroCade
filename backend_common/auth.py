@@ -1,10 +1,10 @@
 """Provide shared backend auth utilities for NeuroCade."""
 
-from contextlib import contextmanager
-from dataclasses import dataclass
 import json
 import logging
 import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -14,12 +14,11 @@ from jwt import PyJWKClient
 from jwt.exceptions import PyJWTError
 from sqlalchemy.orm import Session
 
-from backend_common.deployment_policy import get_deployment_policy
 from backend_common.db import RoleEnum, User
+from backend_common.deployment_policy import get_deployment_policy
 from backend_common.sample_seed import ensure_global_sample_workspace_membership, ensure_sample_case
 from backend_common.settings import get_settings
 from backend_common.workspace_bootstrap import ensure_personal_workspace
-
 
 settings = get_settings()
 logger = logging.getLogger(__name__)

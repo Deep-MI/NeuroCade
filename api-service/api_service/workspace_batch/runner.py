@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from neurocade_runtime_tools.execution import RuntimeCompletionHooks
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
@@ -15,12 +16,18 @@ from api_service.runtime.execution import (
 )
 from api_service.runtime.service import runtime_service
 from api_service.workspace_batch import WORKSPACE_BATCH_QUEUE, queue_workspace_batch_case
-from api_service.workspace_batch.filesystem import runtime_visible_data_path as _runtime_visible_data_path
 from api_service.workspace_batch.filesystem import prepare_workspace_command_inputs as _prepare_workspace_command_inputs
+from api_service.workspace_batch.filesystem import runtime_visible_data_path as _runtime_visible_data_path
 from api_service.workspace_batch.queries import (
     analysis_id_from_run as _analysis_id_from_run,
+)
+from api_service.workspace_batch.queries import (
     child_runs_for_run as _child_runs_for_run,
+)
+from api_service.workspace_batch.queries import (
     command_from_run as _command_from_run,
+)
+from api_service.workspace_batch.queries import (
     update_parent_run_terminal_state as _update_parent_run_terminal_state,
 )
 from api_service.workspace_batch.reports import result_text_has_execution_error as _result_text_has_execution_error
@@ -29,7 +36,6 @@ from backend_common.case_storage import case_storage_dir
 from backend_common.db import Case, Run, RunStatus, Workspace
 from backend_common.run_statuses import TERMINAL_RUN_STATUSES as TERMINAL_CASE_RUN_STATUSES
 from backend_common.runs import WORKSPACE_BATCH_ACTION, WORKSPACE_COMMAND_ACTION
-from neurocade_runtime_tools.execution import RuntimeCompletionHooks
 
 _runtime_service = runtime_service
 

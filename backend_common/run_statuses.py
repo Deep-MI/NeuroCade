@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from backend_common.db import RunStatus
 
-
 ACTIVE_RUN_STATUSES = frozenset({RunStatus.queued, RunStatus.running})
 TERMINAL_RUN_STATUSES = frozenset({RunStatus.completed, RunStatus.failed, RunStatus.canceled})
 

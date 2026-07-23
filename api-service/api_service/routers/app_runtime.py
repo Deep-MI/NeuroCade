@@ -12,7 +12,6 @@ from api_service.schemas import AnalysisToolSummary, GuiStateSyncRequest
 from api_service.viewer_resources import resolve_gui_resource_descriptors
 from backend_common.auth import AuthContext
 
-
 router = APIRouter(prefix="/api/app", tags=["runtime"])
 
 

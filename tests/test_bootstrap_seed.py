@@ -1,7 +1,7 @@
 """Test bootstrap seed behavior for NeuroCade."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine
@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "api-service"))
 
 from api_service import bootstrap as bootstrap_module  # noqa: E402
+
 from backend_common.db import Base, Case, User, Workspace, WorkspaceMembership  # noqa: E402
 from backend_common.workspace_bootstrap import ensure_personal_workspace  # noqa: E402
 

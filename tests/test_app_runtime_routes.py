@@ -1,14 +1,14 @@
 """Test app runtime routes behavior for NeuroCade."""
 
-from pathlib import Path
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service import main as main_module  # noqa: E402
 from api_service.deps import get_context, get_db  # noqa: E402
 from api_service.routers import app_runtime as app_runtime_module  # noqa: E402
+
 from backend_common.db import Artifact, ArtifactKind, Base  # noqa: E402
 from tests.factories import seed_workspace_context  # noqa: E402
 

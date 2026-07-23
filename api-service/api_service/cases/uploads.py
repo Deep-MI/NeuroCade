@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
 import shutil
 import tempfile
 import zipfile
+from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
+from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request, core_container_image
+from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
@@ -22,8 +24,6 @@ from backend_common.case_storage import (
 )
 from backend_common.db import Artifact, ArtifactKind, Case, Workspace
 from backend_common.scan import classify_volume_metadata
-from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request, core_container_image
-from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest
 
 DIRECT_VOLUME_SUFFIXES = (".nii.gz", ".nii", ".mgz")
 DICOM_UPLOAD_SUFFIXES = (".dcm", ".dicom", ".ima")

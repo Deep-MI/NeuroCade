@@ -14,10 +14,10 @@ from api_service.runtime import settings
 from api_service.runtime.service import runtime_service
 from backend_common.case_storage import build_case_id, case_storage_dir, validate_case_title
 from backend_common.concurrency import lock_case_for_update
+from backend_common.db import AssistantScope, Case, Run, Workspace
 from backend_common.deployment_policy import get_deployment_policy
-from backend_common.db import AssistantScope, Run, Case, Workspace
-from backend_common.runs import WORKSPACE_RUN_ACTIONS
 from backend_common.run_statuses import ACTIVE_RUN_STATUSES, TERMINAL_RUN_STATUSES, normalize_run_status
+from backend_common.runs import WORKSPACE_RUN_ACTIONS
 
 
 async def sync_analysis_run_status(case: Case, run: Run | None, db: Session) -> Run | None:

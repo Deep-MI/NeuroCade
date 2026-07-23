@@ -23,7 +23,6 @@ from backend_common.surface_artifacts import (
     classify_surface_metadata,
 )
 
-
 ALLOWED_FILES = {
     "001.mgz",
     "inpainting_original_image.mgz",

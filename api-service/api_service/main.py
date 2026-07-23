@@ -18,7 +18,6 @@ from api_service.workspace_batch.tasks import register_workspace_batch_tasks
 from backend_common.auth import allow_local_auth, validate_auth_configuration
 from backend_common.db import SessionLocal, engine
 
-
 startup_logger = logging.getLogger("uvicorn.error")
 
 

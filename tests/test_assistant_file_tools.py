@@ -1,9 +1,9 @@
 """Test assistant file tools behavior for NeuroCade."""
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Coroutine
 from pathlib import Path
-import sys
 from typing import Any, TypeVar, cast
 
 import pytest
@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service.assistant import runtime as assistant_runtime_module  # noqa: E402
 from api_service.assistant.runtime import AssistantRuntime  # noqa: E402
 from api_service.runtime.service import RuntimeService  # noqa: E402
+
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import build_case_id, case_storage_dir  # noqa: E402
 from backend_common.db import Base, Case, RoleEnum, User, Workspace, WorkspaceMembership  # noqa: E402

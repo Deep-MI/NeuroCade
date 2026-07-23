@@ -55,6 +55,7 @@ Current coverage is organized around these areas:
 ```bash
 source .venv/bin/activate
 pytest tests/test_runtime_service_tools.py tests/test_assistant_file_tools.py tests/test_assistant_runtime.py tests/test_app_architecture.py -v
+ruff check .
 pyright
 ```
 

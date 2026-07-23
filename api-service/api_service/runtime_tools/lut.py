@@ -7,11 +7,11 @@ lookup) consume it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from difflib import SequenceMatcher
 import logging
 import os
 import re
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from backend_common.settings import ROOT_DIR
 
@@ -125,7 +125,7 @@ def _load_lut(lut_path: str | None = None) -> _LutData:
     records: list[LutRecord] = []
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 record = _parse_row(line)
                 if record is None:

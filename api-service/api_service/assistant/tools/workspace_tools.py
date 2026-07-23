@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 import json
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 from api_service.assistant.conversation_store import thread_key
 from api_service.assistant.tools.case_tools import AssistantCaseTools
 from api_service.assistant.tools.definition import ToolDefinition
-from api_service.assistant.tools.registration import ScopedToolRegistration, WORKSPACE_ONLY
+from api_service.assistant.tools.registration import WORKSPACE_ONLY, ScopedToolRegistration
 from api_service.workspace_batch import (
     cancel_workspace_batch_run,
     create_workspace_batch_run,
@@ -25,7 +26,6 @@ from api_service.workspace_batch.filesystem import workspace_case_file_tree, wor
 from backend_common.auth import AuthContext
 from backend_common.db import AssistantScope, Case, Run, Workspace, WorkspaceMembership
 from backend_common.providers import ModelConfig
-
 
 WORKSPACE_TOOL_REGISTRATIONS: tuple[ScopedToolRegistration, ...] = (
     ScopedToolRegistration(

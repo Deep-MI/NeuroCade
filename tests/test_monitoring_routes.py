@@ -1,9 +1,9 @@
 """Test monitoring routes behavior for NeuroCade."""
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import asyncio
 import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -18,9 +18,21 @@ from api_service.routers import auth as auth_module  # noqa: E402
 from api_service.routers import monitoring as monitoring_module  # noqa: E402
 from api_service.routers.monitoring import ingest_client_error, monitoring_health, monitoring_summary  # noqa: E402
 from api_service.schemas import MonitoringClientErrorRequest  # noqa: E402
+
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import build_case_id  # noqa: E402
-from backend_common.db import AppEvent, Artifact, ArtifactKind, AuditEvent, Base, Case, RoleEnum, User, Workspace, WorkspaceMembership  # noqa: E402
+from backend_common.db import (  # noqa: E402
+    AppEvent,
+    Artifact,
+    ArtifactKind,
+    AuditEvent,
+    Base,
+    Case,
+    RoleEnum,
+    User,
+    Workspace,
+    WorkspaceMembership,
+)
 
 
 @pytest.fixture()
@@ -87,7 +99,7 @@ def _patch_monitoring_checks(monkeypatch):
 def test_monitoring_summary_counts_recent_session_bootstraps(seeded_monitoring_context, monkeypatch):
     db_session, context, member = seeded_monitoring_context
     _patch_monitoring_checks(monkeypatch)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     db_session.add_all(
         [
             AuditEvent(user_id=context.user.id, action="session.bootstrap", details_json={}, created_at=now),

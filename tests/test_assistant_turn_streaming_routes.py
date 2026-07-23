@@ -1,9 +1,9 @@
 """Test assistant turn streaming routes behavior for NeuroCade."""
 
-from contextlib import asynccontextmanager
 import asyncio
-from pathlib import Path
 import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,12 +15,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service import main as main_module  # noqa: E402
-from api_service.assistant import turn_streaming as assistant_turn_streaming_module  # noqa: E402
 from api_service import middleware as middleware_module  # noqa: E402
-from api_service.routers import assistant as assistant_router  # noqa: E402
-from api_service.routers import assistant_turns as assistant_turns_module  # noqa: E402
+from api_service.assistant import turn_streaming as assistant_turn_streaming_module  # noqa: E402
 from api_service.chat_limits import ChatRequestGuard  # noqa: E402
 from api_service.deps import get_context  # noqa: E402
+from api_service.routers import assistant as assistant_router  # noqa: E402
+from api_service.routers import assistant_turns as assistant_turns_module  # noqa: E402
+
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.db import Base, RoleEnum, User  # noqa: E402
 

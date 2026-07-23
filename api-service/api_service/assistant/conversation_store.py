@@ -8,11 +8,11 @@ and reasoning metadata, and response payload shaping for the chat API.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 import logging
 import os
 import threading
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -25,7 +25,6 @@ from backend_common.concurrency import lock_assistant_thread_for_update
 from backend_common.db import AssistantCheckpoint, AssistantMessage, AssistantScope, AssistantThread
 from backend_common.providers import ModelConfig
 from backend_common.settings import ROOT_DIR
-
 
 logger = logging.getLogger(__name__)
 _conversation_log_lock = threading.Lock()
@@ -61,9 +60,8 @@ def append_conversation_log(record: dict[str, Any]) -> None:
         if directory:
             os.makedirs(directory, exist_ok=True)
         line = json.dumps(record, default=_json_default, ensure_ascii=False, sort_keys=True)
-        with _conversation_log_lock:
-            with open(path, "a", encoding="utf-8") as file:
-                file.write(f"{line}\n")
+        with _conversation_log_lock, open(path, "a", encoding="utf-8") as file:
+            file.write(f"{line}\n")
     except Exception as exc:  # pragma: no cover - diagnostics must not break chat persistence
         logger.warning("Failed to append assistant conversation log %s: %s", path, exc)
 
@@ -276,7 +274,7 @@ def persist_turn(
             append_conversation_log(
                 {
                     "event": "assistant.turn.persisted",
-                    "logged_at": datetime.now(timezone.utc).isoformat(),
+                    "logged_at": datetime.now(UTC).isoformat(),
                     "thread_id": thread.id,
                     "thread_key": thread.thread_key,
                     "scope_type": thread.scope_type.value if isinstance(thread.scope_type, AssistantScope) else str(thread.scope_type),
@@ -415,7 +413,7 @@ class AssistantConversationStore:
         append_conversation_log(
             {
                 "event": "assistant.turn.failed",
-                "logged_at": datetime.now(timezone.utc).isoformat(),
+                "logged_at": datetime.now(UTC).isoformat(),
                 "assistant_request_id": diagnostic_request_id,
                 "thread_id": thread.id,
                 "thread_key": thread.thread_key,

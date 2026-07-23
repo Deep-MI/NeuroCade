@@ -26,15 +26,14 @@ Usage:
   HEADED=1 pytest tests/test_gui_upload_run.py -v         # watch the browser
 """
 
-from pathlib import Path
 import shutil
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
 from conftest import DEMO_RUN_UPLOAD_FILENAME, UPLOAD_FIXTURES_DIR
-
 from gui_helpers import (
     GATEWAY_URL,
     get_auth_headers,

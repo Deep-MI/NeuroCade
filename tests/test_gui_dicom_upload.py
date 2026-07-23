@@ -19,9 +19,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from gui_helpers import GATEWAY_URL, get_auth_headers, routed_case_id, slug_name, take_screenshot
-
 
 pytest_plugins = ["conftest_gui"]
 

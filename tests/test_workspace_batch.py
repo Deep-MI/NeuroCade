@@ -2,8 +2,8 @@
 
 import asyncio
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -15,20 +15,21 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
-from api_service.workspace_batch import service as workspace_batch_module  # noqa: E402
-from api_service.workspace_batch import runner as workspace_batch_runner_module  # noqa: E402
 from api_service.workspace_batch import filesystem as workspace_batch_fs_module  # noqa: E402
 from api_service.workspace_batch import reports as workspace_batch_reports_module  # noqa: E402
+from api_service.workspace_batch import runner as workspace_batch_runner_module  # noqa: E402
+from api_service.workspace_batch import service as workspace_batch_module  # noqa: E402
+from neurocade_runtime_tools.execution import RuntimeExecutionRequest, RuntimeExecutionResult  # noqa: E402
+
 from backend_common import db as backend_db_module  # noqa: E402
+from backend_common.case_storage import workspace_analysis_dir  # noqa: E402
 from backend_common.db import (  # noqa: E402
     Artifact,
     ArtifactKind,
     Base,
-    RunStatus,
     Run,
+    RunStatus,
 )
-from backend_common.case_storage import workspace_analysis_dir  # noqa: E402
-from neurocade_runtime_tools.execution import RuntimeExecutionRequest, RuntimeExecutionResult  # noqa: E402
 from tests.factories import seed_workspace_context  # noqa: E402
 
 

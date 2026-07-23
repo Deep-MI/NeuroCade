@@ -11,17 +11,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from api_service.assistant.tools.catalog_tools import AssistantCatalogTools, CATALOG_TOOL_REGISTRATIONS
-from api_service.assistant.tools.case_tools import AssistantCaseTools, CASE_TOOL_REGISTRATIONS
-from api_service.assistant.tools.file_tools import AssistantFileTools, FILE_TOOL_REGISTRATIONS
+from api_service.assistant.tools.case_tools import CASE_TOOL_REGISTRATIONS, AssistantCaseTools
 from api_service.assistant.tools.catalog_execution import AssistantCatalogExecutor
+from api_service.assistant.tools.catalog_tools import CATALOG_TOOL_REGISTRATIONS, AssistantCatalogTools
 from api_service.assistant.tools.definition import ToolDefinition
+from api_service.assistant.tools.file_tools import FILE_TOOL_REGISTRATIONS, AssistantFileTools
 from api_service.assistant.tools.registration import ScopedToolRegistration
-from api_service.assistant.tools.workspace_tools import AssistantWorkspaceTools, WORKSPACE_TOOL_REGISTRATIONS
+from api_service.assistant.tools.workspace_tools import WORKSPACE_TOOL_REGISTRATIONS, AssistantWorkspaceTools
 from api_service.runtime.service import RuntimeService
 from backend_common.db import AssistantScope
 from backend_common.settings import ROOT_DIR
-
 
 ASSISTANT_TOOL_REGISTRATION_GROUPS: tuple[tuple[str, tuple[ScopedToolRegistration, ...]], ...] = (
     ("workspace", WORKSPACE_TOOL_REGISTRATIONS),

@@ -2,10 +2,10 @@
 
 import asyncio
 import gzip
-from io import BytesIO
-from pathlib import Path
 import sys
 import zipfile
+from io import BytesIO
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -19,7 +19,15 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service.cases import operations as cases_module  # noqa: E402
 from api_service.cases.identity import _replace_string_tokens  # noqa: E402
 from api_service.cases.service import sync_analysis_run_status  # noqa: E402
-from api_service.routers.cases import add_case_upload, create_case_with_upload, delete_case, queue_status, rename_case, save_generated_volume, start_run  # noqa: E402
+from api_service.routers.cases import (  # noqa: E402
+    add_case_upload,
+    create_case_with_upload,
+    delete_case,
+    queue_status,
+    rename_case,
+    save_generated_volume,
+    start_run,
+)
 from api_service.routers.workspaces import (  # noqa: E402
     cancel_batch_run,
     create_workspace,
@@ -29,11 +37,34 @@ from api_service.routers.workspaces import (  # noqa: E402
     list_workspaces,
     update_workspace,
 )
+from api_service.schemas import (  # noqa: E402
+    CaseRenameRequest,
+    StartRunRequest,
+    WorkspaceCreateRequest,
+    WorkspaceDeleteRequest,
+    WorkspaceUpdateRequest,
+)
 from api_service.workspace_batch import service as workspace_batch_module  # noqa: E402
-from api_service.schemas import CaseRenameRequest, StartRunRequest, WorkspaceCreateRequest, WorkspaceDeleteRequest, WorkspaceUpdateRequest  # noqa: E402
+
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import build_case_id, case_relative_prefix, case_storage_dir, workspace_storage_dir  # noqa: E402
-from backend_common.db import AssistantMessage, AssistantScope, AssistantThread, Run, Artifact, ArtifactKind, AuditEvent, Base, Case, CaseEvent, RoleEnum, RunStatus, User, Workspace, WorkspaceMembership  # noqa: E402
+from backend_common.db import (  # noqa: E402
+    Artifact,
+    ArtifactKind,
+    AssistantMessage,
+    AssistantScope,
+    AssistantThread,
+    AuditEvent,
+    Base,
+    Case,
+    CaseEvent,
+    RoleEnum,
+    Run,
+    RunStatus,
+    User,
+    Workspace,
+    WorkspaceMembership,
+)
 from backend_common.runs import WORKSPACE_COMMAND_ACTION  # noqa: E402
 from tests.factories import seed_workspace_context  # noqa: E402
 

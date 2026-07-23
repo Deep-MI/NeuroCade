@@ -1,8 +1,8 @@
 """Test artifact routes behavior for NeuroCade."""
 
-from pathlib import Path
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -13,14 +13,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
-from api_service.routers.artifacts import download_case_archive, list_case_artifacts  # noqa: E402
 from api_service.artifacts.service import artifact_download_path_for_output, resolve_artifact_file_for_user  # noqa: E402
-from api_service.routers import artifacts as artifacts_module  # noqa: E402
 from api_service.cases import operations as cases_module  # noqa: E402
+from api_service.routers import artifacts as artifacts_module  # noqa: E402
+from api_service.routers.artifacts import download_case_archive, list_case_artifacts  # noqa: E402
 from api_service.routers.cases import case_logs, case_runs, list_cases  # noqa: E402
-from backend_common.case_storage import case_relative_prefix, case_storage_dir  # noqa: E402
-from backend_common.db import Run, Artifact, ArtifactKind, Base, Case, RunStatus, Workspace  # noqa: E402
+
 from backend_common import storage as storage_module  # noqa: E402
+from backend_common.case_storage import case_relative_prefix, case_storage_dir  # noqa: E402
+from backend_common.db import Artifact, ArtifactKind, Base, Case, Run, RunStatus, Workspace  # noqa: E402
 from tests.factories import seed_workspace_context  # noqa: E402
 
 CASE_ID = "workspace-1__case-1"

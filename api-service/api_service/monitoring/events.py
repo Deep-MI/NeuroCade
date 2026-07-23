@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from backend_common.auth import AuthContext
 from backend_common.db import AppEvent
 from backend_common.settings import get_settings
-
 
 MAX_MESSAGE_LENGTH = 2000
 MAX_DETAIL_STRING_LENGTH = 2000
@@ -73,7 +72,7 @@ def record_app_event(
     normalized_message = _truncate(message, MAX_MESSAGE_LENGTH)
     normalized_method = method[:16] if method else None
     normalized_path = path[:1024] if path else None
-    duplicate_cutoff = datetime.now(timezone.utc) - timedelta(seconds=DUPLICATE_EVENT_WINDOW_SECONDS)
+    duplicate_cutoff = datetime.now(UTC) - timedelta(seconds=DUPLICATE_EVENT_WINDOW_SECONDS)
     duplicate = (
         db.query(AppEvent)
         .filter(
@@ -94,7 +93,7 @@ def record_app_event(
         return duplicate
 
     retention_days = max(settings.monitoring_event_retention_days, 1)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     db.query(AppEvent).filter(AppEvent.created_at < cutoff).delete(synchronize_session=False)
     event = AppEvent(
         user_id=user_id,

@@ -1,7 +1,7 @@
 """Test shared run status helpers."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -15,12 +15,12 @@ from backend_common.run_statuses import (  # noqa: E402
 
 
 def test_active_status_sets_only_include_current_in_progress_states():
-    assert ACTIVE_RUN_STATUSES == frozenset({RunStatus.queued, RunStatus.running})
-    assert TERMINAL_RUN_STATUSES == frozenset({
+    assert frozenset({RunStatus.queued, RunStatus.running}) == ACTIVE_RUN_STATUSES
+    assert frozenset({
         RunStatus.completed,
         RunStatus.failed,
         RunStatus.canceled,
-    })
+    }) == TERMINAL_RUN_STATUSES
 
 
 def test_normalize_run_status_maps_supported_runtime_statuses():

@@ -6,11 +6,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy.orm import Session
-
-from api_service.runtime import settings
-from backend_common.db import Case, Run, Workspace
-from backend_common.scan import index_case_files_from_storage
 from neurocade_runtime_tools.execution import (
     RuntimeArtifactIndexTarget,
     RuntimeCaseLogArtifactTarget,
@@ -18,8 +13,15 @@ from neurocade_runtime_tools.execution import (
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
     RuntimeWorkspaceArtifactSyncTarget,
+)
+from neurocade_runtime_tools.execution import (
     execute_runtime_request as _execute_runtime_request,
 )
+from sqlalchemy.orm import Session
+
+from api_service.runtime import settings
+from backend_common.db import Case, Run, Workspace
+from backend_common.scan import index_case_files_from_storage
 
 logger = logging.getLogger(__name__)
 

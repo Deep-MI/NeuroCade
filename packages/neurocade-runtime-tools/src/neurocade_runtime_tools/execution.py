@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from contextvars import ContextVar
-from dataclasses import dataclass, field
 import logging
 import os
-from pathlib import Path
 import signal
 import subprocess
-from typing import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

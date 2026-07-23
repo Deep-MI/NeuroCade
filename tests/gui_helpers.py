@@ -46,7 +46,7 @@ def slug_name(value: str) -> str:
     return candidate or "case"
 
 
-def routed_case_id(page: "Page") -> str:
+def routed_case_id(page: Page) -> str:
     """Return the API case ID represented by the current workspace case route."""
     parts = page.url.split("?", 1)[0].rstrip("/").split("/")
     try:
@@ -59,7 +59,7 @@ def routed_case_id(page: "Page") -> str:
 
 
 def upload_mri(
-    page: "Page",
+    page: Page,
     filepath: str,
     case_name: str | None = None,
     trigger_selector: str = "button:has-text('Choose MRI File')",
@@ -129,7 +129,7 @@ def _jwt_is_expired(token: str) -> bool:
     return exp <= time.time()
 
 
-def send_chat_message(page: "Page", message: str, timeout: int = 120_000) -> str:
+def send_chat_message(page: Page, message: str, timeout: int = 120_000) -> str:
     """Send a chat message and return the latest assistant response text."""
     chat_input = page.locator("input.chat-input")
     chat_input.fill(message)
@@ -154,7 +154,7 @@ def send_chat_message(page: "Page", message: str, timeout: int = 120_000) -> str
     return assistant_msgs.nth(count - 1).inner_text()
 
 
-def get_current_position(page: "Page") -> dict:
+def get_current_position(page: Page) -> dict:
     """Read the current cursor/label display from the viewer toolbar."""
     result: dict[str, str | None] = {"voxel_text": None, "label_index": None, "label_name": None}
 
@@ -173,7 +173,7 @@ def get_current_position(page: "Page") -> dict:
     return result
 
 
-def load_processed_case(page: "Page") -> str:
+def load_processed_case(page: Page) -> str:
     """Navigate to a reproducible processed case copied into a fresh workspace."""
     processed_case = fresh_processed_case_data()
     workspace_id = processed_case["workspace_id"]
@@ -189,7 +189,7 @@ def load_processed_case(page: "Page") -> str:
     return processed_case.get("title") or case_id
 
 
-def take_screenshot(page: "Page", name: str, screenshot_dir: Path = SCREENSHOT_DIR) -> Path:
+def take_screenshot(page: Page, name: str, screenshot_dir: Path = SCREENSHOT_DIR) -> Path:
     """Take a full-page screenshot and save it."""
     screenshot_dir.mkdir(exist_ok=True)
     path = screenshot_dir / f"{name}.png"

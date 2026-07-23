@@ -13,10 +13,9 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
-
-import pytest
+from typing import Any
 
 from gui_helpers import DEFAULT_STORAGE_STATE_PATH, GATEWAY_URL, load_processed_case
 
@@ -205,7 +204,6 @@ def test_viewer_interaction_timing_report(browser, services_up):
         )
 
         # Show/hide an already-loaded image/segmentation layer.
-        current_state = _debug_state(page)
         layer_items = page.locator("[data-testid='viewer-layer-item']")
         assert layer_items.count() > 0, "No viewer layers were available"
         toggle_index = None
@@ -249,7 +247,6 @@ def test_viewer_interaction_timing_report(browser, services_up):
 
         # Show/hide a surface if the deterministic case has one.
         surface_items = page.locator("[data-testid='viewer-layer-item'][data-layer-type='surface']")
-        current_state = _debug_state(page)
         surface_index = None
         for index in range(surface_items.count()):
             toggle_label = surface_items.nth(index).locator("[data-testid='viewer-layer-visibility']").get_attribute("aria-label") or ""

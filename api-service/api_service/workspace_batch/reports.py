@@ -13,20 +13,20 @@ from sqlalchemy.orm import Session
 from api_service.runtime import settings
 from api_service.workspace_batch.queries import (
     analysis_id_from_run,
-    child_runs_for_run,
     artifacts_for_run,
+    child_runs_for_run,
     command_from_run,
     report_name_from_run,
     run_counts,
     selected_cases_for_run,
 )
+from backend_common.artifact_upsert import insert_artifact_if_missing
 from backend_common.case_storage import (
     case_storage_dir,
     ensure_workspace_analysis_storage_layout,
     workspace_analysis_relative_prefix,
 )
-from backend_common.artifact_upsert import insert_artifact_if_missing
-from backend_common.db import Artifact, ArtifactKind, Case, RunStatus, Run, Workspace
+from backend_common.db import Artifact, ArtifactKind, Case, Run, RunStatus, Workspace
 from backend_common.scan import VOLUME_SUFFIXES
 
 

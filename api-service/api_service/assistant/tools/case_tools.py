@@ -16,6 +16,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import HTTPException
+from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request, core_container_image
+from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest
 from pydantic import BaseModel, Field
 
 from api_service.assistant.tools.catalog_execution import AssistantCatalogExecutor
@@ -24,8 +26,6 @@ from api_service.assistant.tools.registration import CASE_ONLY, ScopedToolRegist
 from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.runtime.execution import case_artifact_index_target
 from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT, resolve_case_mount_from_db
-from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest
-from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request, core_container_image
 
 
 class CasePythonRunArgs(BaseModel):

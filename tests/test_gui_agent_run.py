@@ -23,14 +23,13 @@ Usage:
 """
 
 import json
-from pathlib import Path
 import shutil
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from conftest import DEMO_RUN_UPLOAD_FILENAME, UPLOAD_FIXTURES_DIR
-
 from gui_helpers import (
     infer_case_name,
     routed_case_id,

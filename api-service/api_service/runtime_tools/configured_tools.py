@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from backend_common.settings import ROOT_DIR
 
-
 CONFIGURED_TOOLS_PATH = ROOT_DIR / "config" / "runtime_tools.json"
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 
@@ -43,7 +42,7 @@ class RuntimeToolConfig(BaseModel):
     tools: list[ConfiguredTool] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_references(self) -> "RuntimeToolConfig":
+    def validate_references(self) -> RuntimeToolConfig:
         container_ids = {container.id for container in self.containers}
         missing = sorted({tool.container_id for tool in self.tools if tool.container_id not in container_ids})
         if missing:

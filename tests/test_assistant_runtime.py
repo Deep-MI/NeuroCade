@@ -1,10 +1,10 @@
 """Test assistant runtime behavior for NeuroCade."""
 
 import asyncio
-from collections.abc import Sequence
 import json
-from pathlib import Path
 import sys
+from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -16,20 +16,21 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
-from api_service.assistant.prompts import build_structured_response_messages, build_system_prompt  # noqa: E402
 from api_service.assistant import runtime as assistant_runtime_module  # noqa: E402
-from api_service.assistant.tools import workspace_tools as assistant_workspace_tools_module  # noqa: E402
-from api_service.assistant.tools import catalog_execution as assistant_catalog_execution_module  # noqa: E402
-from api_service.runtime_tools.configured_tools import load_runtime_tool_config, run_analysis_tools_payload  # noqa: E402
+from api_service.assistant.prompts import build_structured_response_messages, build_system_prompt  # noqa: E402
 from api_service.assistant.runtime import AssistantRuntime  # noqa: E402
+from api_service.assistant.tools import catalog_execution as assistant_catalog_execution_module  # noqa: E402
+from api_service.assistant.tools import workspace_tools as assistant_workspace_tools_module  # noqa: E402
 from api_service.assistant.tools.definition import ToolDefinition  # noqa: E402
 from api_service.runtime.service import RuntimeService  # noqa: E402
+from api_service.runtime_tools.configured_tools import load_runtime_tool_config, run_analysis_tools_payload  # noqa: E402
 from api_service.schemas import WorkspaceBatchRunSummary  # noqa: E402
+from neurocade_runtime_tools import execution as runtime_execution_module  # noqa: E402
+
+from backend_common import providers as provider_module  # noqa: E402
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import build_case_id  # noqa: E402
 from backend_common.db import AssistantMessage, Base, Case, RoleEnum, User, Workspace, WorkspaceMembership  # noqa: E402
-from backend_common import providers as provider_module  # noqa: E402
-from neurocade_runtime_tools import execution as runtime_execution_module  # noqa: E402
 
 
 class FakeModel:

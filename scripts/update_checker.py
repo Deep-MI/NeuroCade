@@ -13,7 +13,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_URL = "https://NeuroCade.org/latest.json"
 DEFAULT_INTERVAL_SECONDS = 86_400

@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
-from api_service.workspace_batch.queries import selected_cases_for_run, select_cases_for_batch
+from api_service.workspace_batch.queries import select_cases_for_batch, selected_cases_for_run
 from backend_common.auth import AuthContext
 from backend_common.case_storage import case_slug_from_id, case_storage_dir, ensure_workspace_analysis_storage_layout
 from backend_common.db import Case, Run, Workspace

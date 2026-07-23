@@ -5,20 +5,26 @@ from __future__ import annotations
 import logging
 import os
 
+from neurocade_runtime_tools.container_request import (
+    RuntimeBind,
+    build_container_request,
+    container_gpu_enabled,
+    core_container_image,
+)
+from neurocade_runtime_tools.execution import (
+    RuntimeArtifactIndexTarget,
+    RuntimeContainerRunRequest,
+    RuntimeExecutionPolicy,
+    RuntimeExecutionRequest,
+)
+
+from api_service.file_utils import safe_write_json
 from api_service.jobs import job_manager
 from api_service.runtime.constants import FASTSURFER_QUEUE
-from api_service.file_utils import safe_write_json
 from api_service.runtime.execution import RuntimeCompletionGuard, execute_runtime_request
 from backend_common.case_storage import case_slug_from_id
 from backend_common.db import SessionLocal
 from backend_common.settings import get_settings
-from neurocade_runtime_tools.container_request import (
-    RuntimeBind,
-    build_container_request,
-    core_container_image,
-    container_gpu_enabled,
-)
-from neurocade_runtime_tools.execution import RuntimeArtifactIndexTarget, RuntimeContainerRunRequest, RuntimeExecutionPolicy, RuntimeExecutionRequest
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -214,7 +220,7 @@ def run_fastsurfer_task(
         if result.returncode != 0:
             stderr_tail = ""
             try:
-                with open(stderr_path, "r", encoding="utf-8") as stderr_read:
+                with open(stderr_path, encoding="utf-8") as stderr_read:
                     stderr_tail = "".join(stderr_read.readlines()[-40:]).strip()
             except Exception:
                 pass

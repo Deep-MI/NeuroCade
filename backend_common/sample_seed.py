@@ -10,10 +10,16 @@ from sqlalchemy.orm import Session
 from backend_common.case_events import record_case_event
 from backend_common.case_storage import build_case_id, case_storage_dir, ensure_case_storage_layout
 from backend_common.db import Artifact, ArtifactKind, Case, RoleEnum, User, Workspace, WorkspaceMembership
-from backend_common.surface_artifacts import ANNOTATION_FILES, CURVATURE_FILES, SURFACE_FILES, classify_annotation_metadata, classify_curvature_metadata, classify_surface_metadata
-from backend_common.storage import resolve_artifact_path
 from backend_common.settings import ROOT_DIR, get_settings
-
+from backend_common.storage import resolve_artifact_path
+from backend_common.surface_artifacts import (
+    ANNOTATION_FILES,
+    CURVATURE_FILES,
+    SURFACE_FILES,
+    classify_annotation_metadata,
+    classify_curvature_metadata,
+    classify_surface_metadata,
+)
 
 settings = get_settings()
 GENERATED_SAMPLE_CASE_ROOT = ROOT_DIR / "sample_case" / "FastSurfer_Rhineland_0000"
@@ -129,7 +135,7 @@ def _sample_case_requires_refresh(
 
     artifact_map: dict[str, Artifact] = {}
     expected_artifact_paths: set[str] = set()
-    for artifact_path, artifact in zip(artifact_paths, current_artifacts):
+    for artifact_path, artifact in zip(artifact_paths, current_artifacts, strict=False):
         if artifact_path not in expected_paths:
             continue
         if artifact_path in expected_artifact_paths:
