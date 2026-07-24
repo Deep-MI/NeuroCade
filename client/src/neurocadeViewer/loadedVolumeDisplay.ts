@@ -10,7 +10,7 @@ export function setLoadedVolumeOpacity(nv: Niivue, loaded: NiivueVolumeInterop, 
   const index = asNiivueInterop(nv).volumes.indexOf(loaded);
   if (index < 0) return 'none';
   loaded.opacity = nextOpacity;
-  void nv.setVolume(index, { opacity: nextOpacity });
+  loaded.isDirty = true;
   return 'updated';
 }
 
@@ -24,6 +24,5 @@ export function reorderLoadedVolumes(nv: Niivue, desired: NiivueVolumeInterop[])
       interop.model.moveVolume(currentIndex, targetIndex);
     }
   }
-  void nv.updateGLVolume();
   return true;
 }

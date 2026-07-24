@@ -4,22 +4,17 @@ import test from 'node:test';
 import { reorderLoadedVolumes, setLoadedVolumeOpacity } from '../src/neurocadeViewer/loadedVolumeDisplay.js';
 import type { NiivueVolumeInterop } from '../src/utils/niivueInterop.js';
 
-void test('setLoadedVolumeOpacity uses the public NiiVue volume update API', () => {
+void test('setLoadedVolumeOpacity stages an opacity change for a batched GPU refresh', () => {
   const loaded = { id: 'orig', opacity: 1 } as NiivueVolumeInterop;
-  const updates: { index: number; opacity?: number }[] = [];
   const nv = {
     volumes: [loaded],
-    setVolume: (index: number, update: { opacity?: number }) => {
-      updates.push({ index, ...update });
-      return Promise.resolve();
-    },
   };
 
   const result = setLoadedVolumeOpacity(nv as never, loaded, 0.35);
 
   assert.equal(result, 'updated');
   assert.equal(loaded.opacity, 0.35);
-  assert.deepEqual(updates, [{ index: 0, opacity: 0.35 }]);
+  assert.equal(loaded.isDirty, true);
 });
 
 void test('reorderLoadedVolumes uses the NiiVue model ordering API', () => {

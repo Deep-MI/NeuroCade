@@ -26,6 +26,7 @@ export function applyLayerDisplay(nv: Niivue, id: string, next: Volume, updates:
       const result = setNiivueVolumeOpacity(nv, loaded, effectiveLayerOpacity(next));
       if (result === 'updated') {
         if (typeof updates.visible === 'boolean' || previousOpacity === 0 || nextOpacity === 0) return null;
+        return { kind: 'refresh' };
       }
     }
   }
@@ -59,7 +60,7 @@ export function previewLayerOpacity(nv: Niivue, id: string, next: Volume): PaneR
     const nextOpacity = effectiveLayerOpacity(next);
     const result = setNiivueVolumeOpacity(nv, loaded, nextOpacity);
     if (result === 'updated') {
-      action = null;
+      action = { kind: 'refresh' };
     }
   }
   if (mesh) {

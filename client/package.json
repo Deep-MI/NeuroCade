@@ -9,8 +9,11 @@
     "npm": ">=10.9.0"
   },
   "scripts": {
+    "predev": "node ./scripts/applyNiivuePatches.mjs",
     "dev": "vite",
+    "prebuild": "node ./scripts/applyNiivuePatches.mjs",
     "build": "tsc -b && vite build",
+    "preelectron:local": "node ./scripts/applyNiivuePatches.mjs",
     "electron:local": "electron ./electron/main.mjs",
     "lint": "eslint .",
     "test:node": "node -e \"require('node:fs').rmSync('.tmp-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --test .tmp-test/tests/*.test.js",

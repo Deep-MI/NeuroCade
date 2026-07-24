@@ -5,10 +5,12 @@ import type { LocationInfo } from '../types';
 import { appFetchUrl } from '../utils/api';
 import {
   asNiivueInterop,
+  type NiivueColorMap,
   type NiivueMeshInterop,
   type NiivueVolumeInterop,
   type SurfaceCompanionLayer,
 } from '../utils/niivueInterop';
+import { compileNiivueLabelColorMap } from '../utils/niivueColorMap';
 import { prepareNiivueVolume } from '../utils/niivueMgh';
 import {
   applyBrightnessContrast,
@@ -229,37 +231,78 @@ export async function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInter
   }
 }
 
-export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: AbortSignal) {
+interface PreparedVolumeLayer {
+  source: Volume;
+  file: File;
+  labelMap?: NiivueColorMap;
+}
+
+async function prepareVolumeLayer(volume: Volume, signal: AbortSignal): Promise<PreparedVolumeLayer> {
   const filename = volume.filename || volume.name;
   const [buffer, labelMap] = await Promise.all([
     fetchCachedArrayBuffer(volume.url, signal),
     resolveVolumeLabelColorMap(volume),
   ]);
+  if (signal.aborted) throw new DOMException('Volume preparation aborted', 'AbortError');
   const prepared = await prepareNiivueVolume(buffer, filename);
-  const file = new File([prepared.buffer], prepared.filename);
-  await nv.addVolume({
-    url: file,
-    name: filename,
-    colormap: resolveVolumeColormap(volume),
-    isColorbarVisible: false,
-    opacity: effectiveLayerOpacity(volume),
-    isTransparentBelowCalMin: volume.type === 'segmentation',
-  });
-  const loaded = nv.volumes.at(-1) as NiivueVolumeInterop | undefined;
-  if (loaded) {
-    loaded.id = volume.id;
-    loaded.name = volume.name || volume.filename;
-    loaded.url = volume.url;
-    if (isSegmentationVolume(volume)) {
-      const volumeIndex = nv.volumes.indexOf(loaded);
-      if (labelMap && volumeIndex >= 0) await nv.setColormapLabel(volumeIndex, labelMap);
+  if (signal.aborted) throw new DOMException('Volume preparation aborted', 'AbortError');
+  return {
+    source: volume,
+    file: new File([prepared.buffer], prepared.filename),
+    labelMap,
+  };
+}
+
+function configureLoadedVolume(
+  loaded: NiivueVolumeInterop,
+  { source, labelMap }: PreparedVolumeLayer,
+): void {
+  loaded.id = source.id;
+  loaded.name = source.name || source.filename;
+  loaded.url = source.url;
+  loaded.isColorbarVisible = false;
+  loaded.opacity = effectiveLayerOpacity(source);
+  loaded.colormap = resolveVolumeColormap(source);
+  loaded.isTransparentBelowCalMin = source.type === 'segmentation';
+  if (isSegmentationVolume(source) && labelMap) {
+    loaded.colormapLabel = compileNiivueLabelColorMap(labelMap);
+  }
+  if (source.type === undefined || source.type === 'intensity') {
+    applyBrightnessContrast(loaded, source);
+  }
+  loaded.isDirty = true;
+}
+
+export async function addNiivueVolumeLayers(
+  nv: Niivue,
+  volumes: Volume[],
+  signal: AbortSignal,
+  renderOrderSources: Volume[] = volumes,
+): Promise<void> {
+  const preparedLayers = await Promise.all(
+    volumes.map((volume) => prepareVolumeLayer(volume, signal)),
+  );
+  if (signal.aborted) throw new DOMException('Volume loading aborted', 'AbortError');
+
+  for (const prepared of preparedLayers) {
+    const volumeCount = nv.volumes.length;
+    await nv.model.addVolume({
+      url: prepared.file,
+      name: prepared.source.filename || prepared.source.name,
+      colormap: resolveVolumeColormap(prepared.source),
+      isColorbarVisible: false,
+      opacity: effectiveLayerOpacity(prepared.source),
+      isTransparentBelowCalMin: prepared.source.type === 'segmentation',
+    });
+    if (signal.aborted) throw new DOMException('Volume loading aborted', 'AbortError');
+    const loaded = nv.volumes[volumeCount] as NiivueVolumeInterop | undefined;
+    if (loaded) {
+      configureLoadedVolume(loaded, prepared);
     }
-    loaded.isColorbarVisible = false;
-    if (volume.type === undefined || volume.type === 'intensity') {
-      applyBrightnessContrast(loaded, volume);
-      const volumeIndex = nv.volumes.indexOf(loaded);
-      if (volumeIndex >= 0) await nv.setVolume(volumeIndex, { calMin: loaded.calMin, calMax: loaded.calMax });
-    }
+  }
+  if (preparedLayers.length > 0) {
+    enforceVolumeRenderOrder(nv, renderOrderSources);
+    await nv.updateGLVolume();
   }
 }
 

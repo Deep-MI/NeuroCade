@@ -23,18 +23,11 @@ export function useViewerPaneInstance() {
     if (layerRefreshFrameRef.current !== null) return;
     layerRefreshFrameRef.current = window.requestAnimationFrame(() => {
       layerRefreshFrameRef.current = null;
-      const pending = [...pendingLayerRefreshesRef.current];
       pendingLayerRefreshesRef.current.clear();
-      for (const volume of pending) {
-        const volumeIndex = nv.volumes.indexOf(volume);
-        if (volumeIndex >= 0) {
-          void nv.setVolume(volumeIndex, {
-            calMin: volume.calMin,
-            calMax: volume.calMax,
-            opacity: volume.opacity,
-          });
-        }
-      }
+      // Callers already updated the loaded volume fields. setVolume emits a
+      // volumeUpdated event, which feeds the same value back into React and can
+      // race the next range input event. Refresh the GPU once without emitting.
+      void nv.updateGLVolume();
     });
   }, []);
 

@@ -24,7 +24,12 @@ import {
   type WindowSetting,
 } from './paneSyncKeys';
 import { useNiivuePaneLayers } from './useNiivuePaneLayers';
-import type { ViewerDragMode, ViewerPlaneSliceType, ViewerSliceType } from './viewerControls';
+import {
+  inPlaneCrosshairDelta,
+  type ViewerDragMode,
+  type ViewerPlaneSliceType,
+  type ViewerSliceType,
+} from './viewerControls';
 
 export type { WindowSetting } from './paneSyncKeys';
 
@@ -143,7 +148,9 @@ export function NiivuePane({
       isOrientationTextVisible: false,
       // Dark grey so a volume's extent is visible against the empty canvas.
       backgroundColor: [0.16, 0.16, 0.16, 1],
-      crosshairColor: [0.47, 0.66, 1, 0.7],
+      // Keep the cursor opaque: translucent crosshairs visually merge with the
+      // slice and look as if part of the line is behind bright anatomy.
+      crosshairColor: [0.47, 0.66, 1, 1],
       crosshairGap: 3,
       sliceType,
       showRender,
@@ -275,14 +282,7 @@ export function NiivuePane({
     const nvInterop = nv ? asNiivueInterop(nv) : null;
     if (!nv || !nvInterop || typeof nvInterop.moveCrosshairInVox !== 'function' || nvInterop.volumes.length === 0) return;
     const axis: ViewerPlaneSliceType = plane ? sliceType : 0;
-    let delta: [number, number, number];
-    if (key === 'ArrowUp' || key === 'ArrowDown') {
-      const into = key === 'ArrowUp' ? -1 : 1;
-      delta = axis === 2 ? [into, 0, 0] : axis === 1 ? [0, into, 0] : [0, 0, into];
-    } else {
-      const right = key === 'ArrowRight' ? 1 : -1;
-      delta = axis === 2 ? [0, right, 0] : [right, 0, 0];
-    }
+    const delta = inPlaneCrosshairDelta(axis, key);
     nvInterop.moveCrosshairInVox(delta[0], delta[1], delta[2]);
     event.preventDefault();
     event.stopPropagation();

@@ -3,6 +3,7 @@ import Niivue from '@niivue/niivue';
 
 import type { Volume } from '../types';
 import { isSurfaceLayer } from '../types';
+import { compileNiivueLabelColorMap } from '../utils/niivueColorMap';
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
 import {
   applyBrightnessContrast,
@@ -11,7 +12,7 @@ import {
 } from '../utils/volumeColormap';
 import {
   addNiivueSurfaceLayer,
-  addNiivueVolumeLayer,
+  addNiivueVolumeLayers,
   effectiveLayerOpacity,
   enforceVolumeRenderOrder,
   setNiivueVolumeOpacity,
@@ -125,22 +126,22 @@ export function useNiivuePaneLayers({
       }
       onLoadingChange?.(true);
       try {
-        for (const volume of pendingVolumes) {
-          if (cancelled || controller.signal.aborted) break;
-          claim(volume.id);
-          try {
-            await addNiivueVolumeLayer(nv, volume, controller.signal);
-          } catch (error) {
-            if (!cancelled && !controller.signal.aborted) {
-              onError?.(`Failed to load volume ${volume.filename || volume.name}: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          } finally {
-            release(volume.id);
+        for (const volume of pendingVolumes) claim(volume.id);
+        try {
+          if (!cancelled && !controller.signal.aborted && pendingVolumes.length > 0) {
+            await addNiivueVolumeLayers(
+              nv,
+              pendingVolumes,
+              controller.signal,
+              latestVolumesRef.current,
+            );
           }
-        }
-        if (!cancelled && pendingVolumes.length > 0) {
-          enforceVolumeRenderOrder(nv, latestVolumesRef.current);
-          void nv.updateGLVolume();
+        } catch (error) {
+          if (!cancelled && !controller.signal.aborted) {
+            onError?.(`Failed to load volumes: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        } finally {
+          for (const volume of pendingVolumes) release(volume.id);
         }
 
         await Promise.all(visibleSurfaces.map(async (surface) => {
@@ -154,9 +155,6 @@ export function useNiivuePaneLayers({
             release(surface.id);
           }
         }));
-        if (!cancelled && visibleSurfaces.length > 0) {
-          void nv.updateGLVolume();
-        }
       } finally {
         if (!cancelled) onLoadingChange?.(false);
       }
@@ -182,12 +180,15 @@ export function useNiivuePaneLayers({
     const nv = nvRef.current;
     if (!nv) return;
     const sources = latestVolumesRef.current;
+    let volumeDisplayChanged = false;
 
     for (const loaded of asNiivueInterop(nv).volumes) {
       const source = sources.find((volume) => volume.id === loaded.id);
       if (!source || isSurfaceLayer(source)) continue;
       const nextOpacity = effectiveLayerOpacity(source);
-      setNiivueVolumeOpacity(nv, loaded, nextOpacity);
+      if (setNiivueVolumeOpacity(nv, loaded, nextOpacity) === 'updated') {
+        volumeDisplayChanged = true;
+      }
     }
 
     for (const mesh of (asNiivueInterop(nv).meshes ?? [])) {
@@ -205,34 +206,33 @@ export function useNiivuePaneLayers({
         void nv.setMesh(meshIndex, { visible: mesh.visible, opacity: mesh.opacity });
       }
     }
-  }, [latestVolumesRef, nvRef, visibilityKey]);
+    if (volumeDisplayChanged) scheduleRefresh();
+  }, [latestVolumesRef, nvRef, scheduleRefresh, visibilityKey]);
 
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
     const syncAppearance = async () => {
       const sources = latestVolumesRef.current;
+      let changed = false;
       for (const loaded of asNiivueInterop(nv).volumes) {
         const source = sources.find((volume) => volume.id === loaded.id);
         if (!source || isSurfaceLayer(source)) continue;
-        const volumeIndex = nv.volumes.indexOf(loaded);
-        if (volumeIndex < 0) continue;
 
         const colormap = resolveVolumeColormap(source);
         if ((source.type === undefined || source.type === 'intensity') && !manualWindowingIds.current.has(source.id)) {
           applyBrightnessContrast(loaded, source);
         }
-        await nv.setVolume(volumeIndex, {
-          colormap,
-          isColorbarVisible: false,
-          calMin: loaded.calMin,
-          calMax: loaded.calMax,
-        });
+        loaded.colormap = colormap;
+        loaded.isColorbarVisible = false;
         if (source.type === 'segmentation') {
           const labelMap = await resolveVolumeLabelColorMap(source);
-          if (labelMap) await nv.setColormapLabel(volumeIndex, labelMap);
+          if (labelMap) loaded.colormapLabel = compileNiivueLabelColorMap(labelMap);
         }
+        loaded.isDirty = true;
+        changed = true;
       }
+      if (changed) await nv.updateGLVolume();
     };
     void syncAppearance().catch((error) => {
       console.warn('[NiivuePane] Could not update volume appearance:', error);
@@ -263,12 +263,11 @@ export function useNiivuePaneLayers({
     }
 
     if (changedVolumes.length > 0) {
-      for (const loaded of changedVolumes) {
-        const volumeIndex = nv.volumes.indexOf(loaded);
-        if (volumeIndex >= 0) void nv.setVolume(volumeIndex, { calMin: loaded.calMin, calMax: loaded.calMax });
-      }
+      // The fields are already current. Avoid setVolume here because it emits
+      // volumeUpdated and can create a React -> NiiVue -> React feedback loop.
+      scheduleRefresh();
     }
-  }, [activeWindowingKey, latestVolumesRef, manualWindowingIds, nvRef, windowingsRef]);
+  }, [activeWindowingKey, latestVolumesRef, manualWindowingIds, nvRef, scheduleRefresh, windowingsRef]);
 
   useEffect(() => {
     const nv = nvRef.current;

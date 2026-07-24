@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { prepareNiivueVolume } from '../src/utils/niivueMgh.js';
+import { prepareNiivueVolumeInline } from '../src/utils/niivueMghCore.js';
 
 function makeInt16Mgh(): ArrayBuffer {
   const buffer = new ArrayBuffer(284 + 4);
@@ -24,7 +24,7 @@ function makeInt16Mgh(): ArrayBuffer {
 }
 
 void test('prepareNiivueVolume converts big-endian MGH voxels to little-endian NIfTI', async () => {
-  const prepared = await prepareNiivueVolume(makeInt16Mgh(), 'brain.mgh');
+  const prepared = await prepareNiivueVolumeInline(makeInt16Mgh(), 'brain.mgh');
   const view = new DataView(prepared.buffer);
 
   assert.equal(prepared.filename, 'brain.nii');
@@ -45,7 +45,7 @@ void test('prepareNiivueVolume converts big-endian MGH voxels to little-endian N
 
 void test('prepareNiivueVolume leaves non-MGH volumes unchanged', async () => {
   const buffer = new ArrayBuffer(8);
-  const prepared = await prepareNiivueVolume(buffer, 'brain.nii.gz');
+  const prepared = await prepareNiivueVolumeInline(buffer, 'brain.nii.gz');
 
   assert.equal(prepared.buffer, buffer);
   assert.equal(prepared.filename, 'brain.nii.gz');
