@@ -9,11 +9,13 @@ import {
   type NiivueVolumeInterop,
   type SurfaceCompanionLayer,
 } from '../utils/niivueInterop';
+import { prepareNiivueVolume } from '../utils/niivueMgh';
 import {
   applyBrightnessContrast,
   resolveVolumeColormap,
   resolveVolumeLabelColorMap,
 } from '../utils/volumeColormap';
+import { freeSurferAnnotationToMz3 } from '../utils/SurfaceLoader';
 import { resolveSurfaceLayerColorMode, surfaceColor } from '../utils/surfaceColors';
 import { reorderLoadedVolumes, setLoadedVolumeOpacity } from './loadedVolumeDisplay';
 
@@ -173,13 +175,19 @@ async function addSurfaceCompanionLayer(nv: Niivue, mesh: NiivueMeshInterop, sur
     colorMode === 'annotation' ? `${surface.filename}.annot` : `${surface.filename}.curv`,
   );
   const buffer = await fetchCachedArrayBuffer(companionUrl, signal);
-  const file = new File([buffer], companionName);
+  const layerBuffer = colorMode === 'annotation'
+    ? freeSurferAnnotationToMz3(buffer, mesh.positions.length / 3)
+    : buffer;
+  const layerName = colorMode === 'annotation'
+    ? `${companionName.replace(/\.annot$/i, '')}.mz3`
+    : companionName;
+  const file = new File([layerBuffer], layerName);
   const layer: SurfaceCompanionLayer = colorMode === 'annotation'
     ? {
       url: file,
       name: companionName,
       opacity: 1,
-      colormap: 'freesurfer',
+      colormap: 'gray',
     }
     : {
       url: file,
@@ -223,8 +231,12 @@ export async function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInter
 
 export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: AbortSignal) {
   const filename = volume.filename || volume.name;
-  const buffer = await fetchCachedArrayBuffer(volume.url, signal);
-  const file = new File([buffer], filename);
+  const [buffer, labelMap] = await Promise.all([
+    fetchCachedArrayBuffer(volume.url, signal),
+    resolveVolumeLabelColorMap(volume),
+  ]);
+  const prepared = await prepareNiivueVolume(buffer, filename);
+  const file = new File([prepared.buffer], prepared.filename);
   await nv.addVolume({
     url: file,
     name: filename,
@@ -239,7 +251,6 @@ export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: A
     loaded.name = volume.name || volume.filename;
     loaded.url = volume.url;
     if (isSegmentationVolume(volume)) {
-      const labelMap = await resolveVolumeLabelColorMap(volume);
       const volumeIndex = nv.volumes.indexOf(loaded);
       if (labelMap && volumeIndex >= 0) await nv.setColormapLabel(volumeIndex, labelMap);
     }

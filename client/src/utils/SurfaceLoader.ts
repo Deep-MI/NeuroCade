@@ -26,6 +26,9 @@ export interface SurfaceAnnotationData {
 
 const TRIANGLE_FILE_MAGIC = 16_777_214;
 const NEW_CURV_FILE_MAGIC = 16_777_215;
+const MZ3_MAGIC = 23_117;
+const MZ3_SCALAR_ATTRIBUTE = 8;
+const MZ3_LABEL_COLORMAP_ATTRIBUTE = 64;
 
 function readInt3(view: DataView, offset: number): number {
     return (view.getUint8(offset) << 16) | (view.getUint8(offset + 1) << 8) | view.getUint8(offset + 2);
@@ -165,6 +168,54 @@ export function parseFreeSurferAnnotation(buffer: ArrayBuffer, expectedVertexCou
     }
 
     return { labels, colorTable, names };
+}
+
+/**
+ * Convert a FreeSurfer annotation into a labeled MZ3 scalar layer.
+ *
+ * NiiVue 1.0 does not expose an `.annot` mesh-layer reader through
+ * `addMeshLayer`, but it does support MZ3 label layers. Label zero is reserved
+ * for unassigned vertices so that they remain transparent.
+ */
+export function freeSurferAnnotationToMz3(buffer: ArrayBuffer, expectedVertexCount?: number): ArrayBuffer {
+    const annotation = parseFreeSurferAnnotation(buffer, expectedVertexCount);
+    const regionCount = annotation.colorTable.length / 4;
+    const colorMap = {
+        R: [0],
+        G: [0],
+        B: [0],
+        A: [0],
+        I: [0],
+        labels: ['Unassigned'],
+    };
+
+    for (let index = 0; index < regionCount; index += 1) {
+        const colorOffset = index * 4;
+        colorMap.R.push(annotation.colorTable[colorOffset]);
+        colorMap.G.push(annotation.colorTable[colorOffset + 1]);
+        colorMap.B.push(annotation.colorTable[colorOffset + 2]);
+        colorMap.A.push(annotation.colorTable[colorOffset + 3]);
+        colorMap.I.push(index + 1);
+        colorMap.labels.push(annotation.names[index] || `Region ${index}`);
+    }
+
+    const encodedColorMap = new TextEncoder().encode(JSON.stringify(colorMap));
+    const headerLength = 16;
+    const output = new ArrayBuffer(headerLength + encodedColorMap.byteLength + annotation.labels.length * 4);
+    const view = new DataView(output);
+    view.setUint16(0, MZ3_MAGIC, true);
+    view.setUint16(2, MZ3_SCALAR_ATTRIBUTE | MZ3_LABEL_COLORMAP_ATTRIBUTE, true);
+    view.setUint32(4, 0, true);
+    view.setUint32(8, annotation.labels.length, true);
+    view.setUint32(12, encodedColorMap.byteLength, true);
+    new Uint8Array(output, headerLength, encodedColorMap.byteLength).set(encodedColorMap);
+
+    let scalarOffset = headerLength + encodedColorMap.byteLength;
+    for (const label of annotation.labels) {
+        view.setFloat32(scalarOffset, label < 0 ? 0 : label + 1, true);
+        scalarOffset += 4;
+    }
+    return output;
 }
 
 export function parseFreeSurferCurvature(buffer: ArrayBuffer, expectedVertexCount?: number): Float32Array {

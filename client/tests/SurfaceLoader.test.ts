@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseFreeSurferAnnotation, parseFreeSurferCurvature, parseFreeSurferSurface } from '../src/utils/SurfaceLoader.js';
+import {
+  freeSurferAnnotationToMz3,
+  parseFreeSurferAnnotation,
+  parseFreeSurferCurvature,
+  parseFreeSurferSurface,
+} from '../src/utils/SurfaceLoader.js';
 import { SURFACE_LIGHT_DIRECTIONS } from '../src/utils/surfaceLighting.js';
 
 const TRIANGLE_FILE_MAGIC = 16_777_214;
@@ -232,6 +237,33 @@ void test('parseFreeSurferSurface rejects unsupported magic numbers', () => {
     () => parseFreeSurferSurface(buffer),
     /Unsupported FreeSurfer surface magic/,
   );
+});
+
+void test('freeSurferAnnotationToMz3 creates an opaque labeled mesh overlay', () => {
+  const mz3 = freeSurferAnnotationToMz3(makeAnnotation(), 3);
+  const view = new DataView(mz3);
+  const colorMapLength = view.getUint32(12, true);
+  const colorMap = JSON.parse(new TextDecoder().decode(mz3.slice(16, 16 + colorMapLength))) as {
+    R: number[];
+    G: number[];
+    B: number[];
+    A: number[];
+    I: number[];
+    labels: string[];
+  };
+  const scalarOffset = 16 + colorMapLength;
+
+  assert.equal(view.getUint16(0, true), 23_117);
+  assert.equal(view.getUint16(2, true), 72);
+  assert.equal(view.getUint32(8, true), 3);
+  assert.deepEqual(colorMap.I, [0, 1, 2]);
+  assert.deepEqual(colorMap.A, [0, 0, 255]);
+  assert.deepEqual(colorMap.labels, ['Unassigned', 'unknown', 'region']);
+  assert.deepEqual([
+    view.getFloat32(scalarOffset, true),
+    view.getFloat32(scalarOffset + 4, true),
+    view.getFloat32(scalarOffset + 8, true),
+  ], [0, 2, 2]);
 });
 
 void test('parseFreeSurferCurvature reads new-format float curvature', () => {

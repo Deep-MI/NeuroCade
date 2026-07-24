@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["node"],
+    "types": ["node", "vite/client"],
     "strict": true,
     "skipLibCheck": true,
     "rootDir": ".",
@@ -11,12 +11,13 @@
   },
   "include": [
     "src/utils/SurfaceLoader.ts",
+    "src/utils/LutParser.ts",
+    "src/utils/niivueColorMap.ts",
+    "src/utils/niivueMgh.ts",
     "src/utils/layerAliases.ts",
     "src/utils/surfaceLighting.ts",
     "src/neurocadeViewer/referenceVolume.ts",
     "src/neurocadeViewer/loadedVolumeDisplay.ts",
-    "src/neurocadeViewer/surfaceTransforms.ts",
-    "src/neurocadeViewer/surfaceContours.ts",
     "src/neurocadeViewer/nativeDrawingHelpers.ts",
     "src/neurocadeViewer/paneSyncKeys.ts",
     "src/types.ts",
@@ -33,10 +34,10 @@
     "tests/layerAliases.test.ts",
     "tests/nativeDrawing.test.ts",
     "tests/niivueLayers.test.ts",
+    "tests/niivueMgh.test.ts",
     "tests/paneSyncKeys.test.ts",
     "tests/SurfaceLoader.test.ts",
-    "tests/referenceVolume.test.ts",
-    "tests/surfaceTransforms.test.ts",
-    "tests/surfaceContours.test.ts"
+    "tests/volumeColormap.test.ts",
+    "tests/referenceVolume.test.ts"
   ]
 }

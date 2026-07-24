@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
-import Niivue, {
+import {
   DRAG_MODE,
   MULTIPLANAR_TYPE,
   SHOW_RENDER,
   type NiiVueLocation,
   type VolumeUpdatedDetail,
 } from '@niivue/niivue';
+import Niivue from '@niivue/niivue/webgl2';
 
 import type { LocationInfo, Volume } from '../types';
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';

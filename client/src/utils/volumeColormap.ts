@@ -1,5 +1,6 @@
 import { appFetch } from './api';
-import { parseLUT, type LutMap } from './LutParser';
+import { parseLUT } from './LutParser';
+import { lutMapToNiivueColorMap } from './niivueColorMap';
 import type { IntensityVolumeLayer, Volume } from '../types';
 import type { NiivueColorMap, NiivueVolumeInterop } from './niivueInterop';
 
@@ -31,20 +32,11 @@ export function resolveVolumeColormap(volume: Volume): string {
   }
   const lut = inferredSegmentationLut(volume);
   if (lut === 'binary') return 'red';
-  if (lut === 'freesurfer') return 'freesurfer';
+  // The discrete label map is installed separately with setColormapLabel.
+  // NiiVue's continuous "freesurfer" gradient is not a label LUT and makes
+  // atlas values look sparse and incorrectly colored while the map is loading.
+  if (lut === 'freesurfer') return 'gray';
   return volume.colormap || 'red';
-}
-
-function lutMapToNiivueColorMap(lut: LutMap): NiivueColorMap {
-  const entries = [...lut.entries()].sort(([left], [right]) => left - right);
-  return {
-    R: entries.map(([, entry]) => entry.rgb[0]),
-    G: entries.map(([, entry]) => entry.rgb[1]),
-    B: entries.map(([, entry]) => entry.rgb[2]),
-    A: entries.map(([index, entry]) => index === 0 ? 0 : entry.alpha),
-    I: entries.map(([index]) => index),
-    labels: entries.map(([, entry]) => entry.name),
-  };
 }
 
 export async function getFreesurferColorMap(): Promise<NiivueColorMap> {
@@ -76,8 +68,8 @@ export async function resolveVolumeLabelColorMap(volume: Volume): Promise<Niivue
 export function applyBrightnessContrast(loaded: NiivueVolumeInterop, volume: IntensityVolumeLayer): void {
   const brightness = volume.brightness ?? 0;
   const contrast = volume.contrast ?? 1.0;
-  const min = loaded.globalMin ?? 0;
-  const max = loaded.globalMax ?? 1;
+  const min = loaded.robustMin ?? loaded.globalMin ?? 0;
+  const max = loaded.robustMax ?? loaded.globalMax ?? 1;
   const range = max - min;
   if (range === 0) return;
   const center = (min + max) / 2 + (brightness / 100) * range;
