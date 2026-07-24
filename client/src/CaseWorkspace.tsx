@@ -513,6 +513,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
             <NeuroCadeCaseViewer
               ref={mriViewerRef}
               volumes={volumes}
+              caseLoading={controller.isCaseLoading}
               layerPanelOpen={layerPanelOpen}
               layerPanelWidth={layerPanelWidth}
               onStartLayerPanelResize={startLayerPanelResize}

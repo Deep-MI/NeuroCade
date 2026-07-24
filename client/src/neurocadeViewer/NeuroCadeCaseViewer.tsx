@@ -17,6 +17,7 @@ import { VIEW_MODES, type NeuroCadeViewMode, type ViewerDragMode, type ViewerSli
 
 interface NeuroCadeCaseViewerProps {
   volumes: Volume[];
+  caseLoading?: boolean;
   layerPanelOpen: boolean;
   layerPanelWidth: number;
   onStartLayerPanelResize: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -72,6 +73,7 @@ function markViewerMeasure(name: string, action: () => void): void {
 
 export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerProps>(({
   volumes,
+  caseLoading = false,
   layerPanelOpen,
   layerPanelWidth,
   onStartLayerPanelResize,
@@ -109,7 +111,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const [dragTarget, setDragTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
   const [availableColormaps, setAvailableColormaps] = useState<string[]>([]);
 
-  const loading = Object.values(loadingPanes).some(Boolean);
+  const loading = caseLoading || Object.values(loadingPanes).some(Boolean);
   const selectedView = VIEW_MODES.find((mode) => mode.id === viewMode) ?? VIEW_MODES[VIEW_MODES.length - 1];
   const isGrid = viewMode === 'multi';
   const primarySliceType: ViewerSliceType = isGrid ? 0 : selectedView.sliceType;

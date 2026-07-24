@@ -11,6 +11,7 @@ import { loadClosedCaseVolumes, removeCaseState } from '../utils/caseStorage';
 import * as api from '../utils/api';
 import { dedupeOutputVolumes, outputVolumeToLayer, selectInitialIntensityOutputVolume, visibleOutputVolumes } from '../utils/caseLayers';
 import { restorePersistedCaseLayers, savePersistedCaseLayers } from '../utils/caseLayerPersistence';
+import { isCaseTransitionPending } from '../utils/caseLoading';
 import { caseViewerPath } from '../utils/caseRoutes';
 import { createGuiSessionId } from '../utils/guiSession';
 import { isLayerFile } from '../utils/layerAliases';
@@ -39,6 +40,7 @@ export function useCaseWorkspaceController({
   const [chatNotifications, setChatNotifications] = useState<ChatMessage[]>([]);
   const [availableCases, setAvailableCases] = useState<CaseSummary[]>([]);
   const [analysisTools, setAnalysisTools] = useState<AnalysisToolSummary[]>([]);
+  const [loadingCaseId, setLoadingCaseId] = useState<string | null>(initialCaseId);
 
   const [guiSessionId] = useState(createGuiSessionId);
   const suppressedRouteCaseRef = useRef<string | null>(null);
@@ -54,6 +56,7 @@ export function useCaseWorkspaceController({
   const isStaleWorkspaceAction = useCallback((actionId: number) => workspaceActionRef.current !== actionId, []);
 
   const currentCaseId = activeCaseId ?? initialCaseId ?? null;
+  const isCaseLoading = isCaseTransitionPending(initialCaseId, activeCaseId, loadingCaseId);
   const uploadState: UploadState = {
     status: isUploading ? 'uploading' : (currentCaseId ? 'uploaded' : 'idle'),
     caseId: currentCaseId,
@@ -123,30 +126,37 @@ export function useCaseWorkspaceController({
 
   const loadCase = useCallback(async (caseId: string) => {
     const actionId = startWorkspaceAction();
+    setLoadingCaseId(caseId);
     setRunInputOptions([]);
     setVolumes([]);
 
-    await fetchCaseOutputs(caseId, actionId);
-    if (isStaleWorkspaceAction(actionId)) return;
-    await fetchLogs(caseId, actionId);
-    if (isStaleWorkspaceAction(actionId)) return;
-
-    setVolumes((serverVolumes) => restorePersistedCaseLayers(caseId, serverVolumes));
-
     try {
-      const data = await api.fetchStatus(caseId);
+      await fetchCaseOutputs(caseId, actionId);
       if (isStaleWorkspaceAction(actionId)) return;
-      setRunStatus(data.status ?? 'unknown');
-    } catch {
+      await fetchLogs(caseId, actionId);
       if (isStaleWorkspaceAction(actionId)) return;
-      setRunStatus('unknown');
-    }
 
-    setActiveCaseId(caseId);
-    setCurrentCaseTitle(caseTitlesRef.current[caseId] ?? null);
-    setChatNotifications([{ role: 'info', content: `Loaded case ${caseTitlesRef.current[caseId] ?? caseId}.` }]);
-    if (suppressedRouteCaseRef.current === caseId) {
-      suppressedRouteCaseRef.current = null;
+      setVolumes((serverVolumes) => restorePersistedCaseLayers(caseId, serverVolumes));
+
+      try {
+        const data = await api.fetchStatus(caseId);
+        if (isStaleWorkspaceAction(actionId)) return;
+        setRunStatus(data.status ?? 'unknown');
+      } catch {
+        if (isStaleWorkspaceAction(actionId)) return;
+        setRunStatus('unknown');
+      }
+
+      setActiveCaseId(caseId);
+      setCurrentCaseTitle(caseTitlesRef.current[caseId] ?? null);
+      setChatNotifications([{ role: 'info', content: `Loaded case ${caseTitlesRef.current[caseId] ?? caseId}.` }]);
+      if (suppressedRouteCaseRef.current === caseId) {
+        suppressedRouteCaseRef.current = null;
+      }
+    } finally {
+      if (!isStaleWorkspaceAction(actionId)) {
+        setLoadingCaseId(null);
+      }
     }
   }, [fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setRunStatus, setVolumes, startWorkspaceAction]);
 
@@ -346,6 +356,7 @@ export function useCaseWorkspaceController({
     chatNotifications,
     availableCases,
     analysisTools,
+    isCaseLoading,
     queueMessage: runController.queueMessage,
     hasUploadedCase,
     suggestedCaseName,
