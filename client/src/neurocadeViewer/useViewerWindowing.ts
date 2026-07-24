@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { Niivue } from '@niivue/niivue';
+import Niivue from '@niivue/niivue';
 
 import { isSurfaceLayer, type Volume } from '../types';
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
 import type { WindowSetting } from './paneSyncKeys';
-import type { ViewerSliceType } from './viewerControls';
 
 interface UseViewerWindowingOptions {
   volumes: Volume[];
-  instancesRef: MutableRefObject<Map<ViewerSliceType, Niivue>>;
-  anyInstance: () => Niivue | null;
-  scheduleInstanceLayerRefresh: (sliceType: ViewerSliceType, nv: Niivue, loaded: NiivueVolumeInterop) => void;
+  instanceRef: MutableRefObject<Niivue | null>;
+  scheduleLayerRefresh: (nv: Niivue, loaded: NiivueVolumeInterop) => void;
 }
 
 interface PendingWindowingTransaction {
@@ -23,9 +21,8 @@ interface PendingWindowingTransaction {
 
 export function useViewerWindowing({
   volumes,
-  instancesRef,
-  anyInstance,
-  scheduleInstanceLayerRefresh,
+  instanceRef,
+  scheduleLayerRefresh,
 }: UseViewerWindowingOptions) {
   const manualWindowingRef = useRef<Set<string>>(new Set());
   const windowingTransactionFrameRef = useRef<number | null>(null);
@@ -79,76 +76,75 @@ export function useViewerWindowing({
   const ensureWindowingForLayer = useCallback((id: string) => {
     setWindowings((prev) => {
       if (prev[id]) return prev;
-      const nv = anyInstance();
+      const nv = instanceRef.current;
       if (!nv) return prev;
       const loaded = asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
       if (!loaded) return prev;
       return {
         ...prev,
         [id]: {
-          calMin: loaded.cal_min ?? loaded.global_min ?? 0,
-          calMax: loaded.cal_max ?? loaded.global_max ?? 1,
-          globalMin: loaded.global_min ?? 0,
-          globalMax: loaded.global_max ?? 1,
+          calMin: loaded.calMin ?? loaded.globalMin ?? 0,
+          calMax: loaded.calMax ?? loaded.globalMax ?? 1,
+          globalMin: loaded.globalMin ?? 0,
+          globalMax: loaded.globalMax ?? 1,
         },
       };
     });
-  }, [anyInstance]);
+  }, [instanceRef]);
 
   const updateWindowing = useCallback((id: string, field: 'calMin' | 'calMax', value: number) => {
     manualWindowingRef.current.add(id);
     let statePatch: PendingWindowingTransaction = { id, [field]: value };
 
-    for (const [sliceType, nv] of instancesRef.current.entries()) {
+    const nv = instanceRef.current;
+    if (nv) {
       const loaded = asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
-      if (!loaded) continue;
-      statePatch = {
-        ...statePatch,
-        globalMin: loaded.global_min ?? statePatch.globalMin,
-        globalMax: loaded.global_max ?? statePatch.globalMax,
-        calMin: field === 'calMin' ? value : loaded.cal_min ?? statePatch.calMin,
-        calMax: field === 'calMax' ? value : loaded.cal_max ?? statePatch.calMax,
-      };
-      const nextMin = field === 'calMin' ? value : loaded.cal_min;
-      const nextMax = field === 'calMax' ? value : loaded.cal_max;
-      if (nextMin === undefined || nextMax === undefined) continue;
-      if (!Number.isFinite(nextMin) || !Number.isFinite(nextMax) || nextMin === nextMax) continue;
-      if (loaded.cal_min === nextMin && loaded.cal_max === nextMax) continue;
-      loaded.cal_min = nextMin;
-      loaded.cal_max = nextMax;
-      scheduleInstanceLayerRefresh(sliceType, nv, loaded);
+      if (loaded) {
+        statePatch = {
+          ...statePatch,
+          globalMin: loaded.globalMin ?? statePatch.globalMin,
+          globalMax: loaded.globalMax ?? statePatch.globalMax,
+          calMin: field === 'calMin' ? value : loaded.calMin ?? statePatch.calMin,
+          calMax: field === 'calMax' ? value : loaded.calMax ?? statePatch.calMax,
+        };
+        const nextMin = field === 'calMin' ? value : loaded.calMin;
+        const nextMax = field === 'calMax' ? value : loaded.calMax;
+        if (
+          nextMin !== undefined
+          && nextMax !== undefined
+          && Number.isFinite(nextMin)
+          && Number.isFinite(nextMax)
+          && nextMin !== nextMax
+          && (loaded.calMin !== nextMin || loaded.calMax !== nextMax)
+        ) {
+          loaded.calMin = nextMin;
+          loaded.calMax = nextMax;
+          scheduleLayerRefresh(nv, loaded);
+        }
+      }
     }
 
     scheduleWindowingState(statePatch);
-  }, [instancesRef, scheduleInstanceLayerRefresh, scheduleWindowingState]);
+  }, [instanceRef, scheduleLayerRefresh, scheduleWindowingState]);
 
-  const syncIntensityWindow = useCallback((sourceSliceType: ViewerSliceType, sourceLoaded: NiivueVolumeInterop) => {
+  const syncIntensityWindow = useCallback((sourceLoaded: NiivueVolumeInterop) => {
     const id = sourceLoaded.id;
-    const calMin = sourceLoaded.cal_min;
-    const calMax = sourceLoaded.cal_max;
+    const calMin = sourceLoaded.calMin;
+    const calMax = sourceLoaded.calMax;
     if (!id || calMin === undefined || calMax === undefined) return;
     if (!Number.isFinite(calMin) || !Number.isFinite(calMax) || calMin === calMax) return;
     const source = volumes.find((volume) => volume.id === id);
     if (!source || isSurfaceLayer(source) || source.type === 'segmentation') return;
 
     manualWindowingRef.current.add(id);
-    for (const [sliceType, nv] of instancesRef.current.entries()) {
-      if (sliceType === sourceSliceType) continue;
-      const loaded = asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
-      if (!loaded || (loaded.cal_min === calMin && loaded.cal_max === calMax)) continue;
-      loaded.cal_min = calMin;
-      loaded.cal_max = calMax;
-      scheduleInstanceLayerRefresh(sliceType, nv, loaded);
-    }
-
     scheduleWindowingState({
       id,
       calMin,
       calMax,
-      globalMin: sourceLoaded.global_min ?? calMin,
-      globalMax: sourceLoaded.global_max ?? calMax,
+      globalMin: sourceLoaded.globalMin ?? calMin,
+      globalMax: sourceLoaded.globalMax ?? calMax,
     });
-  }, [instancesRef, scheduleInstanceLayerRefresh, scheduleWindowingState, volumes]);
+  }, [scheduleWindowingState, volumes]);
 
   const clearManualWindowing = useCallback(() => {
     manualWindowingRef.current.clear();

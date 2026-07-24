@@ -106,7 +106,6 @@ interface LayerPanelProps {
   drawingSession: DrawingSession;
   canUndo: boolean;
   drawingMenuOpen: boolean;
-  layerShownIn3D: (volume: Volume) => boolean;
   onSetDrawingMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   onToggleExpandLayer: (id: string, type: LayerType) => void;
   onUpdateVolume: (id: string, updates: Partial<Volume>) => void;
@@ -143,7 +142,6 @@ export function LayerPanel({
   drawingSession,
   canUndo,
   drawingMenuOpen,
-  layerShownIn3D,
   onSetDrawingMenuOpen,
   onToggleExpandLayer,
   onUpdateVolume,
@@ -250,24 +248,6 @@ export function LayerPanel({
                         onCommit={onCommitVolumeOpacity}
                       />
                     </div>
-                    <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
-                      <input
-                        type="checkbox"
-                        checked={layerShownIn3D(volume)}
-                        onChange={(event) => onUpdateVolume(volume.id, { renderIn3D: event.currentTarget.checked })}
-                      />
-                      <span>Show in 3D</span>
-                    </label>
-                    {showSurfaceDisplay && (
-                      <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
-                        <input
-                          type="checkbox"
-                          checked={volume.renderInSlices ?? true}
-                          onChange={(event) => onUpdateVolume(volume.id, { renderInSlices: event.currentTarget.checked })}
-                        />
-                        <span>Show in slices</span>
-                      </label>
-                    )}
                     {showWindowing && (
                       <>
                         {win ? (
@@ -455,7 +435,7 @@ export function LayerPanel({
         )}
 
         <div className="flex items-center gap-1">
-          {(['none', 'pen', 'wand'] as const).map((mode) => (
+          {(['none', 'pen'] as const).map((mode) => (
             <button
               key={mode}
               type="button"
@@ -463,7 +443,7 @@ export function LayerPanel({
               onClick={() => onUpdateDrawingOptions({ mode })}
               disabled={!drawingSession.active}
             >
-              {mode === 'none' ? 'None' : mode === 'pen' ? 'Pen' : 'Magic Wand'}
+              {mode === 'none' ? 'None' : 'Pen'}
             </button>
           ))}
         </div>
@@ -496,7 +476,7 @@ export function LayerPanel({
           <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(drawingSession.opacity * 100)}</span>
         </div>
 
-        {(drawingSession.mode === 'pen' || drawingSession.mode === 'wand') && (
+        {drawingSession.mode === 'pen' && (
           <div className="flex items-center gap-2">
             <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Pen</span>
             <input
@@ -509,17 +489,15 @@ export function LayerPanel({
               className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
               aria-label="Pen label value"
             />
-            {drawingSession.mode === 'pen' && (
-              <button
-                type="button"
-                className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.erase ? 'nc-btn-active' : ''}`}
-                onClick={() => onUpdateDrawingOptions({ erase: !drawingSession.erase })}
-                disabled={!drawingSession.active}
-                title="Paint background (0) to erase"
-              >
-                <Eraser size={11} /> Erase
-              </button>
-            )}
+            <button
+              type="button"
+              className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.erase ? 'nc-btn-active' : ''}`}
+              onClick={() => onUpdateDrawingOptions({ erase: !drawingSession.erase })}
+              disabled={!drawingSession.active}
+              title="Paint background (0) to erase"
+            >
+              <Eraser size={11} /> Erase
+            </button>
           </div>
         )}
 
@@ -533,50 +511,6 @@ export function LayerPanel({
             />
             <span>Pen fill</span>
           </label>
-        )}
-
-        {drawingSession.mode === 'wand' && (
-          <>
-            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
-              <input
-                type="checkbox"
-                checked={drawingSession.magicWand2dOnly}
-                disabled={!drawingSession.active}
-                onChange={(event) => onUpdateDrawingOptions({ magicWand2dOnly: event.currentTarget.checked })}
-              />
-              <span>2D only</span>
-            </label>
-            <div className="flex items-center gap-2">
-              <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Dist</span>
-              <input
-                type="range"
-                min="2"
-                max="500"
-                step="1"
-                value={drawingSession.magicWandMaxDistanceMM}
-                disabled={!drawingSession.active}
-                onChange={(event) => onUpdateDrawingOptions({ magicWandMaxDistanceMM: Number(event.currentTarget.value) })}
-                className="nc-viewer-layer-slider"
-                aria-label="Magic wand maximum distance"
-              />
-              <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(drawingSession.magicWandMaxDistanceMM)}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Thresh</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={drawingSession.magicWandThresholdPercent}
-                disabled={!drawingSession.active}
-                onChange={(event) => onUpdateDrawingOptions({ magicWandThresholdPercent: Number(event.currentTarget.value) })}
-                className="nc-viewer-layer-slider"
-                aria-label="Magic wand threshold"
-              />
-              <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{drawingSession.magicWandThresholdPercent.toFixed(2)}</span>
-            </div>
-          </>
         )}
 
         <div className="flex gap-1 pt-0.5">

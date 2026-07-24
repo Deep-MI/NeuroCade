@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { SegmentationVolumeLayer } from '../src/types.js';
-import type { NiivueVolumeInterop } from '../src/utils/niivueInterop.js';
 import {
   MAX_DRAWING_UNDO,
   drawingSourceFromSegmentation,
@@ -12,7 +11,6 @@ import {
   maxDrawingValue,
   popUndoBitmap,
   pushUndoBitmap,
-  validateSameDrawingGrid,
 } from '../src/neurocadeViewer/nativeDrawingHelpers.js';
 
 void test('makeDrawingFilename keeps .nii and normalizes other extensions', () => {
@@ -29,40 +27,6 @@ void test('makeDrawingFilename keeps .nii and normalizes other extensions', () =
 void test('filenameForSegmentationDrawing derives a drawing- prefixed .nii name', () => {
   const source = { filename: 'aseg.mgz', name: 'aseg' } as SegmentationVolumeLayer;
   assert.equal(filenameForSegmentationDrawing(source), 'drawing-aseg.nii');
-});
-
-function interop(dims: number[], pixDims: number[]): NiivueVolumeInterop {
-  return { dims, pixDims } as NiivueVolumeInterop;
-}
-
-void test('validateSameDrawingGrid accepts matching grids', () => {
-  const ref = interop([3, 256, 256, 256], [3, 1, 1, 1]);
-  const src = interop([3, 256, 256, 256], [3, 1, 1, 1]);
-  assert.equal(validateSameDrawingGrid(ref, src), null);
-});
-
-void test('validateSameDrawingGrid rejects mismatched dimensions', () => {
-  const ref = interop([3, 256, 256, 256], [3, 1, 1, 1]);
-  const src = interop([3, 256, 256, 200], [3, 1, 1, 1]);
-  assert.match(validateSameDrawingGrid(ref, src) ?? '', /grid does not match/);
-});
-
-void test('validateSameDrawingGrid rejects mismatched voxel size', () => {
-  const ref = interop([3, 256, 256, 256], [3, 1, 1, 1]);
-  const src = interop([3, 256, 256, 256], [3, 1, 1, 2]);
-  assert.match(validateSameDrawingGrid(ref, src) ?? '', /voxel size does not match/);
-});
-
-void test('validateSameDrawingGrid falls back to hdr dims', () => {
-  const ref = { hdr: { dims: [3, 64, 64, 64], pixDims: [3, 1, 1, 1] } } as NiivueVolumeInterop;
-  const src = { hdr: { dims: [3, 64, 64, 64], pixDims: [3, 1, 1, 1] } } as NiivueVolumeInterop;
-  assert.equal(validateSameDrawingGrid(ref, src), null);
-});
-
-void test('validateSameDrawingGrid fails when a volume has no usable dims', () => {
-  const ref = interop([3, 256, 256, 256], [3, 1, 1, 1]);
-  assert.notEqual(validateSameDrawingGrid(ref, null), null);
-  assert.notEqual(validateSameDrawingGrid(null, ref), null);
 });
 
 void test('maxDrawingValue finds the largest label', () => {

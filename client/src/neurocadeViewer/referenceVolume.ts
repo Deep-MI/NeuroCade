@@ -16,7 +16,12 @@ export function selectReferenceVolumeSource(sources: Volume[]): Volume | null {
 }
 
 export function selectLoadedReferenceVolume(loadedVolumes: NiivueVolumeInterop[], sources: Volume[]): NiivueVolumeInterop | null {
-  const source = selectReferenceVolumeSource(sources);
-  if (!source) return loadedVolumes[0] ?? null;
-  return loadedVolumes.find((loaded) => loadedMatchesSource(loaded, source)) ?? null;
+  const volumes = sources.filter((volume) => !isSurfaceLayer(volume));
+  const intensities = volumes.filter((volume) => volume.type !== 'segmentation').reverse();
+  const segmentations = volumes.filter((volume) => volume.type === 'segmentation').reverse();
+  for (const source of [...intensities, ...segmentations]) {
+    const loaded = loadedVolumes.find((candidate) => loadedMatchesSource(candidate, source));
+    if (loaded) return loaded;
+  }
+  return loadedVolumes[0] ?? null;
 }

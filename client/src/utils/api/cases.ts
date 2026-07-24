@@ -162,11 +162,6 @@ export async function fetchOutputsList(caseId: string): Promise<OutputsListRespo
         customLutDownloadUrl: typeof artifact.metadata?.custom_lut_url === 'string'
           ? appUrl(artifact.metadata.custom_lut_url)
           : undefined,
-        surfaceReferenceAffine: Array.isArray(artifact.metadata?.surface_reference_affine)
-          ? artifact.metadata.surface_reference_affine as number[][]
-          : Array.isArray(artifact.metadata?.surfaceReferenceAffine)
-            ? artifact.metadata.surfaceReferenceAffine as number[][]
-            : undefined,
         curvatureDownloadUrl: typeof artifact.metadata?.curvature_url === 'string'
           ? appUrl(artifact.metadata.curvature_url)
           : typeof artifact.metadata?.hemisphere === 'string'

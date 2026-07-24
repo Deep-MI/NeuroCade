@@ -1,63 +1,31 @@
-import { Niivue, NVImage, NVMesh } from '@niivue/niivue';
+import Niivue from '@niivue/niivue';
 
 import { isSurfaceLayer, type LayerType, type SurfaceLayer, type Volume } from '../types';
 import type { LocationInfo } from '../types';
 import { appFetchUrl } from '../utils/api';
 import {
   asNiivueInterop,
-  type NiivueInterop,
   type NiivueMeshInterop,
   type NiivueVolumeInterop,
   type SurfaceCompanionLayer,
 } from '../utils/niivueInterop';
 import {
   applyBrightnessContrast,
-  getBinarySegmentationLabelLut,
   resolveVolumeColormap,
-  resolveVolumeLabelColormap,
+  resolveVolumeLabelColorMap,
 } from '../utils/volumeColormap';
 import { resolveSurfaceLayerColorMode, surfaceColor } from '../utils/surfaceColors';
-import type { ViewerSliceType } from './viewerControls';
-import { labelInfoFromLut, type LabelLookupResult } from './labelLookup';
 import { reorderLoadedVolumes, setLoadedVolumeOpacity } from './loadedVolumeDisplay';
-import { applySegmentationRgbaRendering } from './segmentationRgba';
-
-interface ViewerTile {
-  axCorSag: ViewerSliceType;
-  leftTopWidthHeight: number[];
-}
-
-export type NiivueViewerInterop = NiivueInterop & {
-  screenSlices?: ViewerTile[];
-  scene?: {
-    pan2Dxyzmm?: number[];
-    clipPlaneDepthAziElevs?: number[][];
-    renderAzimuth?: number;
-    renderElevation?: number;
-  };
-  uiData?: {
-    activeClipPlaneIndex?: number;
-  };
-  drawScene?: () => void;
-  setClipPlane?: (depthAzimuthElevation: number[]) => void;
-  setRenderAzimuthElevation?: (azimuth: number, elevation: number) => void;
-  sliceScale?: () => { volScale: number[] };
-};
 
 interface NiivueLocationObject {
   mm?: number[];
+  vox?: number[];
+  values?: { id: string; value: number; label?: string }[];
 }
 
-interface SafeLocationNiivue {
-  createOnLocationChange?: (axCorSag?: number) => void;
-  frac2mm?: (frac: number[], mni?: number, isForceSliceMM?: boolean) => number[];
-  frac2vox?: (frac: number[]) => number[];
-  mousePos?: number[];
-  scene?: {
-    crosshairPos?: number[];
-  };
-  _emitEvent?: (name: string, detail: unknown) => void;
-  onLocationChange: (location: unknown) => void;
+interface LabelLookupResult {
+  index: number;
+  name: string;
 }
 
 export function layerType(volume: Volume): LayerType {
@@ -143,7 +111,7 @@ export async function fetchCachedArrayBuffer(url: string, signal: AbortSignal): 
   if (signal.aborted) {
     throw new DOMException('Artifact fetch aborted', 'AbortError');
   }
-  return buffer.slice(0);
+  return buffer;
 }
 
 export function clearNiivueLayerBufferCache(): void {
@@ -195,97 +163,6 @@ function surfaceRgba(surface: SurfaceLayer): [number, number, number, number] {
   ];
 }
 
-// NiiVue 0.69 fills top-level single-slice canvases better than 0.68, but it
-// still does not expose an explicit cover/contain/fill option for custom
-// per-pane canvases. This is the "cover" counterpart to calculateSliceDimensions:
-// scale the slice to fill the larger axis and let the canvas clip overflow.
-function coverSliceDimensions(sliceType: number, volScale: number[], containerWidth: number, containerHeight: number): [number, number] {
-  let xScale: number;
-  let yScale: number;
-  switch (sliceType) {
-    case 0: xScale = volScale[0]; yScale = volScale[1]; break; // axial
-    case 1: xScale = volScale[0]; yScale = volScale[2]; break; // coronal
-    case 2: xScale = volScale[1]; yScale = volScale[2]; break; // sagittal
-    default: return [containerWidth, containerHeight];
-  }
-  const aspectRatio = xScale / yScale;
-  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0 || containerWidth <= 0 || containerHeight <= 0) {
-    return [containerWidth, containerHeight];
-  }
-  const containerAspect = containerWidth / containerHeight;
-  return aspectRatio > containerAspect
-    ? [containerHeight * aspectRatio, containerHeight]
-    : [containerWidth, containerWidth / aspectRatio];
-}
-
-// Keep this patch narrowly scoped to our single-plane instances. Re-check with
-// screenshots before removing it after future NiiVue layout changes.
-export function installCoverRendering(nv: Niivue) {
-  const patch = nv as unknown as {
-    calculateWidthHeight?: (sliceType: number, volScale: number[], containerWidth: number, containerHeight: number) => [number, number];
-  };
-  if (typeof patch.calculateWidthHeight !== 'function') return;
-  patch.calculateWidthHeight = (sliceType, volScale, containerWidth, containerHeight) =>
-    coverSliceDimensions(sliceType, volScale, containerWidth, containerHeight);
-}
-
-function isToFixedDigitsRangeError(error: unknown): boolean {
-  return error instanceof RangeError && String(error.message).includes('toFixed() digits');
-}
-
-function isLocationConversionError(error: unknown): boolean {
-  if (isToFixedDigitsRangeError(error)) return true;
-  return error instanceof TypeError && String(error.message).includes("Cannot read properties of undefined (reading '1')");
-}
-
-function tryFrac2mm(patch: SafeLocationNiivue, frac: number[]): number[] | null {
-  try {
-    return typeof patch.frac2mm === 'function'
-      ? patch.frac2mm(frac, 0, true)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function tryFrac2vox(patch: SafeLocationNiivue, frac: number[]): number[] {
-  try {
-    return typeof patch.frac2vox === 'function' ? patch.frac2vox(frac) : [NaN, NaN, NaN];
-  } catch {
-    return [NaN, NaN, NaN];
-  }
-}
-
-export function installSafeLocationChange(nv: Niivue) {
-  const patch = nv as unknown as SafeLocationNiivue;
-  if (typeof patch.createOnLocationChange !== 'function') return;
-  const createOnLocationChange = patch.createOnLocationChange.bind(nv);
-
-  patch.createOnLocationChange = (axCorSag = NaN) => {
-    try {
-      createOnLocationChange(axCorSag);
-    } catch (error) {
-      if (!isLocationConversionError(error)) throw error;
-      const frac = patch.scene?.crosshairPos;
-      if (!frac) return;
-      const mm = tryFrac2mm(patch, frac);
-      if (!mm?.every((value) => Number.isFinite(value))) return;
-
-      const msg = {
-        mm,
-        axCorSag,
-        vox: tryFrac2vox(patch, frac),
-        frac,
-        xy: [patch.mousePos?.[0] ?? NaN, patch.mousePos?.[1] ?? NaN],
-        values: [],
-        string: `${mm[0]}×${mm[1]}×${mm[2]}`,
-      };
-      patch._emitEvent?.('locationChange', msg);
-      patch.onLocationChange(msg);
-    }
-  };
-}
-
 async function addSurfaceCompanionLayer(nv: Niivue, mesh: NiivueMeshInterop, surface: SurfaceLayer, signal: AbortSignal) {
   const colorMode = resolveSurfaceLayerColorMode(surface);
   const companionUrl = colorMode === 'annotation' ? surface.annotationUrl : colorMode === 'curvature' ? surface.curvatureUrl : undefined;
@@ -296,31 +173,24 @@ async function addSurfaceCompanionLayer(nv: Niivue, mesh: NiivueMeshInterop, sur
     colorMode === 'annotation' ? `${surface.filename}.annot` : `${surface.filename}.curv`,
   );
   const buffer = await fetchCachedArrayBuffer(companionUrl, signal);
-  const objectUrl = URL.createObjectURL(new Blob([buffer]));
+  const file = new File([buffer], companionName);
   const layer: SurfaceCompanionLayer = colorMode === 'annotation'
     ? {
-      url: objectUrl,
+      url: file,
       name: companionName,
       opacity: 1,
       colormap: 'freesurfer',
     }
     : {
-      url: objectUrl,
+      url: file,
       name: companionName,
       opacity: 1,
       colormap: 'gray',
       colormapNegative: 'gray',
-      useNegativeCmap: false,
     };
 
-  try {
-    await NVMesh.loadLayer(layer as never, mesh as never);
-    const loadedLayer = mesh.layers?.at(-1) as { name?: string } | undefined;
-    if (loadedLayer) loadedLayer.name = companionName;
-    mesh.updateMesh?.(asNiivueInterop(nv).gl);
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+  const meshIndex = asNiivueInterop(nv).meshes.indexOf(mesh);
+  if (meshIndex >= 0) await nv.addMeshLayer(meshIndex, layer);
 }
 
 export function surfaceDisplayKey(surface: SurfaceLayer): string {
@@ -330,21 +200,20 @@ export function surfaceDisplayKey(surface: SurfaceLayer): string {
 }
 
 export async function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInterop, surface: SurfaceLayer, signal: AbortSignal): Promise<void> {
-  const keyedMesh = mesh as NiivueMeshInterop & { __surfaceDisplayKey?: string; rgba255?: [number, number, number, number] };
+  const keyedMesh = mesh as NiivueMeshInterop & { __surfaceDisplayKey?: string };
   const nextKey = surfaceDisplayKey(surface);
   if (keyedMesh.__surfaceDisplayKey === nextKey) return;
   keyedMesh.__surfaceDisplayKey = nextKey;
-  keyedMesh.rgba255 = surfaceRgba(surface);
-  keyedMesh.layers = [];
+  const meshIndex = asNiivueInterop(nv).meshes.indexOf(mesh);
+  if (meshIndex < 0) return;
+  while (mesh.layers.length > 0) await nv.removeMeshLayer(meshIndex, mesh.layers.length - 1);
   const colorMode = resolveSurfaceLayerColorMode(surface);
   if (colorMode === 'solid') {
-    mesh.updateMesh?.(asNiivueInterop(nv).gl);
-    nv.updateGLVolume();
+    await nv.setMesh(meshIndex, { color: surfaceRgba(surface).map((value) => value / 255) as [number, number, number, number] });
     return;
   }
   try {
     await addSurfaceCompanionLayer(nv, mesh, surface, signal);
-    nv.updateGLVolume();
   } catch (error) {
     if (!signal.aborted) {
       console.warn(`[NiivuePane] Could not update surface coloring for ${surface.name}:`, error);
@@ -355,86 +224,67 @@ export async function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInter
 export async function addNiivueVolumeLayer(nv: Niivue, volume: Volume, signal: AbortSignal) {
   const filename = volume.filename || volume.name;
   const buffer = await fetchCachedArrayBuffer(volume.url, signal);
-  const imageOptions: Parameters<Niivue['addVolumeFromUrl']>[0] = {
-    url: filename,
+  const file = new File([buffer], filename);
+  await nv.addVolume({
+    url: file,
     name: filename,
-    buffer,
     colormap: resolveVolumeColormap(volume),
-    colorbarVisible: false,
+    isColorbarVisible: false,
     opacity: effectiveLayerOpacity(volume),
-  };
-  const loadedImage = await NVImage.loadFromUrl(imageOptions);
-  const loaded = loadedImage as NiivueVolumeInterop;
-  const colormapLabel = await resolveVolumeLabelColormap(volume, loaded);
+    isTransparentBelowCalMin: volume.type === 'segmentation',
+  });
+  const loaded = nv.volumes.at(-1) as NiivueVolumeInterop | undefined;
   if (loaded) {
     loaded.id = volume.id;
     loaded.name = volume.name || volume.filename;
     loaded.url = volume.url;
-    const labelLut = colormapLabel ?? (isSegmentationVolume(volume) ? getBinarySegmentationLabelLut() : null);
-    applySegmentationRgbaRendering(loaded, volume, labelLut);
-    loaded.colorbarVisible = false;
+    if (isSegmentationVolume(volume)) {
+      const labelMap = await resolveVolumeLabelColorMap(volume);
+      const volumeIndex = nv.volumes.indexOf(loaded);
+      if (labelMap && volumeIndex >= 0) await nv.setColormapLabel(volumeIndex, labelMap);
+    }
+    loaded.isColorbarVisible = false;
     if (volume.type === undefined || volume.type === 'intensity') {
       applyBrightnessContrast(loaded, volume);
+      const volumeIndex = nv.volumes.indexOf(loaded);
+      if (volumeIndex >= 0) await nv.setVolume(volumeIndex, { calMin: loaded.calMin, calMax: loaded.calMax });
     }
   }
-  nv.addVolume(loadedImage);
 }
 
-export async function addNiivueSurfaceLayer(nv: Niivue, surface: SurfaceLayer, signal: AbortSignal, meshShader?: string) {
+export async function addNiivueSurfaceLayer(nv: Niivue, surface: SurfaceLayer, signal: AbortSignal) {
   const filename = surface.filename || surface.name;
   const buffer = await fetchCachedArrayBuffer(surface.url, signal);
-  const meshOptions = [{
-    url: filename,
+  const meshOptions = {
+    url: new File([buffer], filename),
     name: filename,
-    buffer,
     opacity: effectiveLayerOpacity(surface),
-    rgba255: surfaceRgba(surface),
+    color: surfaceRgba(surface).map((value) => value / 255) as [number, number, number, number],
     visible: surface.visible,
-    meshShaderIndex: 0,
-  }];
+    shaderType: 'phong',
+    sliceShaderType: 'crosscut',
+  };
+  await nv.addMesh(meshOptions);
   const nvInterop = asNiivueInterop(nv);
-  if (typeof nvInterop.addMeshesFromUrl === 'function') {
-    await nvInterop.addMeshesFromUrl(meshOptions);
-  } else if (typeof nvInterop.loadMeshes === 'function') {
-    await nvInterop.loadMeshes(meshOptions);
-  }
   const mesh = (nvInterop.meshes ?? []).find((item) => item.name === filename);
   if (mesh) {
     mesh.id = surface.id;
     // Per-pane shader: 2D planes use 'Crosscut' (cross-section outline); the 3D
     // pane is left on Niivue's default shader to show the full shaded mesh.
-    if (meshShader) nv.setMeshShader(surface.id, meshShader);
     await syncNiivueSurfaceDisplay(nv, mesh, surface, signal);
   }
 }
 
-function getCurrentLabelInfo(mm: number[], loadedVolumes: NiivueVolumeInterop[], sourceVolumes: Volume[]): LabelLookupResult {
+function getCurrentLabelInfo(location: NiivueLocationObject, sourceVolumes: Volume[]): LabelLookupResult {
   const visibleSegmentationIds = sourceVolumes
     .filter((volume) => volume.visible && isSegmentationVolume(volume))
     .map((volume) => volume.id);
 
-  const labelVolumes = visibleSegmentationIds
-    .map((id) => loadedVolumes.find((volume) => volume.id === id))
-    .filter((volume): volume is NiivueVolumeInterop => Boolean(volume?.getValue && volume.mm2vox));
-
-  for (const labelVolume of labelVolumes) {
-    const labelVoxel = labelVolume.mm2vox?.(mm);
-    if (!labelVoxel) continue;
-    const x = Math.round(labelVoxel[0] ?? 0);
-    const y = Math.round(labelVoxel[1] ?? 0);
-    const z = Math.round(labelVoxel[2] ?? 0);
-    const dims = labelVolume.__rawLabelDims;
-    const rawLabelData = labelVolume.__rawLabelData;
-    const rawIndex = dims && rawLabelData && x >= 0 && y >= 0 && z >= 0 && x < dims[0] && y < dims[1] && z < dims[2]
-      ? x + y * dims[0] + z * dims[0] * dims[1]
-      : -1;
-    const labelIndex = Math.round(Number(
-      rawIndex >= 0
-        ? rawLabelData?.[rawIndex]
-        : labelVolume.getValue?.(x, y, z, labelVolume.frame4D),
-    ) || 0);
+  for (const id of visibleSegmentationIds) {
+    const value = location.values?.find((item) => item.id === id);
+    const labelIndex = Math.round(Number(value?.value) || 0);
     if (labelIndex <= 0) continue;
-    return labelInfoFromLut(labelIndex, labelVolume.__rawLabelColormap ?? labelVolume.colormapLabel);
+    return { index: labelIndex, name: value?.label ?? String(labelIndex) };
   }
 
   return { index: 0, name: 'Background' };
@@ -443,23 +293,19 @@ function getCurrentLabelInfo(mm: number[], loadedVolumes: NiivueVolumeInterop[],
 export function locationFromNiivue(locationObject: unknown, nv: Niivue, sourceVolumes: Volume[]): LocationInfo | null {
   const location = locationObject as NiivueLocationObject | null;
   if (!location?.mm) return null;
-  const loadedVolumes = asNiivueInterop(nv).volumes;
-  if (loadedVolumes.length === 0) return null;
-  const firstVolume = loadedVolumes[0];
-  if (!firstVolume?.mm2vox) return null;
-  const voxel = firstVolume.mm2vox(location.mm);
+  if (asNiivueInterop(nv).volumes.length === 0) return null;
+  const voxel = location.vox ?? [0, 0, 0];
   const vox: [number, number, number] = [
     Math.round(voxel[0] ?? 0),
     Math.round(voxel[1] ?? 0),
     Math.round(voxel[2] ?? 0),
   ];
 
-  const label = getCurrentLabelInfo(location.mm, loadedVolumes, sourceVolumes);
+  const label = getCurrentLabelInfo(location, sourceVolumes);
   return {
     vox,
     labelIndex: label.index,
     labelName: label.name,
-    labelColor: label.color,
   };
 }
 

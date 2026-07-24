@@ -19,14 +19,11 @@ export function restorePersistedCaseLayers(caseId: string, serverVolumes: Volume
       ...serverVolume,
       visible: persistedVolume.visible,
       opacity: persistedVolume.opacity,
-      renderIn3D: persistedVolume.renderIn3D,
-      renderInSlices: persistedVolume.renderInSlices,
     };
     if (isSurfaceLayer(serverVolume) && persistedVolume.type === 'surface') {
       return {
         ...restored,
         surfaceColorMode: resolveSurfaceLayerColorMode({ ...serverVolume, surfaceColorMode: persistedVolume.surfaceColorMode ?? serverVolume.surfaceColorMode }),
-        surfaceReferenceAffine: persistedVolume.surfaceReferenceAffine ?? serverVolume.surfaceReferenceAffine,
         curvatureNegativeThreshold: persistedVolume.curvatureNegativeThreshold ?? serverVolume.curvatureNegativeThreshold,
         curvaturePositiveThreshold: persistedVolume.curvaturePositiveThreshold ?? serverVolume.curvaturePositiveThreshold,
       };

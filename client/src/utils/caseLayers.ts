@@ -36,7 +36,6 @@ export function outputVolumeToLayer(
     type: layerType,
     lut: volume.lut,
     customLutUrl: volume.customLutDownloadUrl,
-    surfaceReferenceAffine: volume.surfaceReferenceAffine,
     curvatureUrl: volume.curvatureDownloadUrl,
     annotationUrl: volume.annotationDownloadUrl,
     visible: volume.visible,

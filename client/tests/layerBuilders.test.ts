@@ -30,7 +30,6 @@ void test('createViewerLayer applies shared surface defaults', () => {
   assert.equal(layer.opacity, 1);
   assert.equal(layer.colormap, 'surface');
   assert.equal(layer.visible, false);
-  assert.equal(layer.renderIn3D, true);
   assert.equal(layer.surfaceColorMode, 'solid');
 });
 

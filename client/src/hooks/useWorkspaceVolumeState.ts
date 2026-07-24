@@ -24,7 +24,6 @@ interface LoadVolumeCommand {
   type?: string;
   lut?: string;
   customLutDownloadUrl?: string;
-  surfaceReferenceAffine?: number[][];
   curvatureDownloadUrl?: string;
   annotationDownloadUrl?: string;
   visible?: boolean;
@@ -48,7 +47,6 @@ export function useWorkspaceVolumeState({
       type: layerType,
       lut: cmd.lut,
       customLutUrl: cmd.customLutDownloadUrl ? appUrl(cmd.customLutDownloadUrl) : undefined,
-      surfaceReferenceAffine: cmd.surfaceReferenceAffine,
       curvatureUrl: cmd.curvatureDownloadUrl ? appUrl(cmd.curvatureDownloadUrl) : undefined,
       annotationUrl: cmd.annotationDownloadUrl ? appUrl(cmd.annotationDownloadUrl) : undefined,
       visible: cmd.visible ?? true,

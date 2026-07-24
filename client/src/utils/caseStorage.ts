@@ -23,8 +23,6 @@ export function saveCaseState(caseId: string, volumes: Volume[]): void {
         url: v.url,
         visible: v.visible,
         opacity: v.opacity,
-        renderIn3D: v.renderIn3D,
-        renderInSlices: v.renderInSlices,
       };
 
       if (v.type === 'surface') {
@@ -32,7 +30,6 @@ export function saveCaseState(caseId: string, volumes: Volume[]): void {
           ...base,
           type: 'surface',
           surfaceColorMode: v.surfaceColorMode,
-          surfaceReferenceAffine: v.surfaceReferenceAffine,
           curvatureUrl: v.curvatureUrl,
           annotationUrl: v.annotationUrl,
           curvatureNegativeThreshold: v.curvatureNegativeThreshold,

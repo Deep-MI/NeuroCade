@@ -428,7 +428,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
       type: layerType,
       lut: option.lut ?? (layerType === 'segmentation' && isMaskLikeFilename(option.filename) ? 'binary' : undefined),
       customLutDownloadUrl: option.customLutDownloadUrl,
-      surfaceReferenceAffine: option.surfaceReferenceAffine,
       curvatureDownloadUrl: option.curvatureDownloadUrl,
       annotationDownloadUrl: option.annotationDownloadUrl,
       visible: true,

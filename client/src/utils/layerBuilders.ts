@@ -17,7 +17,6 @@ interface ViewerLayerSource {
   type: LoadableLayerType;
   lut?: string;
   customLutUrl?: string;
-  surfaceReferenceAffine?: number[][];
   curvatureUrl?: string;
   annotationUrl?: string;
   visible?: boolean;
@@ -87,15 +86,12 @@ export function createViewerLayer(source: ViewerLayerSource, options: ViewerLaye
     opacity: source.type === 'segmentation' ? 0.7 : 1.0,
     colormap: source.type === 'surface' ? 'surface' : source.type === 'segmentation' ? '' : 'gray',
     visible: source.visible ?? options.defaultVisible ?? true,
-    renderIn3D: source.type === 'surface',
-    renderInSlices: false,
   };
 
   if (source.type === 'surface') {
     const surfaceLayer = {
       ...baseLayer,
       type: 'surface' as const,
-      surfaceReferenceAffine: source.surfaceReferenceAffine,
       curvatureUrl: source.curvatureUrl,
       annotationUrl: source.annotationUrl,
       curvatureNegativeThreshold: DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,

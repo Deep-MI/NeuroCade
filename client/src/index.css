@@ -435,8 +435,7 @@ input[type="range"]::-moz-focus-outer {
   }
 }
 
-/* Grid of dedicated single-plane panes. The 2px gap reveals the container's
-   border colour as thin separators between cells. */
+/* The single NiiVue canvas owns both single-view and multiplanar layouts. */
 .nc-viewer-grid {
   position: relative;
   display: grid;
@@ -445,17 +444,7 @@ input[type="range"]::-moz-focus-outer {
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
-  gap: 2px;
   overflow: hidden;
-  background: var(--nc-border);
-}
-
-.nc-viewer-grid.is-grid {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-}
-
-.nc-viewer-grid.is-single {
   grid-template-columns: 1fr;
   grid-template-rows: 1fr;
 }

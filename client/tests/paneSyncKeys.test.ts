@@ -4,7 +4,6 @@ import test from 'node:test';
 import {
   sourceVisibilityKeyOf,
   surfaceAppearanceKeyOf,
-  surfaceTransformKeyOf,
   volumeAppearanceKeyOf,
   volumeOrderKeyOf,
   volumeVisibilityKeyOf,
@@ -48,16 +47,14 @@ const surface = {
   visible: true,
   opacity: 1,
   colormap: 'surface',
-  renderIn3D: true,
-  renderInSlices: false,
   surfaceColorMode: 'curvature',
-  surfaceReferenceAffine: [[1, 0, 0, 0]],
   curvatureNegativeThreshold: -0.2,
   curvaturePositiveThreshold: 0.2,
 } satisfies Volume;
 
 void test('pane sync keys isolate source, visibility, appearance, and ordering concerns', () => {
-  assert.equal(sourceVisibilityKeyOf([intensity]), '');
+  assert.match(sourceVisibilityKeyOf([intensity]), /orig\.mgz:\/orig\.mgz/);
+  assert.equal(sourceVisibilityKeyOf([{ ...intensity, visible: false }]), '');
   assert.match(sourceVisibilityKeyOf([surface]), /lh\.pial:\/lh\.pial/);
   assert.notEqual(volumeVisibilityKeyOf([intensity]), volumeVisibilityKeyOf([{ ...intensity, opacity: 0.5 }]));
   assert.notEqual(volumeAppearanceKeyOf([intensity]), volumeAppearanceKeyOf([{ ...intensity, colormap: 'hot' }]));
@@ -72,14 +69,10 @@ void test('pane sync keys isolate source, visibility, appearance, and ordering c
   );
 });
 
-void test('pane sync keys include surface display and transform fields', () => {
+void test('pane sync keys include surface display fields', () => {
   assert.notEqual(
     surfaceAppearanceKeyOf([surface]),
     surfaceAppearanceKeyOf([{ ...surface, curvaturePositiveThreshold: 0.4 }]),
-  );
-  assert.notEqual(
-    surfaceTransformKeyOf([surface]),
-    surfaceTransformKeyOf([{ ...surface, surfaceReferenceAffine: [[2, 0, 0, 0]] }]),
   );
 });
 

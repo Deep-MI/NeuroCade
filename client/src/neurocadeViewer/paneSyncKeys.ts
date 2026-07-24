@@ -8,10 +8,6 @@ export interface WindowSetting {
   globalMax: number;
 }
 
-function affineKey(affine?: number[][]): string {
-  return affine ? affine.flat().map((value) => Number(value).toPrecision(8)).join(',') : '';
-}
-
 function surfaceDisplayKey(surface: SurfaceLayer): string {
   const colorMode = resolveSurfaceLayerColorMode(surface);
   const companionUrl = colorMode === 'annotation' ? surface.annotationUrl : colorMode === 'curvature' ? surface.curvatureUrl : '';
@@ -27,7 +23,6 @@ function volumesInRenderOrder(sources: Volume[]): Volume[] {
 
 export function sourceVisibilityKeyOf(volumes: Volume[]): string {
   return volumes
-    .filter(isSurfaceLayer)
     .filter((volume) => volume.visible)
     .map((volume) => `${volume.id}:${volume.url}:${volume.filename}:${volume.type ?? 'intensity'}`)
     .sort()
@@ -79,12 +74,4 @@ export function surfaceAppearanceKeyOf(volumes: Volume[]): string {
     ].join(':'))
     .sort()
     .join('|');
-}
-
-export function surfaceTransformKeyOf(volumes: Volume[]): string {
-  return volumes.map((volume) => (
-    isSurfaceLayer(volume)
-      ? [volume.id, affineKey(volume.surfaceReferenceAffine)].join(':')
-      : [volume.id, volume.visible ? 1 : 0, volume.url].join(':')
-  )).join('|');
 }

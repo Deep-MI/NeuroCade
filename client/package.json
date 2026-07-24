@@ -13,13 +13,13 @@
     "build": "tsc -b && vite build",
     "electron:local": "electron ./electron/main.mjs",
     "lint": "eslint .",
-    "test:node": "tsc -p tsconfig.test.json && node --test .tmp-test/tests/*.test.js",
+    "test:node": "node -e \"require('node:fs').rmSync('.tmp-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --test .tmp-test/tests/*.test.js",
     "preview": "vite preview",
     "auth:state": "node ./scripts/prepareClerkStorageState.mjs"
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.20.0",
-    "@niivue/niivue": "0.69.0",
+    "@niivue/niivue": "1.0.0-rc.10",
     "@types/react-syntax-highlighter": "^15.5.13",
     "clsx": "^2.1.1",
     "lucide-react": "^0.562.0",

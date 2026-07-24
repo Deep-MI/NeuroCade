@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "types": ["node"],
     "strict": true,
     "skipLibCheck": true,
@@ -14,9 +14,7 @@
     "src/utils/layerAliases.ts",
     "src/utils/surfaceLighting.ts",
     "src/neurocadeViewer/referenceVolume.ts",
-    "src/neurocadeViewer/labelLookup.ts",
     "src/neurocadeViewer/loadedVolumeDisplay.ts",
-    "src/neurocadeViewer/segmentationRgba.ts",
     "src/neurocadeViewer/surfaceTransforms.ts",
     "src/neurocadeViewer/surfaceContours.ts",
     "src/neurocadeViewer/nativeDrawingHelpers.ts",

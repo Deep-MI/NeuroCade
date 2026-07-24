@@ -1,7 +1,6 @@
 import type { SegmentationVolumeLayer, Volume } from '../types.js';
-import type { NiivueVolumeInterop } from '../utils/niivueInterop.js';
 
-export type DrawingMode = 'none' | 'pen' | 'wand';
+export type DrawingMode = 'none' | 'pen';
 export type DrawingLut = 'binary' | 'freesurfer';
 
 export interface DrawingOptions {
@@ -10,9 +9,6 @@ export interface DrawingOptions {
   penFill: boolean;
   erase: boolean;
   opacity: number;
-  magicWand2dOnly: boolean;
-  magicWandMaxDistanceMM: number;
-  magicWandThresholdPercent: number;
   filename: string;
 }
 
@@ -42,9 +38,6 @@ export const DEFAULT_DRAWING_OPTIONS: DrawingOptions = {
   penFill: true,
   erase: false,
   opacity: 0.8,
-  magicWand2dOnly: true,
-  magicWandMaxDistanceMM: 15,
-  magicWandThresholdPercent: 0.05,
   filename: 'drawing.nii',
 };
 
@@ -57,41 +50,6 @@ export function makeDrawingFilename(base: string): string {
 
 export function filenameForSegmentationDrawing(source: Volume): string {
   return makeDrawingFilename(`drawing-${source.filename}`);
-}
-
-function normalizeDims(dims?: number[]): [number, number, number] | null {
-  const x = Math.trunc(dims?.[1] ?? 0);
-  const y = Math.trunc(dims?.[2] ?? 0);
-  const z = Math.trunc(dims?.[3] ?? 0);
-  return x > 0 && y > 0 && z > 0 ? [x, y, z] : null;
-}
-
-function normalizePixDims(pixDims?: number[]): [number, number, number] | null {
-  const x = Number(pixDims?.[1] ?? 0);
-  const y = Number(pixDims?.[2] ?? 0);
-  const z = Number(pixDims?.[3] ?? 0);
-  return x > 0 && y > 0 && z > 0 ? [x, y, z] : null;
-}
-
-function sameTuple(left: [number, number, number] | null, right: [number, number, number] | null, tolerance = 0): boolean {
-  if (!left || !right) return false;
-  return left.every((value, index) => Math.abs(value - right[index]) <= tolerance);
-}
-
-export function validateSameDrawingGrid(reference?: NiivueVolumeInterop | null, source?: NiivueVolumeInterop | null): string | null {
-  const referenceDims = normalizeDims(reference?.dims ?? reference?.hdr?.dims);
-  const sourceDims = normalizeDims(source?.dims ?? source?.hdr?.dims);
-  if (!sameTuple(referenceDims, sourceDims)) {
-    return 'The label map grid does not match the active reference image dimensions.';
-  }
-
-  const referencePixDims = normalizePixDims(reference?.pixDims ?? reference?.hdr?.pixDims);
-  const sourcePixDims = normalizePixDims(source?.pixDims ?? source?.hdr?.pixDims);
-  if (!sameTuple(referencePixDims, sourcePixDims, 0.0001)) {
-    return 'The label map voxel size does not match the active reference image.';
-  }
-
-  return null;
 }
 
 export function maxDrawingValue(bitmap?: Uint8Array | null): number {

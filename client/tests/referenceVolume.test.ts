@@ -44,19 +44,19 @@ void test('selectReferenceVolumeSource falls back to the lowest segmentation whe
   assert.equal(selectReferenceVolumeSource([aseg, mask]), mask);
 });
 
-void test('selectLoadedReferenceVolume waits for the bottom selected source', () => {
+void test('selectLoadedReferenceVolume uses the lowest source that is actually loaded', () => {
   const input = volume('input', false);
   const conform = volume('conform', true);
-  const loaded: NiivueVolumeInterop[] = [{ id: 'conform', name: 'conform.mgz', url: '/conform.mgz' }];
+  const loadedConform = { id: 'conform', name: 'conform.mgz', url: '/conform.mgz' } as NiivueVolumeInterop;
 
-  assert.equal(selectLoadedReferenceVolume(loaded, [conform, input]), null);
+  assert.equal(selectLoadedReferenceVolume([loadedConform], [conform, input]), loadedConform);
 });
 
 void test('selectLoadedReferenceVolume returns the loaded bottom reference when available', () => {
   const input = volume('input', false);
   const conform = volume('conform', true);
-  const loadedInput: NiivueVolumeInterop = { id: 'input', name: 'input.mgz', url: '/input.mgz' };
-  const loadedConform: NiivueVolumeInterop = { id: 'conform', name: 'conform.mgz', url: '/conform.mgz' };
+  const loadedInput = { id: 'input', name: 'input.mgz', url: '/input.mgz' } as NiivueVolumeInterop;
+  const loadedConform = { id: 'conform', name: 'conform.mgz', url: '/conform.mgz' } as NiivueVolumeInterop;
 
   assert.equal(selectLoadedReferenceVolume([loadedConform, loadedInput], [conform, input]), loadedInput);
 });
