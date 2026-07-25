@@ -45,9 +45,9 @@ export interface SurfaceLayer extends BaseViewerLayer {
   curvatureUrl?: string;
   /** Optional FreeSurfer annotation file for parcellation vertex coloring. */
   annotationUrl?: string;
-  /** Curvature magnitude that maps negative values to the bright gyri color. */
+  /** Absolute negative-curvature endpoint mapped to bright green. */
   curvatureNegativeThreshold?: number;
-  /** Curvature magnitude that maps positive values to the dark sulci color. */
+  /** Positive-curvature endpoint mapped to bright red. */
   curvaturePositiveThreshold?: number;
 }
 

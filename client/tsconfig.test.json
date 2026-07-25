@@ -16,8 +16,6 @@
     "src/utils/niivueMgh.ts",
     "src/utils/niivueMghCore.ts",
     "src/utils/layerAliases.ts",
-    "src/utils/surfaceLighting.ts",
-    "src/neurocadeViewer/referenceVolume.ts",
     "src/neurocadeViewer/loadedVolumeDisplay.ts",
     "src/neurocadeViewer/nativeDrawingHelpers.ts",
     "src/neurocadeViewer/paneSyncKeys.ts",
@@ -40,7 +38,6 @@
     "tests/paneSyncKeys.test.ts",
     "tests/viewerControls.test.ts",
     "tests/SurfaceLoader.test.ts",
-    "tests/volumeColormap.test.ts",
-    "tests/referenceVolume.test.ts"
+    "tests/volumeColormap.test.ts"
   ]
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { HelpCircle, X } from 'lucide-react';
 
 const HELP_SHORTCUTS = [

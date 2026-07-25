@@ -1,5 +1,5 @@
 import { isSurfaceLayer, type SurfaceLayer, type Volume } from '../types.js';
-import { resolveSurfaceLayerColorMode } from '../utils/surfaceColors.js';
+import { surfaceDisplayKey, volumesInRenderOrder } from './layerDisplay.js';
 
 export interface WindowSetting {
   calMin: number;
@@ -8,23 +8,17 @@ export interface WindowSetting {
   globalMax: number;
 }
 
-function surfaceDisplayKey(surface: SurfaceLayer): string {
-  const colorMode = resolveSurfaceLayerColorMode(surface);
-  const companionUrl = colorMode === 'annotation' ? surface.annotationUrl : colorMode === 'curvature' ? surface.curvatureUrl : '';
-  return `${colorMode}:${companionUrl ?? ''}`;
-}
-
-function volumesInRenderOrder(sources: Volume[]): Volume[] {
-  const nonSurface = sources.filter((volume) => !isSurfaceLayer(volume));
-  const intensities = nonSurface.filter((volume) => volume.type !== 'segmentation');
-  const segmentations = nonSurface.filter((volume) => volume.type === 'segmentation');
-  return [...intensities.reverse(), ...segmentations.reverse()];
-}
-
-export function sourceVisibilityKeyOf(volumes: Volume[]): string {
+export function layerReconcileKeyOf(volumes: Volume[]): string {
   return volumes
-    .filter((volume) => volume.visible)
-    .map((volume) => `${volume.id}:${volume.url}:${volume.filename}:${volume.type ?? 'intensity'}`)
+    .map((volume) => [
+      volume.id,
+      volume.url,
+      volume.filename,
+      volume.type ?? 'intensity',
+      volume.visible ? 1 : 0,
+      isSurfaceLayer(volume) ? volume.curvatureUrl ?? '' : '',
+      isSurfaceLayer(volume) ? volume.annotationUrl ?? '' : '',
+    ].join(':'))
     .sort()
     .join('|');
 }
@@ -66,12 +60,7 @@ export function volumeOrderKeyOf(volumes: Volume[]): string {
 export function surfaceAppearanceKeyOf(volumes: Volume[]): string {
   return volumes
     .filter(isSurfaceLayer)
-    .map((surface) => [
-      surface.id,
-      surfaceDisplayKey(surface),
-      surface.curvatureNegativeThreshold ?? '',
-      surface.curvaturePositiveThreshold ?? '',
-    ].join(':'))
+    .map((surface: SurfaceLayer) => `${surface.id}:${surfaceDisplayKey(surface)}`)
     .sort()
     .join('|');
 }

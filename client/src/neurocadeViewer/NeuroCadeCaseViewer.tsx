@@ -1,5 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import Niivue, { SHOW_RENDER } from '@niivue/niivue';
+import { SHOW_RENDER } from '@niivue/niivue';
+import type Niivue from '@niivue/niivue';
 
 import { isSurfaceLayer, type LocationInfo, type MriSnapshots, type MriViewerRef, type LayerType, type Volume } from '../types';
 import { asNiivueInterop } from '../utils/niivueInterop';
@@ -16,6 +17,7 @@ import type { PaneRenderAction } from './viewerPaneAdapter';
 import { VIEW_MODES, type NeuroCadeViewMode, type ViewerDragMode } from './viewerControls';
 
 interface NeuroCadeCaseViewerProps {
+  caseId: string;
   volumes: Volume[];
   caseLoading?: boolean;
   layerPanelOpen: boolean;
@@ -38,8 +40,7 @@ const INTENSITY_COLORMAPS = ['gray', 'bone', 'hot', 'cool', 'viridis', 'plasma',
 interface NeuroCadeViewerDebugState {
   activeViewMode: NeuroCadeViewMode;
   activeDragMode: ViewerDragMode;
-  mountedPaneCount: number;
-  activePaneCount: number;
+  viewerReady: boolean;
   loadedLayerIds: string[];
   visibleLayerIds: string[];
   layerOpacities: Record<string, number>;
@@ -67,6 +68,7 @@ function markViewerMeasure(name: string, action: () => void): void {
 }
 
 export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerProps>(({
+  caseId,
   volumes,
   caseLoading = false,
   layerPanelOpen,
@@ -84,7 +86,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const {
     instanceRef,
     scheduleRefresh,
-    scheduleLayerRefresh,
     scheduleDraw,
   } = useViewerPaneInstance();
   const colormapsReportedRef = useRef(false);
@@ -134,7 +135,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   } = useViewerWindowing({
     volumes,
     instanceRef,
-    scheduleLayerRefresh,
+    scheduleRefresh,
   });
 
   const schedulePaneRenderAction = useCallback((nv: Niivue, action: PaneRenderAction) => {
@@ -198,9 +199,8 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
 
   const {
     drawingSession,
+    drawingLabels,
     canUndo,
-    drawingMenuOpen,
-    setDrawingMenuOpen,
     registerDrawingPane,
     updateDrawingOptions,
     beginBlankDrawing,
@@ -210,6 +210,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     closeNativeDrawing,
   } = useNativeDrawingSession({
     canAddLayers,
+    caseId,
     instanceRef,
     referenceVolumeId,
     onSaveDrawing,
@@ -270,8 +271,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
         return {
           activeViewMode: viewMode,
           activeDragMode: dragMode,
-          mountedPaneCount: nv ? 1 : 0,
-          activePaneCount: nv ? 1 : 0,
+          viewerReady: Boolean(nv),
           loadedLayerIds: [...loadedIds],
           visibleLayerIds: volumes.filter((volume) => volume.visible).map((volume) => volume.id),
           layerOpacities: Object.fromEntries(volumes.map((volume) => [volume.id, volume.opacity])),
@@ -415,9 +415,8 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           windowings={windowings}
           intensityColormaps={intensityColormaps}
           drawingSession={drawingSession}
+          drawingLabels={drawingLabels}
           canUndo={canUndo}
-          drawingMenuOpen={drawingMenuOpen}
-          onSetDrawingMenuOpen={setDrawingMenuOpen}
           onToggleExpandLayer={toggleExpandLayer}
           onUpdateVolume={handleUpdateVolume}
           onPreviewVolumeOpacity={previewVolumeOpacity}
@@ -441,6 +440,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
       <main className="nc-viewer-main min-w-0 flex-1 overflow-hidden bg-[var(--nc-bg-deep)]">
         <div className="nc-viewer-grid is-single">
           <NiivuePane
+            cacheScope={caseId}
             sliceType={selectedView.sliceType}
             showRender={selectedView.showRender}
             volumes={volumes}

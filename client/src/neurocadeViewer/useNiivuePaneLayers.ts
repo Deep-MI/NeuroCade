@@ -1,5 +1,5 @@
 import { useEffect, type MutableRefObject } from 'react';
-import Niivue from '@niivue/niivue';
+import type Niivue from '@niivue/niivue';
 
 import type { Volume } from '../types';
 import { isSurfaceLayer } from '../types';
@@ -16,16 +16,15 @@ import {
   effectiveLayerOpacity,
   enforceVolumeRenderOrder,
   setNiivueVolumeOpacity,
-  surfaceDisplayKey,
   syncNiivueSurfaceDisplay,
-  volumesInRenderOrder,
 } from './niivueLayers';
+import { surfaceDisplayKey, volumesInRenderOrder } from './layerDisplay';
+import { getCrosshairWorld, restoreCrosshairWorld } from './loadedVolumeDisplay';
 import type { WindowSetting } from './paneSyncKeys';
 
 interface UseNiivuePaneLayersOptions {
   manualWindowingIds: MutableRefObject<Set<string>>;
-  sourceKey: string;
-  visibleSourceKey: string;
+  layerReconcileKey: string;
   visibilityKey: string;
   volumeAppearanceKey: string;
   activeWindowingKey: string;
@@ -50,8 +49,7 @@ function isLayerLoaded(nv: Niivue, layer: Volume): boolean {
 
 export function useNiivuePaneLayers({
   manualWindowingIds,
-  sourceKey,
-  visibleSourceKey,
+  layerReconcileKey,
   visibilityKey,
   volumeAppearanceKey,
   activeWindowingKey,
@@ -82,81 +80,90 @@ export function useNiivuePaneLayers({
     const release = (id: string) => loadingLayerIds.delete(id);
 
     const reconcile = async () => {
-      onError?.(null);
-      const sources = latestVolumesRef.current;
-      const visibleVolumeIds = new Set(
-        sources
-          .filter((volume) => volume.visible && !isSurfaceLayer(volume))
-          .map((volume) => volume.id),
-      );
-
-      let removedVolume = false;
-      for (const loaded of [...asNiivueInterop(nv).volumes]) {
-        if (!loaded.id || !visibleVolumeIds.has(loaded.id)) {
-          const index = nv.volumes.indexOf(loaded);
-          if (index >= 0) {
-            nv.model.removeVolume(index);
-            removedVolume = true;
-          }
-        }
-      }
-      if (removedVolume) await nv.updateGLVolume();
-      const sourceIds = new Set(sources.map((volume) => volume.id));
-      for (const mesh of [...(asNiivueInterop(nv).meshes ?? [])]) {
-        if (!mesh.id || !sourceIds.has(mesh.id)) {
-          const index = nv.meshes.indexOf(mesh);
-          if (index >= 0) void nv.removeMesh(index);
-        }
-      }
-
-      const pending = sources.filter((layer) => (
-        layer.visible
-        && !isLayerLoaded(nv, layer)
-        && !loadingLayerIds.has(layer.id)
-      ));
-      if (pending.length === 0) {
-        if (!cancelled) onLoadingChange?.(false);
-        return;
-      }
-      const pendingVolumes = volumesInRenderOrder(pending.filter((layer) => !isSurfaceLayer(layer)));
-      const visibleSurfaces = pending.filter(isSurfaceLayer).filter((layer) => layer.visible);
-      if (pendingVolumes.length === 0 && visibleSurfaces.length === 0) {
-        if (!cancelled) onLoadingChange?.(false);
-        return;
-      }
-      onLoadingChange?.(true);
+      const crosshairWorld = getCrosshairWorld(nv);
       try {
-        for (const volume of pendingVolumes) claim(volume.id);
-        try {
-          if (!cancelled && !controller.signal.aborted && pendingVolumes.length > 0) {
-            await addNiivueVolumeLayers(
-              nv,
-              pendingVolumes,
-              controller.signal,
-              latestVolumesRef.current,
-            );
+        onError?.(null);
+        const sources = latestVolumesRef.current;
+        const visibleVolumeIds = new Set(
+          sources
+            .filter((volume) => volume.visible && !isSurfaceLayer(volume))
+            .map((volume) => volume.id),
+        );
+
+        let removedVolume = false;
+        for (const loaded of [...asNiivueInterop(nv).volumes]) {
+          if (!loaded.id || !visibleVolumeIds.has(loaded.id)) {
+            const index = nv.volumes.indexOf(loaded);
+            if (index >= 0) {
+              nv.model.removeVolume(index);
+              removedVolume = true;
+            }
           }
-        } catch (error) {
-          if (!cancelled && !controller.signal.aborted) {
-            onError?.(`Failed to load volumes: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (removedVolume) await nv.updateGLVolume();
+        const sourceIds = new Set(sources.map((volume) => volume.id));
+        for (const mesh of [...(asNiivueInterop(nv).meshes ?? [])]) {
+          if (!mesh.id || !sourceIds.has(mesh.id)) {
+            if (mesh.id) {
+              surfaceDisplayControllersRef.current.get(mesh.id)?.abort();
+              surfaceDisplayControllersRef.current.delete(mesh.id);
+            }
+            const index = nv.meshes.indexOf(mesh);
+            if (index >= 0) void nv.removeMesh(index);
           }
-        } finally {
-          for (const volume of pendingVolumes) release(volume.id);
         }
 
-        await Promise.all(visibleSurfaces.map(async (surface) => {
-          if (cancelled || controller.signal.aborted) return;
-          claim(surface.id);
+        const pending = sources.filter((layer) => (
+          layer.visible
+          && !isLayerLoaded(nv, layer)
+          && !loadingLayerIds.has(layer.id)
+        ));
+        if (pending.length === 0) {
+          if (!cancelled) onLoadingChange?.(false);
+          return;
+        }
+        const pendingVolumes = volumesInRenderOrder(pending.filter((layer) => !isSurfaceLayer(layer)));
+        const visibleSurfaces = pending.filter(isSurfaceLayer).filter((layer) => layer.visible);
+        if (pendingVolumes.length === 0 && visibleSurfaces.length === 0) {
+          if (!cancelled) onLoadingChange?.(false);
+          return;
+        }
+        onLoadingChange?.(true);
+        try {
+          for (const volume of pendingVolumes) claim(volume.id);
           try {
-            await addNiivueSurfaceLayer(nv, surface, controller.signal);
+            if (!cancelled && !controller.signal.aborted && pendingVolumes.length > 0) {
+              await addNiivueVolumeLayers(
+                nv,
+                pendingVolumes,
+                controller.signal,
+                latestVolumesRef.current,
+              );
+            }
           } catch (error) {
-            if (!controller.signal.aborted) console.warn(`[NiivuePane] Could not load surface ${surface.name}:`, error);
+            if (!cancelled && !controller.signal.aborted) {
+              onError?.(`Failed to load volumes: ${error instanceof Error ? error.message : String(error)}`);
+            }
           } finally {
-            release(surface.id);
+            for (const volume of pendingVolumes) release(volume.id);
           }
-        }));
+
+          await Promise.all(visibleSurfaces.map(async (surface) => {
+            if (cancelled || controller.signal.aborted) return;
+            claim(surface.id);
+            try {
+              await addNiivueSurfaceLayer(nv, surface, controller.signal);
+            } catch (error) {
+              if (!controller.signal.aborted) console.warn(`[NiivuePane] Could not load surface ${surface.name}:`, error);
+            } finally {
+              release(surface.id);
+            }
+          }));
+        } finally {
+          if (!cancelled) onLoadingChange?.(false);
+        }
       } finally {
-        if (!cancelled) onLoadingChange?.(false);
+        if (!cancelled) restoreCrosshairWorld(nv, crosshairWorld);
       }
     };
 
@@ -172,8 +179,8 @@ export function useNiivuePaneLayers({
     nvRef,
     onError,
     onLoadingChange,
-    sourceKey,
-    visibleSourceKey,
+    layerReconcileKey,
+    surfaceDisplayControllersRef,
   ]);
 
   useEffect(() => {
@@ -285,7 +292,7 @@ export function useNiivuePaneLayers({
       const source = sources.filter(isSurfaceLayer).find((layer) => layer.id === mesh.id);
       if (!source) continue;
       const existingController = surfaceDisplayControllersRef.current.get(source.id);
-      if (existingController && (mesh as { __surfaceDisplayKey?: string }).__surfaceDisplayKey !== surfaceDisplayKey(source)) {
+      if (existingController && mesh.__surfaceDisplayKey !== surfaceDisplayKey(source)) {
         existingController.abort();
         surfaceDisplayControllersRef.current.delete(source.id);
       }

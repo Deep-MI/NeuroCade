@@ -1,13 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Download, Eraser, Eye, EyeOff, Layers, Pencil, Plus, Undo2, X } from 'lucide-react';
+import { Brush, ChevronDown, ChevronRight, Download, Eraser, Eye, EyeOff, Layers, MousePointer2, Pencil, Plus, Undo2, X } from 'lucide-react';
 
 import { isSegmentationLayer, isSurfaceLayer, type LayerType, type SegmentationVolumeLayer, type SurfaceColorMode, type Volume } from '../types';
 import { clampOpacity, layerDefaultOpacity, layerType } from './niivueLayers';
 import type { WindowSetting } from './paneSyncKeys';
 import type { DrawingOptions, DrawingSession } from './nativeDrawing';
-import { resolveSurfaceLayerColorMode, SURFACE_COLOR_MODE_LABELS, surfaceColorModeAvailable } from '../utils/surfaceColors';
-
-const SHOW_MANUAL_LABELING = false;
+import type { DrawingLabelOption } from './useNativeDrawingSession';
+import {
+  curvatureNegativeThreshold,
+  curvaturePositiveThreshold,
+  resolveSurfaceLayerColorMode,
+  SURFACE_COLOR_MODE_LABELS,
+  surfaceColorModeAvailable,
+} from '../utils/surfaceColors';
 
 function titleCaseColormap(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
@@ -86,6 +91,112 @@ const LayerOpacityControl = React.memo(function LayerOpacityControl({
   );
 });
 
+interface DrawingLabelControlProps {
+  labels: DrawingLabelOption[];
+  value: number;
+  onChange: (value: number) => void;
+}
+
+function drawingLabelText(label: DrawingLabelOption | undefined, value: number): string {
+  return label ? `${label.value} · ${label.name}` : String(value);
+}
+
+const DrawingLabelControl = React.memo(function DrawingLabelControl({
+  labels,
+  value,
+  onChange,
+}: DrawingLabelControlProps) {
+  const selected = labels.find((label) => label.value === value);
+  const selectedText = drawingLabelText(selected, value);
+  const [draft, setDraft] = useState(selectedText);
+
+  useEffect(() => {
+    setDraft(selectedText);
+  }, [selectedText]);
+
+  const update = (text: string) => {
+    setDraft(text);
+    const parsed = Number.parseInt(text, 10);
+    if (Number.isInteger(parsed) && parsed > 0) onChange(parsed);
+  };
+
+  return (
+    <>
+      <span
+        className="h-3 w-3 shrink-0 rounded-sm border border-[var(--nc-border)]"
+        style={{ backgroundColor: selected?.color ?? 'transparent' }}
+        aria-hidden="true"
+      />
+      <input
+        type="text"
+        list="viewer-drawing-label-options"
+        value={draft}
+        onChange={(event) => update(event.currentTarget.value)}
+        onFocus={(event) => event.currentTarget.select()}
+        className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
+        aria-label="Drawing label"
+        placeholder="Type a label name or number"
+      />
+      <datalist id="viewer-drawing-label-options">
+        {labels.map((label) => (
+          <option key={label.value} value={drawingLabelText(label, label.value)} />
+        ))}
+      </datalist>
+    </>
+  );
+});
+
+interface CurvatureThresholdControlProps {
+  label: 'Green' | 'Red';
+  ariaLabel: string;
+  value: number;
+  onCommit: (value: number) => void;
+}
+
+const CurvatureThresholdControl = React.memo(function CurvatureThresholdControl({
+  label,
+  ariaLabel,
+  value,
+  onCommit,
+}: CurvatureThresholdControlProps) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number(draft);
+    const valid = Number.isFinite(parsed) && (label === 'Green' ? parsed < 0 : parsed > 0);
+    if (!valid) {
+      setDraft(String(value));
+      return;
+    }
+    onCommit(parsed);
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`nc-mono w-12 shrink-0 text-[11px] ${label === 'Green' ? 'text-green-400' : 'text-red-400'}`}>{label}</span>
+      <input
+        type="number"
+        step={0.01}
+        value={draft}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            commit();
+            event.currentTarget.blur();
+          }
+        }}
+        className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
+        aria-label={ariaLabel}
+      />
+    </div>
+  );
+});
+
 interface LayerPanelProps {
   layerPanelWidth: number;
   onStartLayerPanelResize: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -104,9 +215,8 @@ interface LayerPanelProps {
   windowings: Record<string, WindowSetting>;
   intensityColormaps: string[];
   drawingSession: DrawingSession;
+  drawingLabels: DrawingLabelOption[];
   canUndo: boolean;
-  drawingMenuOpen: boolean;
-  onSetDrawingMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   onToggleExpandLayer: (id: string, type: LayerType) => void;
   onUpdateVolume: (id: string, updates: Partial<Volume>) => void;
   onPreviewVolumeOpacity: (id: string, opacity: number) => void;
@@ -140,9 +250,8 @@ export function LayerPanel({
   windowings,
   intensityColormaps,
   drawingSession,
+  drawingLabels,
   canUndo,
-  drawingMenuOpen,
-  onSetDrawingMenuOpen,
   onToggleExpandLayer,
   onUpdateVolume,
   onPreviewVolumeOpacity,
@@ -162,6 +271,7 @@ export function LayerPanel({
   onCloseDrawing,
 }: LayerPanelProps) {
   const segmentationSources = groupedLayers.segmentation.filter(isSegmentationLayer);
+  const [drawingMenuOpen, setDrawingMenuOpen] = useState(false);
 
   const renderLayerSection = (type: LayerType, items: Volume[]) => (
     <section key={type} className="nc-viewer-layer-section">
@@ -322,22 +432,40 @@ export function LayerPanel({
                       </>
                     )}
                     {showSurfaceDisplay && (
-                      <div className="flex items-center gap-2">
-                        <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Display</span>
-                        <select
-                          className="nc-mono nc-viewer-layer-select"
-                          value={surfaceColorMode}
-                          disabled={!volume.visible}
-                          onChange={(event) => onUpdateVolume(volume.id, { surfaceColorMode: event.target.value as SurfaceColorMode })}
-                          aria-label={`${volume.name} surface display`}
-                        >
-                          {(Object.keys(SURFACE_COLOR_MODE_LABELS) as SurfaceColorMode[])
-                            .filter((mode) => surfaceColorModeAvailable(volume, mode))
-                            .map((mode) => (
-                              <option key={mode} value={mode}>{SURFACE_COLOR_MODE_LABELS[mode]}</option>
-                            ))}
-                        </select>
-                      </div>
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Display</span>
+                          <select
+                            className="nc-mono nc-viewer-layer-select"
+                            value={surfaceColorMode}
+                            disabled={!volume.visible}
+                            onChange={(event) => onUpdateVolume(volume.id, { surfaceColorMode: event.target.value as SurfaceColorMode })}
+                            aria-label={`${volume.name} surface display`}
+                          >
+                            {(Object.keys(SURFACE_COLOR_MODE_LABELS) as SurfaceColorMode[])
+                              .filter((mode) => surfaceColorModeAvailable(volume, mode))
+                              .map((mode) => (
+                                <option key={mode} value={mode}>{SURFACE_COLOR_MODE_LABELS[mode]}</option>
+                              ))}
+                          </select>
+                        </div>
+                        {surfaceColorMode === 'curvature' && (
+                          <>
+                            <CurvatureThresholdControl
+                              label="Green"
+                              ariaLabel={`${volume.name} green curvature threshold`}
+                              value={-curvatureNegativeThreshold(volume)}
+                              onCommit={(value) => onUpdateVolume(volume.id, { curvatureNegativeThreshold: Math.abs(value) })}
+                            />
+                            <CurvatureThresholdControl
+                              label="Red"
+                              ariaLabel={`${volume.name} red curvature threshold`}
+                              value={curvaturePositiveThreshold(volume)}
+                              onCommit={(value) => onUpdateVolume(volume.id, { curvaturePositiveThreshold: value })}
+                            />
+                          </>
+                        )}
+                      </>
                     )}
                     {onRemoveVolume && (
                       <button
@@ -364,14 +492,14 @@ export function LayerPanel({
   const renderDrawingTools = () => (
     <section className="nc-viewer-layer-section">
       <div className="nc-viewer-layer-section-header">
-        <span>Drawing</span>
+        <span>Voxel edit</span>
         <div className="relative">
           <button
             type="button"
             className="nc-btn nc-icon-btn !border-0"
-            onClick={() => onSetDrawingMenuOpen((open) => !open)}
-            title="New drawing"
-            aria-label="New drawing"
+            onClick={() => setDrawingMenuOpen((open) => !open)}
+            title="Start voxel editing"
+            aria-label="Start voxel editing"
             aria-expanded={drawingMenuOpen}
             disabled={!canAddLayers}
           >
@@ -383,7 +511,7 @@ export function LayerPanel({
               aria-hidden="true"
               tabIndex={-1}
               className="fixed inset-0 z-10 cursor-default"
-              onClick={() => onSetDrawingMenuOpen(false)}
+              onClick={() => setDrawingMenuOpen(false)}
             />
           )}
           {drawingMenuOpen && (
@@ -392,13 +520,13 @@ export function LayerPanel({
                 type="button"
                 role="menuitem"
                 className="nc-viewer-drawing-menu-item"
-                onClick={() => { onSetDrawingMenuOpen(false); onBeginBlankDrawing(); }}
+                onClick={() => { setDrawingMenuOpen(false); onBeginBlankDrawing(); }}
                 disabled={groupedLayers.intensity.length === 0}
                 title={groupedLayers.intensity.length === 0 ? 'Load an intensity volume first' : 'Empty drawing matching the active volume'}
               >
-                Blank drawing
+                New label volume
               </button>
-              <div className="nc-viewer-drawing-menu-label">Start from label map</div>
+              <div className="nc-viewer-drawing-menu-label">Edit segmentation</div>
               {segmentationSources.length === 0 ? (
                 <div className="nc-viewer-drawing-menu-empty">No segmentations loaded</div>
               ) : (
@@ -408,7 +536,7 @@ export function LayerPanel({
                     type="button"
                     role="menuitem"
                     className="nc-viewer-drawing-menu-item truncate"
-                    onClick={() => { onSetDrawingMenuOpen(false); onBeginDrawingFromSegmentation(segmentation); }}
+                    onClick={() => { setDrawingMenuOpen(false); onBeginDrawingFromSegmentation(segmentation); }}
                     title={`Edit a copy of ${segmentation.name}`}
                   >
                     {segmentation.name}
@@ -424,7 +552,7 @@ export function LayerPanel({
         <div className="flex items-center gap-2">
           <Pencil size={12} className="text-[var(--nc-accent)]" />
           <span className="nc-mono min-w-0 flex-1 truncate text-[11px] text-[var(--nc-tx-dim)]" title={drawingSession.source?.name ?? drawingSession.filename}>
-            {drawingSession.active ? `Editing: ${drawingSession.source?.name ?? drawingSession.filename}` : 'No active drawing'}
+            {drawingSession.active ? `Editing: ${drawingSession.source?.name ?? drawingSession.filename}` : 'No active label edit'}
           </span>
         </div>
 
@@ -434,18 +562,35 @@ export function LayerPanel({
           </div>
         )}
 
-        <div className="flex items-center gap-1">
-          {(['none', 'pen'] as const).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              className={`nc-btn flex-1 text-center text-[11px] ${drawingSession.mode === mode ? 'nc-btn-active' : ''}`}
-              onClick={() => onUpdateDrawingOptions({ mode })}
-              disabled={!drawingSession.active}
-            >
-              {mode === 'none' ? 'None' : 'Pen'}
-            </button>
-          ))}
+        <div className="grid grid-cols-3 gap-1">
+          <button
+            type="button"
+            className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.tool === 'navigate' ? 'nc-btn-active' : ''}`}
+            onClick={() => onUpdateDrawingOptions({ tool: 'navigate' })}
+            disabled={!drawingSession.active}
+            title="Navigate without painting"
+          >
+            <MousePointer2 size={11} /> Navigate
+          </button>
+          <button
+            type="button"
+            className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.tool === 'paint' ? 'nc-btn-active' : ''}`}
+            onClick={() => onUpdateDrawingOptions({ tool: 'paint' })}
+            disabled={!drawingSession.active}
+            title="Paint the selected label"
+            data-testid="viewer-drawing-paint"
+          >
+            <Brush size={11} /> Paint
+          </button>
+          <button
+            type="button"
+            className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.tool === 'erase' ? 'nc-btn-active' : ''}`}
+            onClick={() => onUpdateDrawingOptions({ tool: 'erase' })}
+            disabled={!drawingSession.active}
+            title="Erase labels with the current brush"
+          >
+            <Eraser size={11} /> Erase
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
@@ -476,41 +621,81 @@ export function LayerPanel({
           <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(drawingSession.opacity * 100)}</span>
         </div>
 
-        {drawingSession.mode === 'pen' && (
+        {drawingSession.tool !== 'navigate' && (
           <div className="flex items-center gap-2">
-            <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Pen</span>
+            <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Brush</span>
             <input
-              type="number"
+              type="range"
               min={1}
+              max={10}
               step={1}
-              value={drawingSession.penValue}
-              disabled={!drawingSession.active || drawingSession.erase}
-              onChange={(event) => onUpdateDrawingOptions({ penValue: Math.max(1, Math.round(Number(event.currentTarget.value) || 1)) })}
-              className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
-              aria-label="Pen label value"
-            />
-            <button
-              type="button"
-              className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.erase ? 'nc-btn-active' : ''}`}
-              onClick={() => onUpdateDrawingOptions({ erase: !drawingSession.erase })}
+              value={drawingSession.brushSize}
               disabled={!drawingSession.active}
-              title="Paint background (0) to erase"
-            >
-              <Eraser size={11} /> Erase
-            </button>
+              onChange={(event) => onUpdateDrawingOptions({ brushSize: Number(event.currentTarget.value) })}
+              className="nc-viewer-layer-slider"
+              aria-label="Drawing brush size"
+            />
+            <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{drawingSession.brushSize}</span>
           </div>
         )}
 
-        {drawingSession.mode === 'pen' && (
-          <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
-            <input
-              type="checkbox"
-              checked={drawingSession.penFill}
+        {drawingSession.tool === 'paint' && (
+          <div className="flex items-center gap-2">
+            <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">LUT</span>
+            <select
+              className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
+              value={drawingSession.lut}
+              onChange={(event) => onUpdateDrawingOptions({
+                lut: event.currentTarget.value as DrawingOptions['lut'],
+                penValue: 1,
+              })}
               disabled={!drawingSession.active}
-              onChange={(event) => onUpdateDrawingOptions({ penFill: event.currentTarget.checked })}
+              aria-label="Drawing color table"
+            >
+              <option value="binary">Binary</option>
+              <option value="freesurfer">FreeSurfer</option>
+            </select>
+          </div>
+        )}
+
+        {drawingSession.active && drawingSession.lut === 'freesurfer' && (
+          <div className="nc-mono text-[10px] text-[var(--nc-tx-dim)]">
+            Native NiiVue editing supports FreeSurfer label values 1–255.
+          </div>
+        )}
+
+        {drawingSession.tool === 'paint' && (
+          <div className="flex items-center gap-2">
+            <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Label</span>
+            <DrawingLabelControl
+              labels={drawingLabels}
+              value={drawingSession.penValue}
+              onChange={(penValue) => onUpdateDrawingOptions({ penValue })}
             />
-            <span>Pen fill</span>
-          </label>
+          </div>
+        )}
+
+        {drawingSession.tool === 'paint' && (
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
+              <input
+                type="checkbox"
+                checked={drawingSession.fillOutline}
+                disabled={!drawingSession.active}
+                onChange={(event) => onUpdateDrawingOptions({ fillOutline: event.currentTarget.checked })}
+              />
+              <span>Fill outline</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
+              <input
+                type="checkbox"
+                checked={drawingSession.overwrite}
+                disabled={!drawingSession.active}
+                onChange={(event) => onUpdateDrawingOptions({ overwrite: event.currentTarget.checked })}
+              />
+              <span>Replace labels</span>
+            </label>
+          </div>
         )}
 
         <div className="flex gap-1 pt-0.5">
@@ -537,7 +722,7 @@ export function LayerPanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {renderLayerSection('intensity', groupedLayers.intensity)}
         {renderLayerSection('segmentation', groupedLayers.segmentation)}
-        {SHOW_MANUAL_LABELING && renderDrawingTools()}
+        {renderDrawingTools()}
         {renderLayerSection('surface', groupedLayers.surface)}
       </div>
       <div

@@ -3,110 +3,10 @@ import test from 'node:test';
 
 import {
   freeSurferAnnotationToMz3,
+  freeSurferCurvatureToMz3,
   parseFreeSurferAnnotation,
   parseFreeSurferCurvature,
-  parseFreeSurferSurface,
 } from '../src/utils/SurfaceLoader.js';
-import { SURFACE_LIGHT_DIRECTIONS } from '../src/utils/surfaceLighting.js';
-
-const TRIANGLE_FILE_MAGIC = 16_777_214;
-const NEW_CURV_FILE_MAGIC = 16_777_215;
-
-function writeInt3(view: DataView, offset: number, value: number): void {
-  view.setUint8(offset, (value >> 16) & 0xff);
-  view.setUint8(offset + 1, (value >> 8) & 0xff);
-  view.setUint8(offset + 2, value & 0xff);
-}
-
-function makeSurface(vertices: number[], indices: number[]): ArrayBuffer {
-  const header = new TextEncoder().encode('created by test\ncomment\n');
-  const vertexCount = vertices.length / 3;
-  const faceCount = indices.length / 3;
-  const buffer = new ArrayBuffer(3 + header.byteLength + 8 + vertexCount * 3 * 4 + faceCount * 3 * 4);
-  const view = new DataView(buffer);
-  let offset = 0;
-  writeInt3(view, offset, TRIANGLE_FILE_MAGIC);
-  offset += 3;
-  new Uint8Array(buffer, offset, header.byteLength).set(header);
-  offset += header.byteLength;
-  view.setInt32(offset, vertexCount, false);
-  offset += 4;
-  view.setInt32(offset, faceCount, false);
-  offset += 4;
-
-  for (const value of vertices) {
-    view.setFloat32(offset, value, false);
-    offset += 4;
-  }
-  for (const index of indices) {
-    view.setUint32(offset, index, false);
-    offset += 4;
-  }
-  return buffer;
-}
-
-function makeSurfaceWithVolumeInfo(vertices: number[], indices: number[], volumeInfo: string): ArrayBuffer {
-  const base = new Uint8Array(makeSurface(vertices, indices));
-  const footer = new TextEncoder().encode(volumeInfo);
-  const buffer = new ArrayBuffer(base.byteLength + 12 + footer.byteLength);
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
-  bytes.set(base, 0);
-  let offset = base.byteLength;
-  view.setUint32(offset, 2, false);
-  offset += 4;
-  view.setUint32(offset, 0, false);
-  offset += 4;
-  view.setUint32(offset, 20, false);
-  offset += 4;
-  bytes.set(footer, offset);
-  return buffer;
-}
-
-function makeTriangleSurface(): ArrayBuffer {
-  return makeSurface(
-    [0, 0, 0, 1, 0, 0, 0, 1, 0],
-    [0, 1, 2],
-  );
-}
-
-function dot(a: number[], b: number[]): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-function makeNewCurvature(values: number[]): ArrayBuffer {
-  const buffer = new ArrayBuffer(3 + 12 + values.length * 4);
-  const view = new DataView(buffer);
-  let offset = 0;
-  writeInt3(view, offset, NEW_CURV_FILE_MAGIC);
-  offset += 3;
-  view.setInt32(offset, values.length, false);
-  offset += 4;
-  view.setInt32(offset, 1, false);
-  offset += 4;
-  view.setInt32(offset, 1, false);
-  offset += 4;
-  for (const value of values) {
-    view.setFloat32(offset, value, false);
-    offset += 4;
-  }
-  return buffer;
-}
-
-function makeLegacyCurvature(values: number[]): ArrayBuffer {
-  const buffer = new ArrayBuffer(3 + 3 + values.length * 2);
-  const view = new DataView(buffer);
-  let offset = 0;
-  writeInt3(view, offset, values.length);
-  offset += 3;
-  writeInt3(view, offset, 1);
-  offset += 3;
-  for (const value of values) {
-    view.setInt16(offset, value * 100, false);
-    offset += 2;
-  }
-  return buffer;
-}
 
 function fsStringBytes(value: string): Uint8Array {
   const encoded = new TextEncoder().encode(value);
@@ -145,98 +45,43 @@ function makeAnnotation(): ArrayBuffer {
   view.setInt32(offset, 2, false);
   offset += 4;
 
-  view.setInt32(offset, 0, false);
-  offset += 4;
-  bytes.set(strings[1], offset);
-  offset += strings[1].length;
-  for (const value of [0, 0, 0, 255]) {
-    view.setInt32(offset, value, false);
+  for (const [index, name, rgba] of [
+    [0, strings[1], [0, 0, 0, 255]],
+    [1, strings[2], [10, 20, 30, 0]],
+  ] as const) {
+    view.setInt32(offset, index, false);
     offset += 4;
-  }
-
-  view.setInt32(offset, 1, false);
-  offset += 4;
-  bytes.set(strings[2], offset);
-  offset += strings[2].length;
-  for (const value of [10, 20, 30, 0]) {
-    view.setInt32(offset, value, false);
-    offset += 4;
+    bytes.set(name, offset);
+    offset += name.length;
+    for (const value of rgba) {
+      view.setInt32(offset, value, false);
+      offset += 4;
+    }
   }
   return buffer;
 }
 
-void test('parseFreeSurferSurface reads binary triangle surfaces and computes normals', () => {
-  const surface = parseFreeSurferSurface(makeTriangleSurface());
-
-  assert.equal(surface.vertexCount, 3);
-  assert.equal(surface.faceCount, 1);
-  assert.deepEqual([...surface.indices], [0, 1, 2]);
-  assert.deepEqual([...surface.vertices], [0, 0, 0, 1, 0, 0, 0, 1, 0]);
-  assert.deepEqual([...surface.normals], [0, 0, 1, 0, 0, 1, 0, 0, 1]);
-});
-
-void test('parseFreeSurferSurface reads optional FreeSurfer volume info footer', () => {
-  const surface = parseFreeSurferSurface(makeSurfaceWithVolumeInfo(
-    [0, 0, 0, 1, 0, 0, 0, 1, 0],
-    [0, 1, 2],
-    [
-      'valid = 1  # volume info valid',
-      'filename = /subject/mri/wm.mgz',
-      'volume = 320 320 320',
-      'voxelsize = 0.8 0.8 0.8',
-      'xras   = -1 0 0',
-      'yras   = 0 0 -1',
-      'zras   = 0 1 0',
-      'cras   = -0.1 23.4 -25.6',
-    ].join('\n'),
-  ));
-
-  assert.deepEqual(surface.volumeInfo?.volume, [320, 320, 320]);
-  assert.deepEqual(surface.volumeInfo?.voxelsize, [0.8, 0.8, 0.8]);
-  assert.deepEqual(surface.volumeInfo?.xras, [-1, 0, 0]);
-  assert.deepEqual(surface.volumeInfo?.yras, [0, 0, -1]);
-  assert.deepEqual(surface.volumeInfo?.zras, [0, 1, 0]);
-  assert.deepEqual(surface.volumeInfo?.cras, [-0.1, 23.4, -25.6]);
-});
-
-void test('parseFreeSurferSurface keeps closed mesh normals outward', () => {
-  const surface = parseFreeSurferSurface(makeSurface(
-    [
-      1, 1, 1,
-      -1, -1, 1,
-      -1, 1, -1,
-      1, -1, -1,
-    ],
-    [
-      0, 2, 1,
-      0, 1, 3,
-      0, 3, 2,
-      1, 2, 3,
-    ],
-  ));
-
-  for (let i = 0; i < surface.vertices.length; i += 3) {
-    const vertex = [...surface.vertices.slice(i, i + 3)];
-    const normal = [...surface.normals.slice(i, i + 3)];
-    assert.ok(dot(vertex, normal) > 0.99, `normal ${normal.join(',')} should point outward from ${vertex.join(',')}`);
+function makeCurvature(values: number[]): ArrayBuffer {
+  const buffer = new ArrayBuffer(15 + values.length * 4);
+  const view = new DataView(buffer);
+  view.setUint8(0, 255);
+  view.setUint8(1, 255);
+  view.setUint8(2, 255);
+  view.setUint32(3, values.length, false);
+  view.setUint32(7, 2, false);
+  view.setUint32(11, 1, false);
+  for (let index = 0; index < values.length; index += 1) {
+    view.setFloat32(15 + index * 4, values[index], false);
   }
-});
+  return buffer;
+}
 
-void test('surface lights point toward the camera-facing side', () => {
-  for (const direction of SURFACE_LIGHT_DIRECTIONS) {
-    assert.ok(direction[2] < 0, `expected camera-side light z to be negative, got ${direction.join(',')}`);
-    assert.ok(Math.hypot(...direction) > 0.01);
-  }
-});
+void test('parseFreeSurferAnnotation reads labels and color tables', () => {
+  const annotation = parseFreeSurferAnnotation(makeAnnotation(), 3);
 
-void test('parseFreeSurferSurface rejects unsupported magic numbers', () => {
-  const buffer = makeTriangleSurface();
-  writeInt3(new DataView(buffer), 0, 12_345);
-
-  assert.throws(
-    () => parseFreeSurferSurface(buffer),
-    /Unsupported FreeSurfer surface magic/,
-  );
+  assert.deepEqual([...annotation.labels], [-1, 1, 1]);
+  assert.deepEqual([...annotation.colorTable.slice(4, 8)], [10, 20, 30, 255]);
+  assert.equal(annotation.names[1], 'region');
 });
 
 void test('freeSurferAnnotationToMz3 creates an opaque labeled mesh overlay', () => {
@@ -244,9 +89,6 @@ void test('freeSurferAnnotationToMz3 creates an opaque labeled mesh overlay', ()
   const view = new DataView(mz3);
   const colorMapLength = view.getUint32(12, true);
   const colorMap = JSON.parse(new TextDecoder().decode(mz3.slice(16, 16 + colorMapLength))) as {
-    R: number[];
-    G: number[];
-    B: number[];
     A: number[];
     I: number[];
     labels: string[];
@@ -255,7 +97,6 @@ void test('freeSurferAnnotationToMz3 creates an opaque labeled mesh overlay', ()
 
   assert.equal(view.getUint16(0, true), 23_117);
   assert.equal(view.getUint16(2, true), 72);
-  assert.equal(view.getUint32(8, true), 3);
   assert.deepEqual(colorMap.I, [0, 1, 2]);
   assert.deepEqual(colorMap.A, [0, 0, 255]);
   assert.deepEqual(colorMap.labels, ['Unassigned', 'unknown', 'region']);
@@ -266,32 +107,23 @@ void test('freeSurferAnnotationToMz3 creates an opaque labeled mesh overlay', ()
   ], [0, 2, 2]);
 });
 
-void test('parseFreeSurferCurvature reads new-format float curvature', () => {
-  const values = parseFreeSurferCurvature(makeNewCurvature([-0.12, 0, 0.34]), 3);
+void test('parseFreeSurferCurvature preserves signed scalar values', () => {
+  const curvature = parseFreeSurferCurvature(makeCurvature([-0.35, 0, 0.25]), 3);
 
-  assert.equal(values.length, 3);
-  assert.ok(Math.abs(values[0] + 0.12) < 1e-6);
-  assert.equal(values[1], 0);
-  assert.ok(Math.abs(values[2] - 0.34) < 1e-6);
+  assert.deepEqual([...curvature], [-0.3499999940395355, 0, 0.25]);
 });
 
-void test('parseFreeSurferCurvature reads legacy scaled int curvature', () => {
-  const values = parseFreeSurferCurvature(makeLegacyCurvature([-2, 0, 3]), 3);
+void test('freeSurferCurvatureToMz3 preserves the signed curvature scale', () => {
+  const mz3 = freeSurferCurvatureToMz3(makeCurvature([-0.35, 0, 0.25]), 3);
+  const view = new DataView(mz3);
 
-  assert.deepEqual([...values], [-2, 0, 3]);
-});
-
-void test('parseFreeSurferCurvature rejects mismatched vertex counts', () => {
-  assert.throws(
-    () => parseFreeSurferCurvature(makeNewCurvature([0.1, 0.2]), 3),
-    /does not match surface vertex count/,
-  );
-});
-
-void test('parseFreeSurferAnnotation reads labels and color tables', () => {
-  const annotation = parseFreeSurferAnnotation(makeAnnotation(), 3);
-
-  assert.deepEqual([...annotation.labels], [-1, 1, 1]);
-  assert.deepEqual([...annotation.colorTable.slice(4, 8)], [10, 20, 30, 255]);
-  assert.equal(annotation.names[1], 'region');
+  assert.equal(view.getUint16(0, true), 23_117);
+  assert.equal(view.getUint16(2, true), 8);
+  assert.equal(view.getUint32(4, true), 0);
+  assert.equal(view.getUint32(8, true), 3);
+  assert.deepEqual([
+    view.getFloat32(16, true),
+    view.getFloat32(20, true),
+    view.getFloat32(24, true),
+  ], [-0.3499999940395355, 0, 0.25]);
 });

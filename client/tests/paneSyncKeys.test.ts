@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  sourceVisibilityKeyOf,
+  layerReconcileKeyOf,
   surfaceAppearanceKeyOf,
   volumeAppearanceKeyOf,
   volumeOrderKeyOf,
@@ -48,14 +48,15 @@ const surface = {
   opacity: 1,
   colormap: 'surface',
   surfaceColorMode: 'curvature',
-  curvatureNegativeThreshold: -0.2,
+  curvatureUrl: '/lh.curv',
+  curvatureNegativeThreshold: 0.2,
   curvaturePositiveThreshold: 0.2,
 } satisfies Volume;
 
 void test('pane sync keys isolate source, visibility, appearance, and ordering concerns', () => {
-  assert.match(sourceVisibilityKeyOf([intensity]), /orig\.mgz:\/orig\.mgz/);
-  assert.equal(sourceVisibilityKeyOf([{ ...intensity, visible: false }]), '');
-  assert.match(sourceVisibilityKeyOf([surface]), /lh\.pial:\/lh\.pial/);
+  assert.match(layerReconcileKeyOf([intensity]), /orig\.mgz:\/orig\.mgz/);
+  assert.notEqual(layerReconcileKeyOf([intensity]), layerReconcileKeyOf([{ ...intensity, visible: false }]));
+  assert.match(layerReconcileKeyOf([surface]), /lh\.pial:\/lh\.pial/);
   assert.notEqual(volumeVisibilityKeyOf([intensity]), volumeVisibilityKeyOf([{ ...intensity, opacity: 0.5 }]));
   assert.notEqual(volumeAppearanceKeyOf([intensity]), volumeAppearanceKeyOf([{ ...intensity, colormap: 'hot' }]));
   assert.equal(volumeOrderKeyOf([intensity, segmentation]), 'orig.mgz|aseg.mgz');

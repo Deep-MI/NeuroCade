@@ -511,6 +511,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
           <Suspense fallback={<div className="flex h-full min-w-0 flex-1 items-center justify-center bg-[var(--nc-bg-deep)] text-sm text-[var(--nc-tx-muted)]">Loading viewer...</div>}>
             <NeuroCadeCaseViewer
               ref={mriViewerRef}
+              caseId={controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId ?? 'no-case'}
               volumes={volumes}
               caseLoading={controller.isCaseLoading}
               layerPanelOpen={layerPanelOpen}

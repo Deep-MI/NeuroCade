@@ -1,6 +1,7 @@
-import Niivue from '@niivue/niivue';
+import type Niivue from '@niivue/niivue';
+import type { MeshLayerFromUrlOptions } from '@niivue/niivue';
 
-import { isSurfaceLayer, type LayerType, type SurfaceLayer, type Volume } from '../types';
+import type { LayerType, SurfaceLayer, Volume } from '../types';
 import type { LocationInfo } from '../types';
 import { appFetchUrl } from '../utils/api';
 import {
@@ -8,7 +9,6 @@ import {
   type NiivueColorMap,
   type NiivueMeshInterop,
   type NiivueVolumeInterop,
-  type SurfaceCompanionLayer,
 } from '../utils/niivueInterop';
 import { compileNiivueLabelColorMap } from '../utils/niivueColorMap';
 import { prepareNiivueVolume } from '../utils/niivueMgh';
@@ -17,8 +17,17 @@ import {
   resolveVolumeColormap,
   resolveVolumeLabelColorMap,
 } from '../utils/volumeColormap';
-import { freeSurferAnnotationToMz3 } from '../utils/SurfaceLoader';
-import { resolveSurfaceLayerColorMode, surfaceColor } from '../utils/surfaceColors';
+import {
+  freeSurferAnnotationToMz3,
+  freeSurferCurvatureToMz3,
+} from '../utils/SurfaceLoader';
+import {
+  curvatureNegativeThreshold,
+  curvaturePositiveThreshold,
+  resolveSurfaceLayerColorMode,
+  surfaceColor,
+} from '../utils/surfaceColors';
+import { surfaceDisplayKey, volumesInRenderOrder } from './layerDisplay';
 import { reorderLoadedVolumes, setLoadedVolumeOpacity } from './loadedVolumeDisplay';
 
 interface NiivueLocationObject {
@@ -38,18 +47,6 @@ export function layerType(volume: Volume): LayerType {
 
 function isSegmentationVolume(volume: Volume): boolean {
   return volume.type === 'segmentation';
-}
-
-// Desired Niivue volume order, bottom-to-top (ascending index = background →
-// top overlay). Intensity images remain anatomical underlays; segmentations
-// remain overlays. Within each group, the layer panel/source array is
-// top-to-bottom, so reverse the group directly. Surfaces are meshes, handled
-// elsewhere.
-export function volumesInRenderOrder(sources: Volume[]): Volume[] {
-  const nonSurface = sources.filter((volume) => !isSurfaceLayer(volume));
-  const intensities = nonSurface.filter((volume) => volume.type !== 'segmentation');
-  const segmentations = nonSurface.filter((volume) => volume.type === 'segmentation');
-  return [...intensities.reverse(), ...segmentations.reverse()];
 }
 
 // Reorders the already-loaded Niivue volumes to match volumesInRenderOrder
@@ -91,6 +88,13 @@ export function effectiveLayerOpacity(volume: Volume): number {
 export const setNiivueVolumeOpacity = setLoadedVolumeOpacity;
 
 const arrayBufferCache = new Map<string, Promise<ArrayBuffer>>();
+let arrayBufferCacheScope: string | null = null;
+
+export function setNiivueLayerBufferCacheScope(scope: string): void {
+  if (scope === arrayBufferCacheScope) return;
+  arrayBufferCache.clear();
+  arrayBufferCacheScope = scope;
+}
 
 export async function fetchCachedArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
   if (signal.aborted) {
@@ -116,32 +120,6 @@ export async function fetchCachedArrayBuffer(url: string, signal: AbortSignal): 
     throw new DOMException('Artifact fetch aborted', 'AbortError');
   }
   return buffer;
-}
-
-export function clearNiivueLayerBufferCache(): void {
-  arrayBufferCache.clear();
-}
-
-type IdleWindow = typeof window & {
-  requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
-};
-
-// Resolves once the browser is idle (or after `timeout` ms as a safety net), so
-// background work only proceeds when the main thread is free — and yields the
-// event loop between items.
-export function whenIdle(signal: AbortSignal, timeout = 2000): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const idleWindow = window as IdleWindow;
-    if (typeof idleWindow.requestIdleCallback === 'function') {
-      idleWindow.requestIdleCallback(() => resolve(), { timeout });
-    } else {
-      setTimeout(resolve, 150);
-    }
-  });
 }
 
 function filenameFromUrl(url: string, fallback: string): string {
@@ -177,14 +155,13 @@ async function addSurfaceCompanionLayer(nv: Niivue, mesh: NiivueMeshInterop, sur
     colorMode === 'annotation' ? `${surface.filename}.annot` : `${surface.filename}.curv`,
   );
   const buffer = await fetchCachedArrayBuffer(companionUrl, signal);
+  const expectedVertexCount = mesh.positions.length / 3;
   const layerBuffer = colorMode === 'annotation'
-    ? freeSurferAnnotationToMz3(buffer, mesh.positions.length / 3)
-    : buffer;
-  const layerName = colorMode === 'annotation'
-    ? `${companionName.replace(/\.annot$/i, '')}.mz3`
-    : companionName;
+    ? freeSurferAnnotationToMz3(buffer, expectedVertexCount)
+    : freeSurferCurvatureToMz3(buffer, expectedVertexCount);
+  const layerName = `${companionName.replace(/\.[^.]+$/i, '')}.mz3`;
   const file = new File([layerBuffer], layerName);
-  const layer: SurfaceCompanionLayer = colorMode === 'annotation'
+  const layer: MeshLayerFromUrlOptions = colorMode === 'annotation'
     ? {
       url: file,
       name: companionName,
@@ -195,25 +172,28 @@ async function addSurfaceCompanionLayer(nv: Niivue, mesh: NiivueMeshInterop, sur
       url: file,
       name: companionName,
       opacity: 1,
-      colormap: 'gray',
-      colormapNegative: 'gray',
+      colormap: nv.addColormap('NeuroCade Freeview curvature', {
+        R: [0, 255],
+        G: [255, 0],
+        B: [0, 0],
+        A: [255, 255],
+        I: [0, 255],
+      }),
+      calMin: -curvatureNegativeThreshold(surface),
+      calMax: curvaturePositiveThreshold(surface),
+      colormapType: 0,
+      isTransparentBelowCalMin: false,
+      isColorbarVisible: false,
     };
 
   const meshIndex = asNiivueInterop(nv).meshes.indexOf(mesh);
   if (meshIndex >= 0) await nv.addMeshLayer(meshIndex, layer);
 }
 
-export function surfaceDisplayKey(surface: SurfaceLayer): string {
-  const colorMode = resolveSurfaceLayerColorMode(surface);
-  const companionUrl = colorMode === 'annotation' ? surface.annotationUrl : colorMode === 'curvature' ? surface.curvatureUrl : '';
-  return `${colorMode}:${companionUrl ?? ''}`;
-}
-
 export async function syncNiivueSurfaceDisplay(nv: Niivue, mesh: NiivueMeshInterop, surface: SurfaceLayer, signal: AbortSignal): Promise<void> {
-  const keyedMesh = mesh as NiivueMeshInterop & { __surfaceDisplayKey?: string };
   const nextKey = surfaceDisplayKey(surface);
-  if (keyedMesh.__surfaceDisplayKey === nextKey) return;
-  keyedMesh.__surfaceDisplayKey = nextKey;
+  if (mesh.__surfaceDisplayKey === nextKey) return;
+  mesh.__surfaceDisplayKey = nextKey;
   const meshIndex = asNiivueInterop(nv).meshes.indexOf(mesh);
   if (meshIndex < 0) return;
   while (mesh.layers.length > 0) await nv.removeMeshLayer(meshIndex, mesh.layers.length - 1);
@@ -366,12 +346,3 @@ export function locationFromNiivue(locationObject: unknown, nv: Niivue, sourceVo
 // Stable key over layer sources. Visibility deliberately stays out of this key:
 // show/hide should use the display sync path and must not trigger full image or
 // mesh reconciliation.
-export function sourceKeyOf(volumes: Volume[]): string {
-  return volumes.map((volume) => [
-    volume.id,
-    volume.url,
-    volume.filename,
-    volume.type ?? 'intensity',
-    isSurfaceLayer(volume) ? `${volume.curvatureUrl ?? ''}:${volume.annotationUrl ?? ''}` : '',
-  ].join(':')).sort().join('|');
-}

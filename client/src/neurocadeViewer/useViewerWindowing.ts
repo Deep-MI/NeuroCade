@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
-import Niivue from '@niivue/niivue';
+import type Niivue from '@niivue/niivue';
 
 import { isSurfaceLayer, type Volume } from '../types';
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
@@ -8,7 +8,7 @@ import type { WindowSetting } from './paneSyncKeys';
 interface UseViewerWindowingOptions {
   volumes: Volume[];
   instanceRef: MutableRefObject<Niivue | null>;
-  scheduleLayerRefresh: (nv: Niivue, loaded: NiivueVolumeInterop) => void;
+  scheduleRefresh: (nv: Niivue) => void;
 }
 
 interface PendingWindowingTransaction {
@@ -22,7 +22,7 @@ interface PendingWindowingTransaction {
 export function useViewerWindowing({
   volumes,
   instanceRef,
-  scheduleLayerRefresh,
+  scheduleRefresh,
 }: UseViewerWindowingOptions) {
   const manualWindowingRef = useRef<Set<string>>(new Set());
   const windowingTransactionFrameRef = useRef<number | null>(null);
@@ -119,13 +119,15 @@ export function useViewerWindowing({
         ) {
           loaded.calMin = nextMin;
           loaded.calMax = nextMax;
-          scheduleLayerRefresh(nv, loaded);
+          // Mutate the loaded volume directly and refresh once. setVolume()
+          // emits volumeUpdated and would feed the slider value back to React.
+          scheduleRefresh(nv);
         }
       }
     }
 
     scheduleWindowingState(statePatch);
-  }, [instanceRef, scheduleLayerRefresh, scheduleWindowingState]);
+  }, [instanceRef, scheduleRefresh, scheduleWindowingState]);
 
   const syncIntensityWindow = useCallback((sourceLoaded: NiivueVolumeInterop) => {
     const id = sourceLoaded.id;

@@ -12,10 +12,11 @@ import type { LocationInfo, Volume } from '../types';
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
 import {
   locationFromNiivue,
-  sourceKeyOf,
+  setNiivueLayerBufferCacheScope,
 } from './niivueLayers';
+import { referenceVoxelToWorld } from './loadedVolumeDisplay';
 import {
-  sourceVisibilityKeyOf,
+  layerReconcileKeyOf,
   surfaceAppearanceKeyOf,
   volumeAppearanceKeyOf,
   volumeOrderKeyOf,
@@ -34,6 +35,7 @@ import {
 export type { WindowSetting } from './paneSyncKeys';
 
 interface NiivuePaneProps {
+  cacheScope: string;
   sliceType: ViewerSliceType;
   showRender?: number;
   volumes: Volume[];
@@ -83,6 +85,7 @@ const PLANE_ORIENTATION_LABELS: Record<ViewerPlaneSliceType, OrientationLabels> 
 };
 
 export function NiivuePane({
+  cacheScope,
   sliceType,
   showRender = SHOW_RENDER.AUTO,
   volumes,
@@ -119,8 +122,7 @@ export function NiivuePane({
   reportLocationRef.current = reportLocation;
 
   const plane = isPlane(sliceType);
-  const sourceKey = sourceKeyOf(volumes);
-  const visibleSourceKey = useMemo(() => sourceVisibilityKeyOf(volumes), [volumes]);
+  const layerReconcileKey = useMemo(() => layerReconcileKeyOf(volumes), [volumes]);
   const visibilityKey = useMemo(() => volumeVisibilityKeyOf(volumes), [volumes]);
   const volumeAppearanceKey = useMemo(() => volumeAppearanceKeyOf(volumes), [volumes]);
   const activeWindowingKey = useMemo(() => windowingKeyOf(windowings), [windowings]);
@@ -184,8 +186,8 @@ export function NiivuePane({
       }
     };
     nv.addEventListener('locationChange', handleLocationChange);
-    const handleIntensityChange = (event: Event) => {
-      const loaded = (event as CustomEvent<VolumeUpdatedDetail>).detail.volume as NiivueVolumeInterop;
+    const handleIntensityChange = (event: CustomEvent<VolumeUpdatedDetail>) => {
+      const loaded: NiivueVolumeInterop = event.detail.volume;
       if (loaded?.id && loaded.calMin !== undefined && loaded.calMax !== undefined) {
         onIntensityWindowChangeRef.current?.(loaded);
       }
@@ -239,13 +241,19 @@ export function NiivuePane({
     if (!externalCoordinate) return;
     const nv = nvRef.current;
     if (!nv) return;
-    nv.setCrosshairPos(nv.vox2frac(externalCoordinate));
-  }, [externalCoordinate]);
+    const worldCoordinate = referenceVoxelToWorld(nv, externalCoordinate);
+    if (worldCoordinate) nv.setCrosshairPos(worldCoordinate);
+  }, [externalCoordinate, layerReconcileKey]);
+
+  // This effect is intentionally declared before layer reconciliation so a
+  // case transition cannot reuse bytes fetched for the previous case.
+  useEffect(() => {
+    setNiivueLayerBufferCacheScope(cacheScope);
+  }, [cacheScope]);
 
   useNiivuePaneLayers({
     manualWindowingIds,
-    sourceKey,
-    visibleSourceKey,
+    layerReconcileKey,
     visibilityKey,
     volumeAppearanceKey,
     activeWindowingKey,

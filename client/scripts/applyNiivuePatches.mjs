@@ -52,4 +52,58 @@ applyPinnedPatch(
   `${crosshairDraw}      const xe = n.mesh.xRay;`,
 );
 
+// NiiVue 1.0.0-rc.10 only emits the left and top orientation glyphs. Add the
+// complementary right and bottom glyphs at the opposite edges of each 2D tile.
+const topOrientationLabel = `        S.axCorSag === Q.AXIAL ? c.push(
+          this.fontRenderer.buildText(
+            "A",
+            Z + ee / 2,
+            W + me,
+            re,
+            f,
+            0.5,
+            0
+          )
+        ) : (S.axCorSag === Q.CORONAL || S.axCorSag === Q.SAGITTAL) && c.push(
+          this.fontRenderer.buildText(
+            "S",
+            Z + ee / 2,
+            W + me,
+            re,
+            f,
+            0.5,
+            0
+          )
+        );
+`;
+const allOrientationLabels = `${topOrientationLabel}        const le = S.axCorSag === Q.AXIAL || S.axCorSag === Q.CORONAL ? ie ? "L" : "R" : ie ? "P" : "A";
+        c.push(
+          this.fontRenderer.buildText(
+            le,
+            Z + ee - me,
+            W + te / 2,
+            re,
+            f,
+            1,
+            0.5
+          )
+        );
+        c.push(
+          this.fontRenderer.buildText(
+            S.axCorSag === Q.AXIAL ? "P" : "I",
+            Z + ee / 2,
+            W + te - me,
+            re,
+            f,
+            0.5,
+            1
+          )
+        );
+`;
+applyPinnedPatch(
+  'four-sided orientation labels',
+  topOrientationLabel,
+  allOrientationLabels,
+);
+
 await writeFile(bundlePath, source);

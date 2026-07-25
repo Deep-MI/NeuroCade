@@ -47,7 +47,7 @@ def _wait_for_viewer(page) -> None:
         """() => {
           const state = window.__neurocadeViewerDebug?.getState?.();
           const spinner = document.querySelector('.nc-viewer-canvas-spinner');
-          return state && state.mountedPaneCount >= 4 && state.loadedLayerIds.length > 0 && !spinner;
+          return state && state.viewerReady && state.loadedLayerIds.length > 0 && !spinner;
         }""",
         timeout=60_000,
     )

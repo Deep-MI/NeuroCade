@@ -1,21 +1,25 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
-import Niivue from '@niivue/niivue';
+import type Niivue from '@niivue/niivue';
 
 import type { SegmentationVolumeLayer } from '../types';
-import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop';
+import { asNiivueInterop, type NiivueColorMap, type NiivueVolumeInterop } from '../utils/niivueInterop';
+import { getFreesurferColorMap } from '../utils/volumeColormap';
 import {
   DEFAULT_DRAWING_OPTIONS,
   drawingSourceFromSegmentation,
   filenameForSegmentationDrawing,
-  inferSavedDrawingLut,
   loadDrawingSourceFile,
   makeDrawingFilename,
-  popUndoBitmap,
-  pushUndoBitmap,
   type DrawingLut,
   type DrawingOptions,
   type DrawingSession,
 } from './nativeDrawing';
+
+export interface DrawingLabelOption {
+  value: number;
+  name: string;
+  color: string;
+}
 
 export interface SavedDrawingPayload {
   filename: string;
@@ -26,233 +30,249 @@ export interface SavedDrawingPayload {
 
 interface UseNativeDrawingSessionArgs {
   canAddLayers: boolean;
+  caseId: string;
   instanceRef: MutableRefObject<Niivue | null>;
   referenceVolumeId: string | null;
   onSaveDrawing?: (drawing: SavedDrawingPayload) => Promise<void>;
 }
 
+const BINARY_DRAWING_COLORMAP: NiivueColorMap = {
+  R: [0, 255],
+  G: [0, 120],
+  B: [0, 0],
+  A: [0, 255],
+  I: [0, 1],
+  labels: ['Background', 'Structure'],
+};
+
+function labelOptions(colorMap: NiivueColorMap): DrawingLabelOption[] {
+  const indices = colorMap.I ?? colorMap.R.map((_, index) => index);
+  return indices.flatMap((value, index) => {
+    // NiiVue's native drawing volume is Uint8, so values outside this range
+    // cannot be round-tripped without truncation.
+    if (value <= 0 || value > 255) return [];
+    return [{
+      value,
+      name: colorMap.labels?.[index] ?? `Label ${value}`,
+      color: `rgb(${colorMap.R[index]}, ${colorMap.G[index]}, ${colorMap.B[index]})`,
+    }];
+  });
+}
+
 export function useNativeDrawingSession({
   canAddLayers,
+  caseId,
   instanceRef,
   referenceVolumeId,
   onSaveDrawing,
 }: UseNativeDrawingSessionArgs) {
-  const drawingSessionRef = useRef<DrawingSession>({ ...DEFAULT_DRAWING_OPTIONS, active: false, dirty: false, error: null });
-  const drawingBitmapRef = useRef<Uint8Array | null>(null);
-  const drawingUndoStackRef = useRef<Uint8Array[]>([]);
-  const applyingBitmapRef = useRef(false);
+  const initialSession: DrawingSession = {
+    ...DEFAULT_DRAWING_OPTIONS,
+    active: false,
+    dirty: false,
+    error: null,
+  };
+  const drawingSessionRef = useRef(initialSession);
   const registeredInstanceRef = useRef<Niivue | null>(null);
-  const [drawingSession, setDrawingSession] = useState<DrawingSession>(drawingSessionRef.current);
+  const strokeCountRef = useRef(0);
+  const [drawingSession, setDrawingSession] = useState(initialSession);
+  const [drawingLabels, setDrawingLabels] = useState<DrawingLabelOption[]>([]);
   const [canUndo, setCanUndo] = useState(false);
-  const [drawingMenuOpen, setDrawingMenuOpen] = useState(false);
   drawingSessionRef.current = drawingSession;
 
-  const setDrawingError = useCallback((message: string | null) => {
-    const next = { ...drawingSessionRef.current, error: message };
-    drawingSessionRef.current = next;
-    setDrawingSession(next);
+  const replaceSession = useCallback((session: DrawingSession) => {
+    drawingSessionRef.current = session;
+    setDrawingSession(session);
   }, []);
+
+  const setDrawingError = useCallback((message: string | null) => {
+    replaceSession({ ...drawingSessionRef.current, error: message });
+  }, [replaceSession]);
 
   const drawingBitmap = useCallback((nv: Niivue): Uint8Array | null => {
     const image = nv.drawingVolume?.img;
     return image instanceof Uint8Array ? image : null;
   }, []);
 
-  const applySessionDrawColormap = useCallback((nv: Niivue, session: DrawingSession) => {
-    const colormap = session.source?.colormap;
-    if (!colormap) return;
-    try {
-      nv.drawColormap = colormap;
-    } catch {
-      // Unknown colormap name: keep NiiVue's default draw palette.
-    }
+  const applyDrawingPalette = useCallback(async (nv: Niivue, lut: DrawingLut) => {
+    const colorMap = lut === 'freesurfer'
+      ? await getFreesurferColorMap()
+      : BINARY_DRAWING_COLORMAP;
+    const name = lut === 'freesurfer' ? 'NeuroCade FreeSurfer drawing' : 'NeuroCade binary drawing';
+    nv.drawColormap = nv.addColormap(name, colorMap);
+    setDrawingLabels(labelOptions(colorMap));
   }, []);
 
   const applyDrawingOptions = useCallback((nv: Niivue, options: DrawingOptions) => {
+    const drawingEnabled = options.tool !== 'navigate';
     nv.drawOpacity = options.opacity;
-    nv.drawIsFillOverwriting = options.penFill;
-    nv.drawPenValue = options.erase ? 0 : options.penValue;
-    nv.drawPenFilled = options.mode === 'pen' && options.penFill;
-    nv.drawIsEnabled = options.mode !== 'none';
+    nv.drawPenValue = options.tool === 'erase' ? 0 : options.penValue;
+    nv.drawPenSize = options.brushSize;
+    nv.drawPenAutoClose = options.fillOutline;
+    nv.drawPenFilled = options.fillOutline;
+    nv.drawIsFillOverwriting = options.overwrite || options.tool === 'erase';
+    nv.drawIsEnabled = drawingEnabled;
   }, []);
 
-  const applyBitmap = useCallback((nv: Niivue, bitmap: Uint8Array, options: DrawingOptions) => {
-    if (!nv.drawingVolume) nv.createEmptyDrawing();
-    if (!nv.drawingVolume) return;
-    applyingBitmapRef.current = true;
-    try {
-      nv.drawIsEnabled = true;
-      nv.drawingVolume.img = new Uint8Array(bitmap);
-      nv.drawUndoBitmaps = [];
-      nv.currentDrawUndoBitmap = 0;
-      nv.refreshDrawing();
-      applyDrawingOptions(nv, options);
-    } finally {
-      applyingBitmapRef.current = false;
-    }
-  }, [applyDrawingOptions]);
+  const resetUndoState = useCallback(() => {
+    strokeCountRef.current = 0;
+    setCanUndo(false);
+  }, []);
 
   const closeDrawing = useCallback(() => {
     const nv = instanceRef.current;
-    if (nv) {
-      nv.drawIsEnabled = false;
-      nv.drawPenValue = 0;
-      nv.closeDrawing();
-    }
-    drawingBitmapRef.current = null;
-    drawingUndoStackRef.current = [];
-  }, [instanceRef]);
+    if (nv?.drawingVolume) nv.closeDrawing();
+    resetUndoState();
+  }, [instanceRef, resetUndoState]);
 
   const closeNativeDrawing = useCallback((resetSession: boolean) => {
     closeDrawing();
-    setCanUndo(false);
     if (resetSession) {
-      const next = { ...DEFAULT_DRAWING_OPTIONS, active: false, dirty: false, error: null };
-      drawingSessionRef.current = next;
-      setDrawingSession(next);
+      replaceSession({
+        ...DEFAULT_DRAWING_OPTIONS,
+        active: false,
+        dirty: false,
+        error: null,
+      });
     }
-  }, [closeDrawing]);
-
-  const recordDrawingStroke = useCallback((nv: Niivue, action: string) => {
-    if (applyingBitmapRef.current || action !== 'stroke' || !drawingSessionRef.current.active) return;
-    const sourceBitmap = drawingBitmap(nv);
-    if (!sourceBitmap) return;
-    const bitmap = new Uint8Array(sourceBitmap);
-    drawingBitmapRef.current = bitmap;
-    drawingUndoStackRef.current = pushUndoBitmap(drawingUndoStackRef.current, bitmap);
-    setCanUndo(drawingUndoStackRef.current.length > 1);
-    const next = { ...drawingSessionRef.current, dirty: true, error: null };
-    drawingSessionRef.current = next;
-    setDrawingSession(next);
-  }, [drawingBitmap]);
+  }, [closeDrawing, replaceSession]);
 
   const registerDrawingPane = useCallback((nv: Niivue) => {
     if (registeredInstanceRef.current === nv) return;
     registeredInstanceRef.current = nv;
-    nv.addEventListener('drawingChanged', (event) => recordDrawingStroke(nv, event.detail.action));
-    const session = drawingSessionRef.current;
-    const bitmap = drawingBitmapRef.current;
-    if (session.active && bitmap) {
-      applyBitmap(nv, bitmap, session);
-      applySessionDrawColormap(nv, session);
-    }
-  }, [applyBitmap, applySessionDrawColormap, recordDrawingStroke]);
+    nv.addEventListener('drawingChanged', (event) => {
+      if (!drawingSessionRef.current.active) return;
+      if (event.detail.action === 'stroke') {
+        strokeCountRef.current += 1;
+      } else if (event.detail.action === 'undo') {
+        strokeCountRef.current = Math.max(0, strokeCountRef.current - 1);
+      } else {
+        return;
+      }
+      setCanUndo(strokeCountRef.current > 0);
+      replaceSession({
+        ...drawingSessionRef.current,
+        dirty: strokeCountRef.current > 0,
+        error: null,
+      });
+    });
+  }, [replaceSession]);
 
   const updateDrawingOptions = useCallback((updates: Partial<DrawingOptions>) => {
     const next = { ...drawingSessionRef.current, ...updates, error: null };
-    drawingSessionRef.current = next;
+    replaceSession(next);
     const nv = instanceRef.current;
-    if (nv) applyDrawingOptions(nv, next);
-    setDrawingSession(next);
-  }, [applyDrawingOptions, instanceRef]);
+    if (!nv) return;
+    applyDrawingOptions(nv, next);
+    if (updates.lut) {
+      void applyDrawingPalette(nv, next.lut).catch((error) => {
+        setDrawingError(error instanceof Error ? error.message : String(error));
+      });
+    }
+  }, [applyDrawingOptions, applyDrawingPalette, instanceRef, replaceSession, setDrawingError]);
 
   const referenceVolumeForDrawing = useCallback((): NiivueVolumeInterop | null => {
     const nv = instanceRef.current;
     return nv ? asNiivueInterop(nv).volumes[0] ?? null : null;
   }, [instanceRef]);
 
-  const beginBlankDrawing = useCallback(() => {
-    const nv = instanceRef.current;
+  const validateDrawingStart = useCallback((): Niivue | null => {
     if (!canAddLayers) {
-      setDrawingError('Load or create a case before starting a drawing.');
-      return;
+      setDrawingError('Load or create a case before starting a label edit.');
+      return null;
     }
+    const nv = instanceRef.current;
     if (!nv || !referenceVolumeForDrawing()) {
-      setDrawingError('Load an intensity volume before starting a drawing.');
-      return;
+      setDrawingError('Load an intensity volume before starting a label edit.');
+      return null;
     }
+    return nv;
+  }, [canAddLayers, instanceRef, referenceVolumeForDrawing, setDrawingError]);
 
+  const beginBlankDrawing = useCallback(() => {
+    const nv = validateDrawingStart();
+    if (!nv) return;
     closeNativeDrawing(false);
     const session: DrawingSession = {
       ...DEFAULT_DRAWING_OPTIONS,
+      tool: 'paint',
       active: true,
       dirty: false,
       error: null,
-      filename: `drawing-${Date.now()}.nii`,
+      filename: `labels-${Date.now()}.nii`,
     };
-    drawingSessionRef.current = session;
-    nv.drawIsEnabled = true;
+    replaceSession(session);
     nv.createEmptyDrawing();
-    nv.drawUndoBitmaps = [];
-    nv.currentDrawUndoBitmap = 0;
     applyDrawingOptions(nv, session);
-    const bitmap = drawingBitmap(nv);
-    drawingBitmapRef.current = bitmap ? new Uint8Array(bitmap) : null;
-    drawingUndoStackRef.current = drawingBitmapRef.current ? [drawingBitmapRef.current] : [];
-    setCanUndo(false);
-    setDrawingSession(session);
-  }, [applyDrawingOptions, canAddLayers, closeNativeDrawing, drawingBitmap, instanceRef, referenceVolumeForDrawing, setDrawingError]);
+    resetUndoState();
+    void applyDrawingPalette(nv, session.lut).catch((error) => {
+      setDrawingError(error instanceof Error ? error.message : String(error));
+    });
+  }, [
+    applyDrawingOptions,
+    applyDrawingPalette,
+    closeNativeDrawing,
+    replaceSession,
+    resetUndoState,
+    setDrawingError,
+    validateDrawingStart,
+  ]);
 
   const beginDrawingFromSegmentation = useCallback(async (source: SegmentationVolumeLayer) => {
-    const nv = instanceRef.current;
-    if (!canAddLayers) {
-      setDrawingError('Load or create a case before editing a label map.');
-      return;
-    }
-    if (!nv || !referenceVolumeForDrawing()) {
-      setDrawingError('Load an intensity volume before editing a label map.');
-      return;
-    }
-
+    const nv = validateDrawingStart();
+    if (!nv) return;
     setDrawingError(null);
     try {
       const sourceFile = await loadDrawingSourceFile(source);
       closeNativeDrawing(false);
       const session: DrawingSession = {
         ...DEFAULT_DRAWING_OPTIONS,
+        tool: 'paint',
+        lut: source.lut ?? 'freesurfer',
         active: true,
         dirty: false,
         error: null,
         filename: filenameForSegmentationDrawing(source),
         source: drawingSourceFromSegmentation(source),
       };
-      drawingSessionRef.current = session;
+      replaceSession(session);
       const loaded = await nv.loadDrawing(sourceFile);
-      const sourceBitmap = drawingBitmap(nv);
-      if (loaded === false || !sourceBitmap) {
+      if (loaded === false || !drawingBitmap(nv)) {
         closeNativeDrawing(true);
-        setDrawingError('Could not initialize drawing from the selected label map.');
+        setDrawingError('Could not initialize labels from the selected segmentation.');
         return;
       }
-      const bitmap = new Uint8Array(sourceBitmap);
-      drawingBitmapRef.current = bitmap;
-      drawingUndoStackRef.current = [bitmap];
-      setCanUndo(false);
       applyDrawingOptions(nv, session);
-      applySessionDrawColormap(nv, session);
-      setDrawingSession(session);
+      await applyDrawingPalette(nv, session.lut);
+      resetUndoState();
     } catch (error) {
       setDrawingError(error instanceof Error ? error.message : String(error));
     }
   }, [
     applyDrawingOptions,
-    applySessionDrawColormap,
-    canAddLayers,
+    applyDrawingPalette,
     closeNativeDrawing,
     drawingBitmap,
-    instanceRef,
-    referenceVolumeForDrawing,
+    replaceSession,
+    resetUndoState,
     setDrawingError,
+    validateDrawingStart,
   ]);
 
   const handleDrawUndo = useCallback(() => {
-    const { stack, current } = popUndoBitmap(drawingUndoStackRef.current);
-    const nv = instanceRef.current;
-    if (stack === drawingUndoStackRef.current || !current || !nv) return;
-    drawingUndoStackRef.current = stack;
-    drawingBitmapRef.current = current;
-    setCanUndo(stack.length > 1);
-    const session = { ...drawingSessionRef.current, dirty: stack.length > 1 };
-    drawingSessionRef.current = session;
-    setDrawingSession(session);
-    applyBitmap(nv, current, session);
-  }, [applyBitmap, instanceRef]);
+    if (!canUndo) return;
+    instanceRef.current?.drawUndo();
+  }, [canUndo, instanceRef]);
 
   const handleSaveDrawing = useCallback(async () => {
     const session = drawingSessionRef.current;
     const nv = instanceRef.current;
     if (!session.active || !nv || !drawingBitmap(nv)) {
-      if (session.active) setDrawingError('No drawing is available to save.');
+      if (session.active) setDrawingError('No labels are available to save.');
+      return;
+    }
+    if (!onSaveDrawing) {
+      setDrawingError('Saving labels is not available in this case.');
       return;
     }
     try {
@@ -262,13 +282,13 @@ export function useNativeDrawingSession({
         volumeByIndex: 0,
       });
       if (!(saved instanceof Uint8Array)) {
-        setDrawingError('Could not export the current drawing.');
+        setDrawingError('Could not export the current labels.');
         return;
       }
-      await onSaveDrawing?.({
+      await onSaveDrawing({
         filename: makeDrawingFilename(session.filename),
         data: saved,
-        lut: inferSavedDrawingLut(drawingBitmap(nv), session.source),
+        lut: session.lut,
         source: session.source,
       });
       closeNativeDrawing(true);
@@ -279,7 +299,7 @@ export function useNativeDrawingSession({
 
   useEffect(() => {
     if (drawingSessionRef.current.active) closeNativeDrawing(true);
-  }, [referenceVolumeId, closeNativeDrawing]);
+  }, [caseId, referenceVolumeId, closeNativeDrawing]);
 
   useEffect(() => () => {
     closeDrawing();
@@ -288,9 +308,8 @@ export function useNativeDrawingSession({
 
   return {
     drawingSession,
+    drawingLabels,
     canUndo,
-    drawingMenuOpen,
-    setDrawingMenuOpen,
     registerDrawingPane,
     updateDrawingOptions,
     beginBlankDrawing,

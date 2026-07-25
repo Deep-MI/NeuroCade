@@ -1,4 +1,4 @@
-import Niivue from '@niivue/niivue';
+import type Niivue from '@niivue/niivue';
 
 import { type Volume } from '../types';
 import { asNiivueInterop } from '../utils/niivueInterop';
@@ -55,12 +55,12 @@ export function previewLayerOpacity(nv: Niivue, id: string, next: Volume): PaneR
   const loaded = interop.volumes.find((volume) => volume.id === id);
   const mesh = (interop.meshes ?? []).find((item) => item.id === id);
   if (!loaded && !mesh) return null;
-  let action: PaneRenderAction = null;
+  let volumeChanged = false;
   if (loaded) {
     const nextOpacity = effectiveLayerOpacity(next);
     const result = setNiivueVolumeOpacity(nv, loaded, nextOpacity);
     if (result === 'updated') {
-      action = { kind: 'refresh' };
+      volumeChanged = true;
     }
   }
   if (mesh) {
@@ -70,9 +70,9 @@ export function previewLayerOpacity(nv: Niivue, id: string, next: Volume): PaneR
     if (meshIndex >= 0) {
       void nv.setMesh(meshIndex, { visible: mesh.visible, opacity: mesh.opacity });
     }
-    action = action ?? null;
+    if (!volumeChanged) return { kind: 'draw' };
   }
-  return action;
+  return volumeChanged ? { kind: 'refresh' } : null;
 }
 
 export function capturePaneSnapshot(nv: Niivue | null | undefined): string | null {
