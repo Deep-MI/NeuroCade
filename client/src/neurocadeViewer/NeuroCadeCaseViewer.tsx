@@ -7,12 +7,13 @@ import { asNiivueInterop } from '../utils/niivueInterop';
 import { layerType } from './niivueLayers';
 import { LayerPanel } from './LayerPanel';
 import { NiivuePane, type WindowSetting } from './NiivuePane';
+import { selectReferenceVolumeSource } from './referenceGeometry';
 import { ViewerHelpDialog } from './ViewerHelpDialog';
 import { ViewerToolbar } from './ViewerToolbar';
 import { useNativeDrawingSession, type SavedDrawingPayload } from './useNativeDrawingSession';
 import { useViewerPaneInstance } from './useViewerPaneInstance';
 import { useViewerWindowing } from './useViewerWindowing';
-import { applyLayerDisplay, capturePaneSnapshot, previewLayerOpacity, referenceVolumeId as getReferenceVolumeId } from './viewerPaneAdapter';
+import { applyLayerDisplay, capturePaneSnapshot, previewLayerOpacity } from './viewerPaneAdapter';
 import type { PaneRenderAction } from './viewerPaneAdapter';
 import { VIEW_MODES, type NeuroCadeViewMode, type ViewerDragMode } from './viewerControls';
 
@@ -93,7 +94,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   onLocationChangeRef.current = onLocationChange;
 
   const [paneLoading, setPaneLoading] = useState(false);
-  const [referenceVolumeId, setReferenceVolumeId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<NeuroCadeViewMode>('multi');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dragMode, setDragMode] = useState<ViewerDragMode>('pan');
@@ -112,17 +112,15 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     segmentation: volumes.filter((volume) => layerType(volume) === 'segmentation'),
     surface: volumes.filter(isSurfaceLayer),
   }), [volumes]);
+  const referenceVolumeId = useMemo(
+    () => selectReferenceVolumeSource(volumes)?.id ?? null,
+    [volumes],
+  );
 
   const intensityColormaps = useMemo(() => {
     const available = new Set(availableColormaps.map((name) => name.toLowerCase()));
     return INTENSITY_COLORMAPS.filter((name) => available.has(name));
   }, [availableColormaps]);
-
-  const syncReferenceVolumeId = useCallback(() => {
-    const nv = instanceRef.current;
-    const nextReferenceVolumeId = nv ? getReferenceVolumeId(nv) : null;
-    setReferenceVolumeId((current) => (current === nextReferenceVolumeId ? current : nextReferenceVolumeId));
-  }, [instanceRef]);
 
   const {
     manualWindowingRef,
@@ -157,19 +155,12 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
 
   const handlePaneLoading = useCallback((isLoading: boolean) => {
     setPaneLoading(isLoading);
-    if (!isLoading) requestAnimationFrame(syncReferenceVolumeId);
-  }, [syncReferenceVolumeId]);
+  }, []);
 
   const handleUpdateVolume = useCallback((id: string, updates: Partial<Volume>) => {
     applyImmediateVolumeUpdate(id, updates);
     onUpdateVolume(id, updates);
-    requestAnimationFrame(syncReferenceVolumeId);
-  }, [applyImmediateVolumeUpdate, onUpdateVolume, syncReferenceVolumeId]);
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(syncReferenceVolumeId);
-    return () => cancelAnimationFrame(frame);
-  }, [syncReferenceVolumeId, volumes]);
+  }, [applyImmediateVolumeUpdate, onUpdateVolume]);
 
   const previewVolumeOpacity = useCallback((id: string, opacity: number) => {
     const source = volumes.find((volume) => volume.id === id);
@@ -219,8 +210,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const handlePaneReady = useCallback((nv: Niivue | null) => {
     instanceRef.current = nv;
     if (nv) registerDrawingPane(nv);
-    requestAnimationFrame(syncReferenceVolumeId);
-  }, [instanceRef, registerDrawingPane, syncReferenceVolumeId]);
+  }, [instanceRef, registerDrawingPane]);
 
   useImperativeHandle(ref, () => ({
     getSnapshots: (): MriSnapshots | null => {

@@ -15,12 +15,19 @@ import {
   addNiivueVolumeLayers,
   effectiveLayerOpacity,
   enforceVolumeRenderOrder,
+  prepareReferenceGeometry,
   setNiivueVolumeOpacity,
   syncNiivueSurfaceDisplay,
 } from './niivueLayers';
 import { surfaceDisplayKey, volumesInRenderOrder } from './layerDisplay';
 import { getCrosshairWorld, restoreCrosshairWorld } from './loadedVolumeDisplay';
 import type { WindowSetting } from './paneSyncKeys';
+import {
+  applyReferenceGeometry,
+  captureReferenceGeometry,
+  selectReferenceVolumeSource,
+  type ReferenceGeometry,
+} from './referenceGeometry';
 
 interface UseNiivuePaneLayersOptions {
   manualWindowingIds: MutableRefObject<Set<string>>;
@@ -35,6 +42,7 @@ interface UseNiivuePaneLayersOptions {
   windowingsRef: MutableRefObject<Record<string, WindowSetting>>;
   loadingLayerIdsRef: MutableRefObject<Set<string>>;
   surfaceDisplayControllersRef: MutableRefObject<Map<string, AbortController>>;
+  referenceGeometryRef: MutableRefObject<ReferenceGeometry | null>;
   scheduleRefresh: () => void;
   onLoadingChange?: (loading: boolean) => void;
   onError?: (message: string | null) => void;
@@ -60,6 +68,7 @@ export function useNiivuePaneLayers({
   windowingsRef,
   loadingLayerIdsRef,
   surfaceDisplayControllersRef,
+  referenceGeometryRef,
   scheduleRefresh,
   onLoadingChange,
   onError,
@@ -84,6 +93,30 @@ export function useNiivuePaneLayers({
       try {
         onError?.(null);
         const sources = latestVolumesRef.current;
+        referenceGeometryRef.current = captureReferenceGeometry(
+          nv,
+          sources,
+          referenceGeometryRef.current,
+        );
+        const preferredReference = selectReferenceVolumeSource(sources);
+        if (
+          preferredReference
+          && !preferredReference.visible
+          && referenceGeometryRef.current?.sourceId !== preferredReference.id
+        ) {
+          onLoadingChange?.(true);
+          try {
+            referenceGeometryRef.current = await prepareReferenceGeometry(
+              nv,
+              preferredReference,
+              controller.signal,
+            );
+          } catch (error) {
+            if (!cancelled && !controller.signal.aborted) {
+              console.warn('[NiivuePane] Could not prepare reference geometry:', error);
+            }
+          }
+        }
         const visibleVolumeIds = new Set(
           sources
             .filter((volume) => volume.visible && !isSurfaceLayer(volume))
@@ -100,7 +133,10 @@ export function useNiivuePaneLayers({
             }
           }
         }
-        if (removedVolume) await nv.updateGLVolume();
+        if (removedVolume) {
+          applyReferenceGeometry(nv, referenceGeometryRef.current);
+          await nv.updateGLVolume();
+        }
         const sourceIds = new Set(sources.map((volume) => volume.id));
         for (const mesh of [...(asNiivueInterop(nv).meshes ?? [])]) {
           if (!mesh.id || !sourceIds.has(mesh.id)) {
@@ -139,6 +175,11 @@ export function useNiivuePaneLayers({
                 controller.signal,
                 latestVolumesRef.current,
               );
+              referenceGeometryRef.current = captureReferenceGeometry(
+                nv,
+                latestVolumesRef.current,
+                referenceGeometryRef.current,
+              );
             }
           } catch (error) {
             if (!cancelled && !controller.signal.aborted) {
@@ -163,6 +204,7 @@ export function useNiivuePaneLayers({
           if (!cancelled) onLoadingChange?.(false);
         }
       } finally {
+        applyReferenceGeometry(nv, referenceGeometryRef.current);
         if (!cancelled) restoreCrosshairWorld(nv, crosshairWorld);
       }
     };
@@ -180,6 +222,7 @@ export function useNiivuePaneLayers({
     onError,
     onLoadingChange,
     layerReconcileKey,
+    referenceGeometryRef,
     surfaceDisplayControllersRef,
   ]);
 

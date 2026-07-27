@@ -9,10 +9,6 @@ export type PaneRenderAction =
   | { kind: 'refresh' }
   | null;
 
-export function referenceVolumeId(nv: Niivue): string | null {
-  return asNiivueInterop(nv).volumes[0]?.id ?? null;
-}
-
 export function applyLayerDisplay(nv: Niivue, id: string, next: Volume, updates: Partial<Volume>): PaneRenderAction {
   const interop = asNiivueInterop(nv);
   const loaded = interop.volumes.find((volume) => volume.id === id);

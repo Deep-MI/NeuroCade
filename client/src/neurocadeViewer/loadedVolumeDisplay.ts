@@ -1,6 +1,10 @@
 import type Niivue from '@niivue/niivue';
 
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop.js';
+import {
+  referenceVoxelToWorldFromGeometry,
+  type ReferenceGeometry,
+} from './referenceGeometry.js';
 
 export type NiivueOpacityUpdate = 'none' | 'updated';
 export type WorldCoordinate = [number, number, number];
@@ -12,13 +16,13 @@ function isFiniteCoordinate(value: unknown): value is WorldCoordinate {
 }
 
 export function getCrosshairWorld(nv: Niivue): WorldCoordinate | null {
-  if (asNiivueInterop(nv).volumes.length === 0 || typeof nv.getCrosshairPos !== 'function') return null;
+  if (typeof nv.getCrosshairPos !== 'function') return null;
   const position = nv.getCrosshairPos();
   return isFiniteCoordinate(position) ? [position[0], position[1], position[2]] : null;
 }
 
 export function restoreCrosshairWorld(nv: Niivue, position: WorldCoordinate | null): void {
-  if (!position || asNiivueInterop(nv).volumes.length === 0 || typeof nv.setCrosshairPos !== 'function') return;
+  if (!position || typeof nv.setCrosshairPos !== 'function') return;
   nv.setCrosshairPos(position);
 }
 
@@ -27,7 +31,9 @@ export function restoreCrosshairWorld(nv: Niivue, position: WorldCoordinate | nu
 export function referenceVoxelToWorld(
   nv: Niivue,
   voxel: [number, number, number],
+  geometry?: ReferenceGeometry | null,
 ): WorldCoordinate | null {
+  if (geometry) return referenceVoxelToWorldFromGeometry(geometry, voxel);
   const matrix = asNiivueInterop(nv).volumes[0]?.matRAS;
   if (!matrix || matrix.length < 12) return null;
   const [x, y, z] = voxel;

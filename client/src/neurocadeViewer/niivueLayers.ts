@@ -29,6 +29,11 @@ import {
 } from '../utils/surfaceColors';
 import { surfaceDisplayKey, volumesInRenderOrder } from './layerDisplay';
 import { reorderLoadedVolumes, setLoadedVolumeOpacity } from './loadedVolumeDisplay';
+import {
+  referenceGeometryFromVolume,
+  referenceWorldToVoxel,
+  type ReferenceGeometry,
+} from './referenceGeometry';
 
 interface NiivueLocationObject {
   mm?: number[];
@@ -233,6 +238,36 @@ async function prepareVolumeLayer(volume: Volume, signal: AbortSignal): Promise<
   };
 }
 
+/**
+ * Parse the canonical reference long enough to cache its affine and bounds.
+ * The temporary image is never uploaded to the GPU and is released
+ * immediately, so a hidden reference does not become a hidden render layer.
+ */
+export async function prepareReferenceGeometry(
+  nv: Niivue,
+  source: Volume,
+  signal: AbortSignal,
+): Promise<ReferenceGeometry | null> {
+  const filename = source.filename || source.name;
+  const buffer = await fetchCachedArrayBuffer(source.url, signal);
+  if (signal.aborted) throw new DOMException('Reference preparation aborted', 'AbortError');
+  const prepared = await prepareNiivueVolume(buffer, filename);
+  if (signal.aborted) throw new DOMException('Reference preparation aborted', 'AbortError');
+
+  const volumeIndex = nv.volumes.length;
+  await nv.model.addVolume({
+    url: new File([prepared.buffer], prepared.filename),
+    name: filename,
+    opacity: 0,
+    isColorbarVisible: false,
+  });
+  const loaded = nv.volumes[volumeIndex] as NiivueVolumeInterop | undefined;
+  const geometry = loaded ? referenceGeometryFromVolume(loaded, source.id) : null;
+  if (loaded) loaded.img = null;
+  if (nv.volumes.length > volumeIndex) nv.model.removeVolume(volumeIndex);
+  return geometry;
+}
+
 function configureLoadedVolume(
   loaded: NiivueVolumeInterop,
   { source, labelMap }: PreparedVolumeLayer,
@@ -324,11 +359,18 @@ function getCurrentLabelInfo(location: NiivueLocationObject, sourceVolumes: Volu
   return { index: 0, name: 'Background' };
 }
 
-export function locationFromNiivue(locationObject: unknown, nv: Niivue, sourceVolumes: Volume[]): LocationInfo | null {
+export function locationFromNiivue(
+  locationObject: unknown,
+  _nv: Niivue,
+  sourceVolumes: Volume[],
+  referenceGeometry?: ReferenceGeometry | null,
+): LocationInfo | null {
   const location = locationObject as NiivueLocationObject | null;
   if (!location?.mm) return null;
-  if (asNiivueInterop(nv).volumes.length === 0) return null;
-  const voxel = location.vox ?? [0, 0, 0];
+  const voxel = referenceGeometry
+    ? referenceWorldToVoxel(referenceGeometry, location.mm)
+    : location.vox;
+  if (!voxel) return null;
   const vox: [number, number, number] = [
     Math.round(voxel[0] ?? 0),
     Math.round(voxel[1] ?? 0),

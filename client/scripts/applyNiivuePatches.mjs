@@ -106,4 +106,12 @@ applyPinnedPatch(
   allOrientationLabels,
 );
 
+// Pointer-to-world mapping only needs a retained texture transform. NeuroCade
+// keeps that small geometry after releasing the final volume and its GPU data.
+applyPinnedPatch(
+  'surface-only crosshair positioning',
+  `  if (e.volumes.length === 0 || !e.tex2mm) return null;`,
+  `  if (!e.tex2mm) return null;`,
+);
+
 await writeFile(bundlePath, source);

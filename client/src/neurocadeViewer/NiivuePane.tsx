@@ -31,6 +31,10 @@ import {
   type ViewerPlaneSliceType,
   type ViewerSliceType,
 } from './viewerControls';
+import {
+  moveCrosshairInReferenceVox,
+  type ReferenceGeometry,
+} from './referenceGeometry';
 
 export type { WindowSetting } from './paneSyncKeys';
 
@@ -111,6 +115,7 @@ export function NiivuePane({
   const surfaceDisplayControllersRef = useRef<Map<string, AbortController>>(new Map());
   const glFrameRef = useRef<number | null>(null);
   const currentMmRef = useRef<number[] | null>(null);
+  const referenceGeometryRef = useRef<ReferenceGeometry | null>(null);
   const windowingGestureStartRef = useRef<Map<string, { calMin: number; calMax: number }> | null>(null);
   const onLocationChangeRef = useRef(onLocationChange);
   const onIntensityWindowChangeRef = useRef(onIntensityWindowChange);
@@ -176,7 +181,12 @@ export function NiivuePane({
     });
     const handleLocationChange = (event: Event) => {
       const locationObject = (event as CustomEvent<NiiVueLocation>).detail;
-      const location = locationFromNiivue(locationObject, nv, latestVolumesRef.current);
+      const location = locationFromNiivue(
+        locationObject,
+        nv,
+        latestVolumesRef.current,
+        referenceGeometryRef.current,
+      );
       const mm = (locationObject as { mm?: number[] } | null)?.mm ?? null;
       if (location && mm) {
         currentMmRef.current = mm;
@@ -241,7 +251,7 @@ export function NiivuePane({
     if (!externalCoordinate) return;
     const nv = nvRef.current;
     if (!nv) return;
-    const worldCoordinate = referenceVoxelToWorld(nv, externalCoordinate);
+    const worldCoordinate = referenceVoxelToWorld(nv, externalCoordinate, referenceGeometryRef.current);
     if (worldCoordinate) nv.setCrosshairPos(worldCoordinate);
   }, [externalCoordinate, layerReconcileKey]);
 
@@ -249,6 +259,7 @@ export function NiivuePane({
   // case transition cannot reuse bytes fetched for the previous case.
   useEffect(() => {
     setNiivueLayerBufferCacheScope(cacheScope);
+    referenceGeometryRef.current = null;
   }, [cacheScope]);
 
   useNiivuePaneLayers({
@@ -264,6 +275,7 @@ export function NiivuePane({
     windowingsRef,
     loadingLayerIdsRef,
     surfaceDisplayControllersRef,
+    referenceGeometryRef,
     scheduleRefresh,
     onLoadingChange,
     onError,
@@ -277,7 +289,7 @@ export function NiivuePane({
     const nv = nvRef.current;
     const mm = currentMmRef.current;
     if (!nv || !mm) return;
-    const location = locationFromNiivue({ mm }, nv, volumes);
+    const location = locationFromNiivue({ mm }, nv, volumes, referenceGeometryRef.current);
     if (location) onLocationChangeRef.current?.(location, mm);
   }, [volumes, reportLocation]);
 
@@ -288,10 +300,17 @@ export function NiivuePane({
     if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'ArrowLeft' && key !== 'ArrowRight') return;
     const nv = nvRef.current;
     const nvInterop = nv ? asNiivueInterop(nv) : null;
-    if (!nv || !nvInterop || typeof nvInterop.moveCrosshairInVox !== 'function' || nvInterop.volumes.length === 0) return;
+    if (!nv || !nvInterop || typeof nvInterop.moveCrosshairInVox !== 'function') return;
     const axis: ViewerPlaneSliceType = plane ? sliceType : 0;
     const delta = inPlaneCrosshairDelta(axis, key);
-    nvInterop.moveCrosshairInVox(delta[0], delta[1], delta[2]);
+    const geometry = referenceGeometryRef.current;
+    if (geometry) {
+      if (!moveCrosshairInReferenceVox(nv, geometry, delta)) return;
+    } else if (nvInterop.volumes.length > 0) {
+      nvInterop.moveCrosshairInVox(delta[0], delta[1], delta[2]);
+    } else {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
   }, [plane, sliceType]);
