@@ -9,12 +9,11 @@ import { useFastSurferRunController } from './useFastSurferRunController';
 import { type AnalysisToolSummary, type CaseSummary, type ChatMessage, type OutputVolume, type UploadState, type Volume } from '../types';
 import { loadClosedCaseVolumes, removeCaseState } from '../utils/caseStorage';
 import * as api from '../utils/api';
-import { dedupeOutputVolumes, outputVolumeToLayer, selectInitialIntensityOutputVolume, visibleOutputVolumes } from '../utils/caseLayers';
+import { dedupeOutputVolumes, outputVolumesToViewerLayers, visibleOutputVolumes } from '../utils/caseLayers';
 import { restorePersistedCaseLayers, savePersistedCaseLayers } from '../utils/caseLayerPersistence';
 import { isCaseTransitionPending } from '../utils/caseLoading';
 import { caseViewerPath } from '../utils/caseRoutes';
 import { createGuiSessionId } from '../utils/guiSession';
-import { isLayerFile } from '../utils/layerAliases';
 
 
 interface UseCaseWorkspaceControllerArgs {
@@ -73,14 +72,8 @@ export function useCaseWorkspaceController({
       }
       if (actionId !== undefined && isStaleWorkspaceAction(actionId)) return;
       const closedFilenames = new Set(loadClosedCaseVolumes(caseId));
-      const initialIntensityVolume = selectInitialIntensityOutputVolume(dedupedVolumes);
       const visibleVolumes = visibleOutputVolumes(dedupedVolumes, closedFilenames);
-      const hasOrigVolume = visibleVolumes.some((volume) => isLayerFile(volume.filename, 'orig.mgz'));
-      const newLayers: Volume[] = visibleVolumes.map((volume) => (
-        outputVolumeToLayer(volume, { hasOrigVolume, initialIntensityVolume })
-      ));
-
-      setVolumes(newLayers);
+      setVolumes(outputVolumesToViewerLayers(visibleVolumes));
     } catch (error) {
       console.error('Error fetching outputs:', error);
     }

@@ -1,39 +1,35 @@
 import type Niivue from '@niivue/niivue';
 import type { MeshLayerFromUrlOptions } from '@niivue/niivue';
 
-import type { LayerType, SurfaceLayer, Volume } from '../types';
-import type { LocationInfo } from '../types';
-import { appFetchUrl } from '../utils/api';
+import { type LayerType, type LocationInfo, type SurfaceLayer, type Volume } from '../types.js';
+import { appFetchUrl } from '../utils/api.js';
 import {
   asNiivueInterop,
   type NiivueColorMap,
   type NiivueMeshInterop,
   type NiivueVolumeInterop,
-} from '../utils/niivueInterop';
-import { compileNiivueLabelColorMap } from '../utils/niivueColorMap';
-import { prepareNiivueVolume } from '../utils/niivueMgh';
+} from '../utils/niivueInterop.js';
+import { compileNiivueLabelColorMap } from '../utils/niivueColorMap.js';
+import { prepareNiivueVolume } from '../utils/niivueMgh.js';
 import {
   applyBrightnessContrast,
   resolveVolumeColormap,
   resolveVolumeLabelColorMap,
-} from '../utils/volumeColormap';
+} from '../utils/volumeColormap.js';
 import {
   freeSurferAnnotationToMz3,
   freeSurferCurvatureToMz3,
-} from '../utils/SurfaceLoader';
+} from '../utils/SurfaceLoader.js';
 import {
   curvatureNegativeThreshold,
   curvaturePositiveThreshold,
   resolveSurfaceLayerColorMode,
   surfaceColor,
-} from '../utils/surfaceColors';
-import { surfaceDisplayKey, volumesInRenderOrder } from './layerDisplay';
-import { reorderLoadedVolumes, setLoadedVolumeOpacity } from './loadedVolumeDisplay';
+} from '../utils/surfaceColors.js';
+import { effectiveLayerOpacity, surfaceDisplayKey } from './layerDisplay.js';
 import {
-  referenceGeometryFromVolume,
   referenceWorldToVoxel,
-  type ReferenceGeometry,
-} from './referenceGeometry';
+} from './loadedVolumeDisplay.js';
 
 interface NiivueLocationObject {
   mm?: number[];
@@ -53,44 +49,6 @@ export function layerType(volume: Volume): LayerType {
 function isSegmentationVolume(volume: Volume): boolean {
   return volume.type === 'segmentation';
 }
-
-// Reorders the already-loaded Niivue volumes to match volumesInRenderOrder
-// without re-fetching. The layer panel is user-facing top-to-bottom, while
-// NiiVue renders the first volume as the bottom/reference layer.
-export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]): boolean {
-  const interop = asNiivueInterop(nv);
-  const current = interop.volumes;
-  if (current.length < 2) return false;
-  const orderIds = volumesInRenderOrder(sources).map((volume) => volume.id);
-  const rankOf = (loaded: NiivueVolumeInterop) => {
-    const position = loaded.id ? orderIds.indexOf(loaded.id) : -1;
-    return position === -1 ? Number.MAX_SAFE_INTEGER : position;
-  };
-  const desired = current
-    .map((loaded, index) => ({ loaded, index, rank: rankOf(loaded) }))
-    .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .map((entry) => entry.loaded);
-  if (desired.every((loaded, index) => loaded === current[index])) return false;
-  return reorderLoadedVolumes(nv, desired);
-}
-
-export function clampOpacity(value: number | undefined, fallback = 0.75) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.max(0, Math.min(1, value));
-}
-
-// Default opacity for a layer when none is set: segmentations are translucent
-// overlays, everything else is opaque.
-export function layerDefaultOpacity(volume: Volume): number {
-  return isSegmentationVolume(volume) ? 0.55 : 1;
-}
-
-// Opacity to hand Niivue for a layer, honouring its visibility (hidden = 0).
-export function effectiveLayerOpacity(volume: Volume): number {
-  return volume.visible ? clampOpacity(volume.opacity, layerDefaultOpacity(volume)) : 0;
-}
-
-export const setNiivueVolumeOpacity = setLoadedVolumeOpacity;
 
 const arrayBufferCache = new Map<string, Promise<ArrayBuffer>>();
 let arrayBufferCacheScope: string | null = null;
@@ -238,36 +196,6 @@ async function prepareVolumeLayer(volume: Volume, signal: AbortSignal): Promise<
   };
 }
 
-/**
- * Parse the canonical reference long enough to cache its affine and bounds.
- * The temporary image is never uploaded to the GPU and is released
- * immediately, so a hidden reference does not become a hidden render layer.
- */
-export async function prepareReferenceGeometry(
-  nv: Niivue,
-  source: Volume,
-  signal: AbortSignal,
-): Promise<ReferenceGeometry | null> {
-  const filename = source.filename || source.name;
-  const buffer = await fetchCachedArrayBuffer(source.url, signal);
-  if (signal.aborted) throw new DOMException('Reference preparation aborted', 'AbortError');
-  const prepared = await prepareNiivueVolume(buffer, filename);
-  if (signal.aborted) throw new DOMException('Reference preparation aborted', 'AbortError');
-
-  const volumeIndex = nv.volumes.length;
-  await nv.model.addVolume({
-    url: new File([prepared.buffer], prepared.filename),
-    name: filename,
-    opacity: 0,
-    isColorbarVisible: false,
-  });
-  const loaded = nv.volumes[volumeIndex] as NiivueVolumeInterop | undefined;
-  const geometry = loaded ? referenceGeometryFromVolume(loaded, source.id) : null;
-  if (loaded) loaded.img = null;
-  if (nv.volumes.length > volumeIndex) nv.model.removeVolume(volumeIndex);
-  return geometry;
-}
-
 function configureLoadedVolume(
   loaded: NiivueVolumeInterop,
   { source, labelMap }: PreparedVolumeLayer,
@@ -292,7 +220,6 @@ export async function addNiivueVolumeLayers(
   nv: Niivue,
   volumes: Volume[],
   signal: AbortSignal,
-  renderOrderSources: Volume[] = volumes,
 ): Promise<void> {
   const preparedLayers = await Promise.all(
     volumes.map((volume) => prepareVolumeLayer(volume, signal)),
@@ -316,7 +243,6 @@ export async function addNiivueVolumeLayers(
     }
   }
   if (preparedLayers.length > 0) {
-    enforceVolumeRenderOrder(nv, renderOrderSources);
     await nv.updateGLVolume();
   }
 }
@@ -361,15 +287,13 @@ function getCurrentLabelInfo(location: NiivueLocationObject, sourceVolumes: Volu
 
 export function locationFromNiivue(
   locationObject: unknown,
-  _nv: Niivue,
+  nv: Niivue,
   sourceVolumes: Volume[],
-  referenceGeometry?: ReferenceGeometry | null,
+  coordinateSourceId?: string | null,
 ): LocationInfo | null {
   const location = locationObject as NiivueLocationObject | null;
   if (!location?.mm) return null;
-  const voxel = referenceGeometry
-    ? referenceWorldToVoxel(referenceGeometry, location.mm)
-    : location.vox;
+  const voxel = referenceWorldToVoxel(nv, location.mm, coordinateSourceId);
   if (!voxel) return null;
   const vox: [number, number, number] = [
     Math.round(voxel[0] ?? 0),

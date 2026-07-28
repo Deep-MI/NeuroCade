@@ -2,10 +2,11 @@ import { useEffect, useRef } from 'react';
 import { HelpCircle, X } from 'lucide-react';
 
 const HELP_SHORTCUTS = [
-  ['Arrow keys', 'Move the crosshair in the active slice plane. In Grid, the last hovered or clicked 2D tile sets the plane.'],
+  ['Up / Down', 'Move through slices in the active view. In Grid, the last hovered or clicked 2D tile sets the view.'],
+  ['Left / Right', 'Move the crosshair left/right within the active view.'],
+  ['Ctrl + Arrow keys', 'Move the crosshair left/right or up/down within the active view.'],
   ['H / L', 'Move crosshair left/right in 2D; rotate 3D azimuth in render view.'],
   ['J / K', 'Move crosshair down/up in 2D; rotate 3D elevation in render view.'],
-  ['Ctrl+U / Ctrl+D', 'Move crosshair forward/backward through the volume in 2D.'],
   ['M', 'Cycle Niivue drag mode.'],
   ['V', 'Cycle Niivue view mode.'],
   ['C', 'Cycle clip-plane preset.'],

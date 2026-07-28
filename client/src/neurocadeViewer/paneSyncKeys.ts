@@ -15,7 +15,7 @@ export function layerReconcileKeyOf(volumes: Volume[]): string {
       volume.url,
       volume.filename,
       volume.type ?? 'intensity',
-      volume.visible ? 1 : 0,
+      isSurfaceLayer(volume) && volume.visible ? 1 : 0,
       isSurfaceLayer(volume) ? volume.curvatureUrl ?? '' : '',
       isSurfaceLayer(volume) ? volume.annotationUrl ?? '' : '',
     ].join(':'))
@@ -23,8 +23,9 @@ export function layerReconcileKeyOf(volumes: Volume[]): string {
     .join('|');
 }
 
-export function volumeVisibilityKeyOf(volumes: Volume[]): string {
+export function surfaceVisibilityKeyOf(volumes: Volume[]): string {
   return volumes
+    .filter(isSurfaceLayer)
     .map((volume) => `${volume.id}:${volume.visible ? 1 : 0}:${volume.opacity}`)
     .sort()
     .join('|');
@@ -53,8 +54,22 @@ export function windowingKeyOf(windowings: Record<string, WindowSetting>): strin
     .join('|');
 }
 
-export function volumeOrderKeyOf(volumes: Volume[]): string {
-  return volumesInRenderOrder(volumes).map((volume) => volume.id).join('|');
+export function volumeStackKeyOf(volumes: Volume[]): string {
+  return volumesInRenderOrder(volumes)
+    .map((volume) => volume.id)
+    .join('|');
+}
+
+export function volumeDisplayKeyOf(volumes: Volume[]): string {
+  return volumes
+    .filter((volume) => !isSurfaceLayer(volume))
+    .map((volume) => [
+      volume.id,
+      volume.opacity,
+      volume.visible ? 1 : 0,
+    ].join(':'))
+    .sort()
+    .join('|');
 }
 
 export function surfaceAppearanceKeyOf(volumes: Volume[]): string {

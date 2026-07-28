@@ -32,7 +32,6 @@ interface UseNativeDrawingSessionArgs {
   canAddLayers: boolean;
   caseId: string;
   instanceRef: MutableRefObject<Niivue | null>;
-  referenceVolumeId: string | null;
   onSaveDrawing?: (drawing: SavedDrawingPayload) => Promise<void>;
 }
 
@@ -63,7 +62,6 @@ export function useNativeDrawingSession({
   canAddLayers,
   caseId,
   instanceRef,
-  referenceVolumeId,
   onSaveDrawing,
 }: UseNativeDrawingSessionArgs) {
   const initialSession: DrawingSession = {
@@ -299,7 +297,7 @@ export function useNativeDrawingSession({
 
   useEffect(() => {
     if (drawingSessionRef.current.active) closeNativeDrawing(true);
-  }, [caseId, referenceVolumeId, closeNativeDrawing]);
+  }, [caseId, closeNativeDrawing]);
 
   useEffect(() => () => {
     closeDrawing();

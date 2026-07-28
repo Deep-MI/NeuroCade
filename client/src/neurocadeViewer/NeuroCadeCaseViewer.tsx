@@ -6,8 +6,7 @@ import { isSurfaceLayer, type LocationInfo, type MriSnapshots, type MriViewerRef
 import { asNiivueInterop } from '../utils/niivueInterop';
 import { layerType } from './niivueLayers';
 import { LayerPanel } from './LayerPanel';
-import { NiivuePane, type WindowSetting } from './NiivuePane';
-import { selectReferenceVolumeSource } from './referenceGeometry';
+import { NiivuePane, type ViewerBackend, type WindowSetting } from './NiivuePane';
 import { ViewerHelpDialog } from './ViewerHelpDialog';
 import { ViewerToolbar } from './ViewerToolbar';
 import { useNativeDrawingSession, type SavedDrawingPayload } from './useNativeDrawingSession';
@@ -94,6 +93,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   onLocationChangeRef.current = onLocationChange;
 
   const [paneLoading, setPaneLoading] = useState(false);
+  const [viewerBackend, setViewerBackend] = useState<ViewerBackend | null>(null);
   const [viewMode, setViewMode] = useState<NeuroCadeViewMode>('multi');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dragMode, setDragMode] = useState<ViewerDragMode>('pan');
@@ -112,10 +112,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     segmentation: volumes.filter((volume) => layerType(volume) === 'segmentation'),
     surface: volumes.filter(isSurfaceLayer),
   }), [volumes]);
-  const referenceVolumeId = useMemo(
-    () => selectReferenceVolumeSource(volumes)?.id ?? null,
-    [volumes],
-  );
 
   const intensityColormaps = useMemo(() => {
     const available = new Set(availableColormaps.map((name) => name.toLowerCase()));
@@ -203,7 +199,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     canAddLayers,
     caseId,
     instanceRef,
-    referenceVolumeId,
     onSaveDrawing,
   });
 
@@ -401,7 +396,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           expandedLayerId={expandedLayerId}
           draggingLayerId={draggingLayerId}
           dragTarget={dragTarget}
-          referenceVolumeId={referenceVolumeId}
           windowings={windowings}
           intensityColormaps={intensityColormaps}
           drawingSession={drawingSession}
@@ -446,6 +440,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
             onLoadingChange={handlePaneLoading}
             onError={setLoadError}
             onColormaps={handlePaneColormaps}
+            onBackendChange={setViewerBackend}
           />
           {loading && (
             <div className="nc-viewer-canvas-spinner" role="status" aria-label="Loading imaging data">
@@ -457,6 +452,11 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           )}
           {loadError && (
             <div className="nc-viewer-canvas-error">{loadError}</div>
+          )}
+          {viewerBackend === 'webgl2' && (
+            <div className="nc-viewer-canvas-warning" role="status">
+              WebGPU is unavailable. Using WebGL2; layer visibility and windowing may be significantly slower.
+            </div>
           )}
         </div>
         <ViewerToolbar

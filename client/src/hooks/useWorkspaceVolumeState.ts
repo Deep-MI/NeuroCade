@@ -73,7 +73,7 @@ export function useWorkspaceVolumeState({
       }
 
       const newVolume = buildLoadedLayer(cmd, layerType);
-      return [...prev, newVolume];
+      return [newVolume, ...prev];
     });
   }, [activeCaseId, buildLoadedLayer, initialCaseId, setVolumes, uploadCaseId]);
 

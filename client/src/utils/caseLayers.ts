@@ -1,6 +1,5 @@
 import type { OutputVolume, Volume } from '../types';
-import { isLayerFile } from './layerAliases';
-import { createViewerLayer, defaultOutputVolumeVisible, inferOutputVolumeLayerType } from './layerBuilders';
+import { createViewerLayer, defaultOutputVolumeVisible, inferOutputVolumeLayerType } from './layerBuilders.js';
 
 export function dedupeOutputVolumes(volumes: OutputVolume[]): OutputVolume[] {
   return volumes.filter((volume, index, volumesList) => (
@@ -8,12 +7,10 @@ export function dedupeOutputVolumes(volumes: OutputVolume[]): OutputVolume[] {
   ));
 }
 
-export function selectInitialIntensityOutputVolume(volumes: OutputVolume[]): OutputVolume | undefined {
-  const intensityVolumes = volumes.filter((volume) => volume.kind === 'volume' && (volume.type ?? 'intensity') === 'intensity');
-  return intensityVolumes.find((volume) => volume.visible === true)
-    ?? intensityVolumes.find((volume) => isLayerFile(volume.filename, 'orig.mgz'))
-    ?? intensityVolumes.find((volume) => isLayerFile(volume.filename, '001.mgz'))
-    ?? intensityVolumes[0];
+function selectInitialIntensityOutputVolume(volumes: OutputVolume[]): OutputVolume | undefined {
+  return volumes.find((volume) => (
+    volume.kind === 'volume' && (volume.type ?? 'intensity') === 'intensity'
+  ));
 }
 
 export function visibleOutputVolumes(volumes: OutputVolume[], closedFilenames: Set<string>): OutputVolume[] {
@@ -21,10 +18,9 @@ export function visibleOutputVolumes(volumes: OutputVolume[], closedFilenames: S
   return restoredVolumes.length > 0 ? restoredVolumes : volumes;
 }
 
-export function outputVolumeToLayer(
+function outputVolumeToLayer(
   volume: OutputVolume,
   options: {
-    hasOrigVolume: boolean;
     initialIntensityVolume?: OutputVolume;
   },
 ): Volume {
@@ -42,4 +38,15 @@ export function outputVolumeToLayer(
   }, {
     defaultVisible: defaultOutputVolumeVisible(volume, options),
   });
+}
+
+/**
+ * The outputs endpoint order is the NiiVue load order. The layer panel uses
+ * painter order, so its background/reference volume appears at the bottom.
+ */
+export function outputVolumesToViewerLayers(volumes: OutputVolume[]): Volume[] {
+  const initialIntensityVolume = selectInitialIntensityOutputVolume(volumes);
+  return [...volumes].reverse().map((volume) => (
+    outputVolumeToLayer(volume, { initialIntensityVolume })
+  ));
 }

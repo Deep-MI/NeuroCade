@@ -13,39 +13,43 @@ import {
 import {
   addNiivueSurfaceLayer,
   addNiivueVolumeLayers,
-  effectiveLayerOpacity,
-  enforceVolumeRenderOrder,
-  prepareReferenceGeometry,
-  setNiivueVolumeOpacity,
   syncNiivueSurfaceDisplay,
 } from './niivueLayers';
-import { surfaceDisplayKey, volumesInRenderOrder } from './layerDisplay';
-import { getCrosshairWorld, restoreCrosshairWorld } from './loadedVolumeDisplay';
+import {
+  effectiveLayerOpacity,
+  orderedReferenceCandidate,
+  surfaceDisplayKey,
+  volumesInRenderOrder,
+} from './layerDisplay';
+import {
+  getCrosshairWorld,
+  restoreCrosshairWorld,
+  syncLoadedVolumeOpacities,
+} from './loadedVolumeDisplay';
 import type { WindowSetting } from './paneSyncKeys';
 import {
-  applyReferenceGeometry,
-  captureReferenceGeometry,
-  selectReferenceVolumeSource,
-  type ReferenceGeometry,
-} from './referenceGeometry';
+  enforceVolumeRenderOrder,
+  ensureFixedNiivueReference,
+} from './fixedReferenceRuntime.js';
 
 interface UseNiivuePaneLayersOptions {
   manualWindowingIds: MutableRefObject<Set<string>>;
   layerReconcileKey: string;
-  visibilityKey: string;
+  surfaceVisibilityKey: string;
   volumeAppearanceKey: string;
+  volumeDisplayKey: string;
   activeWindowingKey: string;
-  volumeOrderKey: string;
+  volumeStackKey: string;
   surfaceAppearanceKey: string;
   nvRef: MutableRefObject<Niivue | null>;
   latestVolumesRef: MutableRefObject<Volume[]>;
   windowingsRef: MutableRefObject<Record<string, WindowSetting>>;
   loadingLayerIdsRef: MutableRefObject<Set<string>>;
   surfaceDisplayControllersRef: MutableRefObject<Map<string, AbortController>>;
-  referenceGeometryRef: MutableRefObject<ReferenceGeometry | null>;
   scheduleRefresh: () => void;
   onLoadingChange?: (loading: boolean) => void;
   onError?: (message: string | null) => void;
+  onCoordinateSourceChange?: (id: string | null) => void;
 }
 
 function isLayerLoaded(nv: Niivue, layer: Volume): boolean {
@@ -55,28 +59,37 @@ function isLayerLoaded(nv: Niivue, layer: Volume): boolean {
     : asNiivueInterop(nv).volumes.some((loaded) => loaded.id === layer.id || loaded.url === layer.url || loaded.name === filename);
 }
 
+function syncNiivueVolumeOpacities(nv: Niivue, sources: Volume[]): boolean {
+  const opacityById = new Map(
+    sources
+      .filter((source) => !isSurfaceLayer(source))
+      .map((source) => [source.id, effectiveLayerOpacity(source)]),
+  );
+  return syncLoadedVolumeOpacities(nv, opacityById);
+}
+
 export function useNiivuePaneLayers({
   manualWindowingIds,
   layerReconcileKey,
-  visibilityKey,
+  surfaceVisibilityKey,
   volumeAppearanceKey,
+  volumeDisplayKey,
   activeWindowingKey,
-  volumeOrderKey,
+  volumeStackKey,
   surfaceAppearanceKey,
   nvRef,
   latestVolumesRef,
   windowingsRef,
   loadingLayerIdsRef,
   surfaceDisplayControllersRef,
-  referenceGeometryRef,
   scheduleRefresh,
   onLoadingChange,
   onError,
+  onCoordinateSourceChange,
 }: UseNiivuePaneLayersOptions): void {
-  // Incremental layer reconcile. Hidden volume sources stay available in the
-  // layer panel but are removed from NiiVue: its 3D renderer always draws the
-  // base volume even at opacity zero. Fetched bytes remain cached, so showing a
-  // layer again avoids another network transfer.
+  // Incremental layer reconcile. Every volume remains loaded regardless of
+  // visibility so hide/show cannot replace NiiVue's background/reference grid.
+  // Surfaces remain lazy because they do not participate in volume geometry.
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
@@ -87,45 +100,32 @@ export function useNiivuePaneLayers({
 
     const claim = (id: string) => { loadingLayerIds.add(id); claimedIds.push(id); };
     const release = (id: string) => loadingLayerIds.delete(id);
+    const syncFixedReference = async () => {
+      try {
+        const coordinateSourceId = await ensureFixedNiivueReference(nv, latestVolumesRef.current);
+        if (!cancelled) onCoordinateSourceChange?.(coordinateSourceId);
+      } catch (error) {
+        if (!cancelled) {
+          onError?.(`Could not establish the viewer reference grid: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    };
 
     const reconcile = async () => {
       const crosshairWorld = getCrosshairWorld(nv);
       try {
         onError?.(null);
         const sources = latestVolumesRef.current;
-        referenceGeometryRef.current = captureReferenceGeometry(
-          nv,
-          sources,
-          referenceGeometryRef.current,
-        );
-        const preferredReference = selectReferenceVolumeSource(sources);
-        if (
-          preferredReference
-          && !preferredReference.visible
-          && referenceGeometryRef.current?.sourceId !== preferredReference.id
-        ) {
-          onLoadingChange?.(true);
-          try {
-            referenceGeometryRef.current = await prepareReferenceGeometry(
-              nv,
-              preferredReference,
-              controller.signal,
-            );
-          } catch (error) {
-            if (!cancelled && !controller.signal.aborted) {
-              console.warn('[NiivuePane] Could not prepare reference geometry:', error);
-            }
-          }
-        }
-        const visibleVolumeIds = new Set(
+        const sourceVolumeIds = new Set(
           sources
-            .filter((volume) => volume.visible && !isSurfaceLayer(volume))
+            .filter((volume) => !isSurfaceLayer(volume))
             .map((volume) => volume.id),
         );
 
         let removedVolume = false;
         for (const loaded of [...asNiivueInterop(nv).volumes]) {
-          if (!loaded.id || !visibleVolumeIds.has(loaded.id)) {
+          if (loaded.__neurocadeFixedReference) continue;
+          if (!loaded.id || !sourceVolumeIds.has(loaded.id)) {
             const index = nv.volumes.indexOf(loaded);
             if (index >= 0) {
               nv.model.removeVolume(index);
@@ -134,7 +134,6 @@ export function useNiivuePaneLayers({
           }
         }
         if (removedVolume) {
-          applyReferenceGeometry(nv, referenceGeometryRef.current);
           await nv.updateGLVolume();
         }
         const sourceIds = new Set(sources.map((volume) => volume.id));
@@ -150,11 +149,12 @@ export function useNiivuePaneLayers({
         }
 
         const pending = sources.filter((layer) => (
-          layer.visible
+          (!isSurfaceLayer(layer) || layer.visible)
           && !isLayerLoaded(nv, layer)
           && !loadingLayerIds.has(layer.id)
         ));
         if (pending.length === 0) {
+          await syncFixedReference();
           if (!cancelled) onLoadingChange?.(false);
           return;
         }
@@ -173,12 +173,6 @@ export function useNiivuePaneLayers({
                 nv,
                 pendingVolumes,
                 controller.signal,
-                latestVolumesRef.current,
-              );
-              referenceGeometryRef.current = captureReferenceGeometry(
-                nv,
-                latestVolumesRef.current,
-                referenceGeometryRef.current,
               );
             }
           } catch (error) {
@@ -188,6 +182,11 @@ export function useNiivuePaneLayers({
           } finally {
             for (const volume of pendingVolumes) release(volume.id);
           }
+
+          if (syncNiivueVolumeOpacities(nv, latestVolumesRef.current)) {
+            scheduleRefresh();
+          }
+          await syncFixedReference();
 
           await Promise.all(visibleSurfaces.map(async (surface) => {
             if (cancelled || controller.signal.aborted) return;
@@ -204,7 +203,6 @@ export function useNiivuePaneLayers({
           if (!cancelled) onLoadingChange?.(false);
         }
       } finally {
-        applyReferenceGeometry(nv, referenceGeometryRef.current);
         if (!cancelled) restoreCrosshairWorld(nv, crosshairWorld);
       }
     };
@@ -221,8 +219,9 @@ export function useNiivuePaneLayers({
     nvRef,
     onError,
     onLoadingChange,
+    onCoordinateSourceChange,
     layerReconcileKey,
-    referenceGeometryRef,
+    scheduleRefresh,
     surfaceDisplayControllersRef,
   ]);
 
@@ -230,16 +229,6 @@ export function useNiivuePaneLayers({
     const nv = nvRef.current;
     if (!nv) return;
     const sources = latestVolumesRef.current;
-    let volumeDisplayChanged = false;
-
-    for (const loaded of asNiivueInterop(nv).volumes) {
-      const source = sources.find((volume) => volume.id === loaded.id);
-      if (!source || isSurfaceLayer(source)) continue;
-      const nextOpacity = effectiveLayerOpacity(source);
-      if (setNiivueVolumeOpacity(nv, loaded, nextOpacity) === 'updated') {
-        volumeDisplayChanged = true;
-      }
-    }
 
     for (const mesh of (asNiivueInterop(nv).meshes ?? [])) {
       const source = sources.filter(isSurfaceLayer).find((layer) => layer.id === mesh.id);
@@ -256,8 +245,13 @@ export function useNiivuePaneLayers({
         void nv.setMesh(meshIndex, { visible: mesh.visible, opacity: mesh.opacity });
       }
     }
-    if (volumeDisplayChanged) scheduleRefresh();
-  }, [latestVolumesRef, nvRef, scheduleRefresh, visibilityKey]);
+  }, [latestVolumesRef, nvRef, surfaceVisibilityKey]);
+
+  useEffect(() => {
+    const nv = nvRef.current;
+    if (!nv) return;
+    if (syncNiivueVolumeOpacities(nv, latestVolumesRef.current)) scheduleRefresh();
+  }, [latestVolumesRef, nvRef, scheduleRefresh, volumeDisplayKey]);
 
   useEffect(() => {
     const nv = nvRef.current;
@@ -322,10 +316,13 @@ export function useNiivuePaneLayers({
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
-    if (enforceVolumeRenderOrder(nv, latestVolumesRef.current)) {
-      scheduleRefresh();
-    }
-  }, [latestVolumesRef, nvRef, scheduleRefresh, volumeOrderKey]);
+    const sources = latestVolumesRef.current;
+    const coordinateSourceId = orderedReferenceCandidate(sources)?.id ?? null;
+    const orderChanged = enforceVolumeRenderOrder(nv, sources);
+    const opacityChanged = syncNiivueVolumeOpacities(nv, sources);
+    onCoordinateSourceChange?.(coordinateSourceId);
+    if (orderChanged || opacityChanged) scheduleRefresh();
+  }, [latestVolumesRef, nvRef, onCoordinateSourceChange, scheduleRefresh, volumeStackKey]);
 
   useEffect(() => {
     const nv = nvRef.current;

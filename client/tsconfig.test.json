@@ -17,11 +17,14 @@
     "src/utils/niivueMghCore.ts",
     "src/utils/layerAliases.ts",
     "src/neurocadeViewer/loadedVolumeDisplay.ts",
+    "src/neurocadeViewer/layerDisplay.ts",
     "src/neurocadeViewer/nativeDrawingHelpers.ts",
     "src/neurocadeViewer/paneSyncKeys.ts",
-    "src/neurocadeViewer/referenceGeometry.ts",
+    "src/neurocadeViewer/fixedReference.ts",
+    "src/neurocadeViewer/fixedReferenceRuntime.ts",
     "src/neurocadeViewer/viewerControls.ts",
     "src/types.ts",
+    "src/utils/caseLayers.ts",
     "src/utils/caseLayerPersistence.ts",
     "src/utils/caseLoading.ts",
     "src/utils/caseRoutes.ts",
@@ -37,9 +40,11 @@
     "tests/niivueLayers.test.ts",
     "tests/niivueMgh.test.ts",
     "tests/paneSyncKeys.test.ts",
-    "tests/referenceGeometry.test.ts",
+    "tests/fixedReference.test.ts",
+    "tests/layerDisplay.test.ts",
     "tests/viewerControls.test.ts",
     "tests/SurfaceLoader.test.ts",
+    "tests/caseLayers.test.ts",
     "tests/volumeColormap.test.ts"
   ]
 }

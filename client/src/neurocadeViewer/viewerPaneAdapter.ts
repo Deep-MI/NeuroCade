@@ -1,8 +1,9 @@
 import type Niivue from '@niivue/niivue';
 
-import { type Volume } from '../types';
-import { asNiivueInterop } from '../utils/niivueInterop';
-import { effectiveLayerOpacity, setNiivueVolumeOpacity } from './niivueLayers';
+import { type Volume } from '../types.js';
+import { asNiivueInterop } from '../utils/niivueInterop.js';
+import { effectiveLayerOpacity } from './layerDisplay.js';
+import { setLoadedVolumeOpacity } from './loadedVolumeDisplay.js';
 
 export type PaneRenderAction =
   | { kind: 'draw' }
@@ -17,11 +18,8 @@ export function applyLayerDisplay(nv: Niivue, id: string, next: Volume, updates:
   if (loaded) {
     if (typeof updates.visible === 'boolean' || typeof updates.opacity === 'number') {
       handledLoadedDisplay = true;
-      const previousOpacity = loaded.opacity ?? 1;
-      const nextOpacity = effectiveLayerOpacity(next);
-      const result = setNiivueVolumeOpacity(nv, loaded, effectiveLayerOpacity(next));
+      const result = setLoadedVolumeOpacity(nv, loaded, effectiveLayerOpacity(next));
       if (result === 'updated') {
-        if (typeof updates.visible === 'boolean' || previousOpacity === 0 || nextOpacity === 0) return null;
         return { kind: 'refresh' };
       }
     }
@@ -54,7 +52,7 @@ export function previewLayerOpacity(nv: Niivue, id: string, next: Volume): PaneR
   let volumeChanged = false;
   if (loaded) {
     const nextOpacity = effectiveLayerOpacity(next);
-    const result = setNiivueVolumeOpacity(nv, loaded, nextOpacity);
+    const result = setLoadedVolumeOpacity(nv, loaded, nextOpacity);
     if (result === 'updated') {
       volumeChanged = true;
     }

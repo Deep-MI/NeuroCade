@@ -44,21 +44,14 @@ function defaultVisibleSurface(filename: string): boolean {
 export function defaultOutputVolumeVisible(
   volume: OutputVolume,
   options: {
-    hasOrigVolume: boolean;
     initialIntensityVolume?: OutputVolume;
   },
 ): boolean {
   const isSurface = volume.type === 'surface';
-  const isInputVolume = isLayerFile(volume.filename, '001.mgz');
-  const isOrigVolume = isLayerFile(volume.filename, 'orig.mgz');
   const isDefaultSegmentation = isLayerFile(volume.filename, 'aparc.DKTatlas+aseg.deep.mgz');
   return isSurface
     ? defaultVisibleSurface(volume.filename)
-    : (
-      volume.filename === options.initialIntensityVolume?.filename
-      || isDefaultSegmentation
-      || (!options.initialIntensityVolume && (isOrigVolume || (!options.hasOrigVolume && isInputVolume)))
-    );
+    : volume.filename === options.initialIntensityVolume?.filename || isDefaultSegmentation;
 }
 
 export function inferOutputVolumeLayerType(volume: OutputVolume): LoadableLayerType {

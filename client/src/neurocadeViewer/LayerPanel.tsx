@@ -2,7 +2,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Brush, ChevronDown, ChevronRight, Download, Eraser, Eye, EyeOff, Layers, MousePointer2, Pencil, Plus, Undo2, X } from 'lucide-react';
 
 import { isSegmentationLayer, isSurfaceLayer, type LayerType, type SegmentationVolumeLayer, type SurfaceColorMode, type Volume } from '../types';
-import { clampOpacity, layerDefaultOpacity, layerType } from './niivueLayers';
+import {
+  clampOpacity,
+  layerDefaultOpacity,
+  parseEditableSliderValue,
+} from './layerDisplay';
+import { layerType } from './niivueLayers';
 import type { WindowSetting } from './paneSyncKeys';
 import type { DrawingOptions, DrawingSession } from './nativeDrawing';
 import type { DrawingLabelOption } from './useNativeDrawingSession';
@@ -31,6 +36,82 @@ function sectionTitle(type: LayerType) {
   if (type === 'segmentation') return 'Segmentations';
   return 'Intensity';
 }
+
+function formatRoundedSliderValue(value: number): string {
+  return String(Math.round(value));
+}
+
+interface EditableSliderValueProps {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  ariaLabel: string;
+  disabled?: boolean;
+  constrainToSliderRange?: boolean;
+  onCommit: (value: number) => void;
+  format?: (value: number) => string;
+}
+
+const EditableSliderValue = React.memo(function EditableSliderValue({
+  value,
+  min,
+  max,
+  step,
+  ariaLabel,
+  disabled = false,
+  constrainToSliderRange = true,
+  onCommit,
+  format = String,
+}: EditableSliderValueProps) {
+  const editingRef = useRef(false);
+  const [draft, setDraft] = useState(() => format(value));
+
+  useEffect(() => {
+    if (!editingRef.current) setDraft(format(value));
+  }, [format, value]);
+
+  const commit = (text: string) => {
+    editingRef.current = false;
+    const next = parseEditableSliderValue(
+      text,
+      min,
+      max,
+      constrainToSliderRange,
+    );
+    if (next === null) {
+      setDraft(format(value));
+      return;
+    }
+    setDraft(format(next));
+    onCommit(next);
+  };
+
+  return (
+    <input
+      type="number"
+      min={constrainToSliderRange ? min : undefined}
+      max={constrainToSliderRange ? max : undefined}
+      step={step}
+      value={draft}
+      disabled={disabled}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onFocus={(event) => {
+        editingRef.current = true;
+        event.currentTarget.select();
+      }}
+      onBlur={(event) => commit(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur();
+      }}
+      className="nc-viewer-slider-value nc-mono"
+      aria-label={ariaLabel}
+      title={constrainToSliderRange
+        ? 'Click to type a value'
+        : 'Click to type any finite value; the slider range stays unchanged'}
+    />
+  );
+});
 
 interface LayerOpacityControlProps {
   volume: Volume;
@@ -86,7 +167,18 @@ const LayerOpacityControl = React.memo(function LayerOpacityControl({
         aria-label={`${volume.name} opacity`}
         data-testid="viewer-layer-opacity"
       />
-      <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(draftOpacity * 100)}</span>
+      <EditableSliderValue
+        value={Math.round(draftOpacity * 100)}
+        min={0}
+        max={100}
+        step={1}
+        ariaLabel={`${volume.name} opacity value`}
+        onCommit={(percent) => {
+          preview(percent / 100);
+          commit();
+        }}
+        format={formatRoundedSliderValue}
+      />
     </>
   );
 });
@@ -211,7 +303,6 @@ interface LayerPanelProps {
   expandedLayerId: string | null;
   draggingLayerId: string | null;
   dragTarget: { id: string; position: 'before' | 'after' } | null;
-  referenceVolumeId: string | null;
   windowings: Record<string, WindowSetting>;
   intensityColormaps: string[];
   drawingSession: DrawingSession;
@@ -246,7 +337,6 @@ export function LayerPanel({
   expandedLayerId,
   draggingLayerId,
   dragTarget,
-  referenceVolumeId,
   windowings,
   intensityColormaps,
   drawingSession,
@@ -290,7 +380,6 @@ export function LayerPanel({
           {items.map((volume) => {
             const typeName = layerType(volume);
             const isExpanded = expandedLayerId === volume.id;
-            const isReferenceVolume = !isSurfaceLayer(volume) && volume.id === referenceVolumeId;
             const showWindowing = typeName === 'intensity';
             const showSurfaceDisplay = isSurfaceLayer(volume);
             const surfaceColorMode = showSurfaceDisplay ? resolveSurfaceLayerColorMode(volume) : 'solid';
@@ -344,11 +433,6 @@ export function LayerPanel({
                 </div>
                 {isExpanded && (
                   <div className="border-b border-[var(--nc-border)] px-2 pb-2 pt-1 space-y-1.5">
-                    {isReferenceVolume && (
-                      <div className="nc-mono rounded border border-[var(--nc-interactive-border)] bg-[var(--nc-interactive-subtle)] px-2 py-1 text-[11px] text-[var(--nc-interactive)]">
-                        Reference volume
-                      </div>
-                    )}
                     <div className="flex items-center gap-2">
                       <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Opacity</span>
                       <LayerOpacityControl
@@ -384,7 +468,20 @@ export function LayerPanel({
                                 aria-label={`${volume.name} window minimum`}
                                 data-testid="viewer-window-min"
                               />
-                              <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(win.calMin)}</span>
+                              <EditableSliderValue
+                                value={win.calMin}
+                                min={win.globalMin}
+                                max={win.globalMax}
+                                step={windowStep}
+                                constrainToSliderRange={false}
+                                ariaLabel={`${volume.name} window minimum value`}
+                                onCommit={(value) => {
+                                  const adjusted = value === win.calMax
+                                    ? value - windowStep
+                                    : value;
+                                  if (adjusted !== win.calMax) onUpdateWindowing(volume.id, 'calMin', adjusted);
+                                }}
+                              />
                             </div>
                             <div className="flex items-center gap-2">
                               <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Max</span>
@@ -408,7 +505,20 @@ export function LayerPanel({
                                 aria-label={`${volume.name} window maximum`}
                                 data-testid="viewer-window-max"
                               />
-                              <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(win.calMax)}</span>
+                              <EditableSliderValue
+                                value={win.calMax}
+                                min={win.globalMin}
+                                max={win.globalMax}
+                                step={windowStep}
+                                constrainToSliderRange={false}
+                                ariaLabel={`${volume.name} window maximum value`}
+                                onCommit={(value) => {
+                                  const adjusted = value === win.calMin
+                                    ? value + windowStep
+                                    : value;
+                                  if (adjusted !== win.calMin) onUpdateWindowing(volume.id, 'calMax', adjusted);
+                                }}
+                              />
                             </div>
                           </>
                         ) : (
@@ -618,7 +728,16 @@ export function LayerPanel({
             className="nc-viewer-layer-slider"
             aria-label="Drawing opacity"
           />
-          <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{Math.round(drawingSession.opacity * 100)}</span>
+          <EditableSliderValue
+            value={Math.round(drawingSession.opacity * 100)}
+            min={0}
+            max={100}
+            step={1}
+            disabled={!drawingSession.active}
+            ariaLabel="Drawing opacity value"
+            onCommit={(percent) => onUpdateDrawingOptions({ opacity: percent / 100 })}
+            format={formatRoundedSliderValue}
+          />
         </div>
 
         {drawingSession.tool !== 'navigate' && (
@@ -635,7 +754,16 @@ export function LayerPanel({
               className="nc-viewer-layer-slider"
               aria-label="Drawing brush size"
             />
-            <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{drawingSession.brushSize}</span>
+            <EditableSliderValue
+              value={drawingSession.brushSize}
+              min={1}
+              max={10}
+              step={1}
+              disabled={!drawingSession.active}
+              ariaLabel="Drawing brush size value"
+              onCommit={(brushSize) => onUpdateDrawingOptions({ brushSize: Math.round(brushSize) })}
+              format={formatRoundedSliderValue}
+            />
           </div>
         )}
 

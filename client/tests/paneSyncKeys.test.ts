@@ -4,11 +4,16 @@ import test from 'node:test';
 import {
   layerReconcileKeyOf,
   surfaceAppearanceKeyOf,
+  surfaceVisibilityKeyOf,
   volumeAppearanceKeyOf,
-  volumeOrderKeyOf,
-  volumeVisibilityKeyOf,
+  volumeDisplayKeyOf,
+  volumeStackKeyOf,
   windowingKeyOf,
 } from '../src/neurocadeViewer/paneSyncKeys.js';
+import {
+  orderedReferenceCandidate,
+  volumesInRenderOrder,
+} from '../src/neurocadeViewer/layerDisplay.js';
 import type { Volume } from '../src/types.js';
 
 const intensity = {
@@ -55,19 +60,60 @@ const surface = {
 
 void test('pane sync keys isolate source, visibility, appearance, and ordering concerns', () => {
   assert.match(layerReconcileKeyOf([intensity]), /orig\.mgz:\/orig\.mgz/);
-  assert.notEqual(layerReconcileKeyOf([intensity]), layerReconcileKeyOf([{ ...intensity, visible: false }]));
+  assert.equal(layerReconcileKeyOf([intensity]), layerReconcileKeyOf([{ ...intensity, visible: false }]));
   assert.match(layerReconcileKeyOf([surface]), /lh\.pial:\/lh\.pial/);
-  assert.notEqual(volumeVisibilityKeyOf([intensity]), volumeVisibilityKeyOf([{ ...intensity, opacity: 0.5 }]));
+  assert.notEqual(layerReconcileKeyOf([surface]), layerReconcileKeyOf([{ ...surface, visible: false }]));
+  assert.notEqual(surfaceVisibilityKeyOf([surface]), surfaceVisibilityKeyOf([{ ...surface, opacity: 0.5 }]));
+  assert.equal(surfaceVisibilityKeyOf([intensity]), surfaceVisibilityKeyOf([{ ...intensity, opacity: 0.5 }]));
   assert.notEqual(volumeAppearanceKeyOf([intensity]), volumeAppearanceKeyOf([{ ...intensity, colormap: 'hot' }]));
-  assert.equal(volumeOrderKeyOf([intensity, segmentation]), 'orig.mgz|aseg.mgz');
+  assert.equal(volumeStackKeyOf([intensity, segmentation]), 'orig.mgz|aseg.mgz');
   assert.equal(
-    volumeOrderKeyOf([
+    volumeStackKeyOf([
       { ...segmentation, id: 'seg-top', filename: 'seg-top.mgz' },
       intensity,
       { ...segmentation, id: 'seg-bottom', filename: 'seg-bottom.mgz' },
     ]),
     'orig.mgz|seg-bottom|seg-top',
   );
+  assert.equal(volumeStackKeyOf([intensity]), volumeStackKeyOf([{ ...intensity, visible: false }]));
+  assert.equal(volumeStackKeyOf([segmentation]), volumeStackKeyOf([{ ...segmentation, visible: false }]));
+  assert.equal(volumeStackKeyOf([intensity]), volumeStackKeyOf([{ ...intensity, opacity: 0.5 }]));
+  assert.notEqual(volumeDisplayKeyOf([segmentation]), volumeDisplayKeyOf([{ ...segmentation, visible: false }]));
+  assert.notEqual(volumeDisplayKeyOf([intensity]), volumeDisplayKeyOf([{ ...intensity, opacity: 0.5 }]));
+  assert.notEqual(volumeDisplayKeyOf([intensity]), volumeDisplayKeyOf([{ ...intensity, visible: false }]));
+});
+
+void test('the bottom intensity layer is the coordinate source below overlays', () => {
+  const input = {
+    ...intensity,
+    id: 'input.mgz',
+    filename: 'input.mgz',
+    name: 'Input',
+    url: '/input.mgz',
+    visible: false,
+  };
+  const sources = [segmentation, intensity, input];
+
+  assert.deepEqual(
+    volumesInRenderOrder(sources).map((volume) => volume.id),
+    ['input.mgz', 'orig.mgz', 'aseg.mgz'],
+  );
+  assert.equal(orderedReferenceCandidate(sources)?.id, 'input.mgz');
+});
+
+void test('visibility does not change the reference but reorder and removal do', () => {
+  const input = {
+    ...intensity,
+    id: 'input.mgz',
+    filename: 'input.mgz',
+    name: 'Input',
+    url: '/input.mgz',
+  };
+
+  assert.equal(orderedReferenceCandidate([intensity, input])?.id, 'input.mgz');
+  assert.equal(orderedReferenceCandidate([intensity, { ...input, visible: false }])?.id, 'input.mgz');
+  assert.equal(orderedReferenceCandidate([input, intensity])?.id, 'orig.mgz');
+  assert.equal(orderedReferenceCandidate([intensity])?.id, 'orig.mgz');
 });
 
 void test('pane sync keys include surface display fields', () => {
