@@ -1,10 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Check, Download, FileUp, Folder, Layers, LoaderCircle, MessageSquare, Moon, Play, RefreshCw, Square, Sun, TerminalSquare, X } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 
 import { useAppSession } from './auth/sessionContext';
 import { DownloadCaseModal } from './components/DownloadCaseModal';
-import type { LocationInfo, MriViewerRef } from './types';
+import type { ChatMessage, GuiCommand, LocationInfo, MriViewerRef } from './types';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { UploadCaseModal } from './components/UploadCaseModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -31,6 +31,10 @@ interface CaseWorkspaceProps {
 }
 
 const DOWNLOAD_ARTIFACT_TIMEOUT_MS = 8000;
+const WEBGPU_FALLBACK_WARNING = [
+  'Viewer warning: WebGPU initialization failed; using WebGL2, so layer visibility and windowing may be significantly slower.',
+  'For sandboxed Chromium on Linux with NVIDIA graphics, enable "Default ANGLE Vulkan" at chrome://flags/#default-angle-vulkan or launch Chromium with --use-angle=vulkan.',
+].join(' ');
 
 interface SavedNativeDrawing {
   filename: string;
@@ -176,6 +180,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   const [rightPanel, setRightPanel] = useState<'chat' | 'results' | null>('chat');
   const [chatClearRequestToken, setChatClearRequestToken] = useState(0);
   const [isChatClearing, setIsChatClearing] = useState(false);
+  const [viewerDiagnostics, setViewerDiagnostics] = useState<ChatMessage[]>([]);
   const [layerPanelOpen, setLayerPanelOpen] = useState(true);
   const [isLight, setIsLight] = useState(false);
   const [layerPickerType, setLayerPickerType] = useState<LayerType | null>(null);
@@ -200,6 +205,26 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     () => selectCurrentIntensityInput(controller.runInputOptions, volumes),
     [controller.runInputOptions, volumes],
   );
+  const chatMessages = useMemo(
+    () => [...controller.chatNotifications, ...viewerDiagnostics],
+    [controller.chatNotifications, viewerDiagnostics],
+  );
+  const terminalOutput = useMemo(() => {
+    const diagnostics = viewerDiagnostics
+      .map((message) => `[viewer] ${typeof message.content === 'string' ? message.content : 'Viewer diagnostic'}`)
+      .join('\n');
+    return [controller.logs.trim(), diagnostics].filter(Boolean).join('\n\n');
+  }, [controller.logs, viewerDiagnostics]);
+
+  const handleViewerBackendChange = useCallback((backend: 'webgpu' | 'webgl2' | null) => {
+    if (backend !== 'webgl2') return;
+    console.warn(`[NeuroCade viewer] ${WEBGPU_FALLBACK_WARNING}`);
+    setViewerDiagnostics((current) => (
+      current.some((message) => message.content === WEBGPU_FALLBACK_WARNING)
+        ? current
+        : [...current, { role: 'info', severity: 'warning', content: WEBGPU_FALLBACK_WARNING }]
+    ));
+  }, []);
 
   const volumeState = useWorkspaceVolumeState({
     activeCaseId: controller.activeCaseId,
@@ -219,31 +244,51 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     currentIntensityVolume: currentFastSurferInput?.filename ?? null,
     isRunActive,
     onSyncResponse: data => {
-      if (data.requested_cursor_position) {
-        setRequestedCursor(data.requested_cursor_position);
-        setTimeout(() => setRequestedCursor(null), 500);
-      }
-      if (data.requested_load_volume) {
-        volumeState.handleLoadVolumeCommand({
-          downloadPath: data.requested_load_volume.download_path,
-          filename: data.requested_load_volume.filename,
-          name: data.requested_load_volume.name,
-          type: data.requested_load_volume.type,
-          lut: data.requested_load_volume.lut,
-          customLutDownloadUrl: data.requested_load_volume.custom_lut_download_path,
-          curvatureDownloadUrl: data.requested_load_volume.curvature_download_path,
-          annotationDownloadUrl: data.requested_load_volume.annotation_download_path,
-          visible: data.requested_load_volume.visible,
-        });
-      }
-      if (data.requested_close_volume) volumeState.handleCloseVolumeCommand(data.requested_close_volume);
-      if (data.requested_close_volumes) data.requested_close_volumes.forEach(volumeState.handleCloseVolumeCommand);
-      if (data.requested_select_volumes) volumeState.handleSelectVolumesCommand(data.requested_select_volumes);
-      if (data.requested_run_fastsurfer) {
-        setRightPanel('results');
-        void controller.handleAgentRunFastSurfer(data.requested_run_fastsurfer);
-      }
-      if (data.requested_adjust_display) volumeState.handleAdjustDisplayCommand(data.requested_adjust_display);
+      data.commands.forEach((command: GuiCommand) => {
+        const payload = command.payload;
+        if (command.type === 'move_cursor') {
+          const position = payload.position as [number, number, number];
+          setRequestedCursor(position);
+          setTimeout(() => setRequestedCursor(null), 500);
+        } else if (command.type === 'load_layer') {
+          volumeState.handleLoadLayerCommand({
+            downloadPath: String(payload.download_path),
+            filename: String(payload.filename),
+            name: typeof payload.name === 'string' ? payload.name : undefined,
+            type: typeof payload.type === 'string' ? payload.type : undefined,
+            lut: typeof payload.lut === 'string' ? payload.lut : undefined,
+            customLutDownloadUrl: typeof payload.custom_lut_download_path === 'string' ? payload.custom_lut_download_path : undefined,
+            curvatureDownloadUrl: typeof payload.curvature_download_path === 'string' ? payload.curvature_download_path : undefined,
+            annotationDownloadUrl: typeof payload.annotation_download_path === 'string' ? payload.annotation_download_path : undefined,
+            visible: typeof payload.visible === 'boolean' ? payload.visible : undefined,
+          });
+        } else if (command.type === 'remove_layers') {
+          volumeState.handleRemoveLayersCommand(payload.layer_ids as string[]);
+        } else if (command.type === 'set_layer_visibility') {
+          volumeState.handleSetLayerVisibilityCommand(
+            payload.changes as { layer_id: string; visible: boolean }[],
+          );
+        } else if (command.type === 'set_layer_display') {
+          volumeState.handleSetLayerDisplayCommand(
+            payload.layer_ids as string[],
+            payload.updates as {
+              opacity?: number;
+              brightness?: number;
+              contrast?: number;
+              surface_color_mode?: 'solid' | 'curvature' | 'annotation';
+            },
+          );
+        } else if (command.type === 'run_fastsurfer') {
+          setRightPanel('results');
+          void controller.handleAgentRunFastSurfer(payload as {
+            case_id: string;
+            input_artifact_id?: string;
+            input_volume?: string;
+            seg_only?: boolean;
+            case_name?: string;
+          });
+        }
+      });
     },
     onError: error => {
       console.error('Failed to sync GUI state with NeuroCade runtime:', error);
@@ -411,7 +456,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         lut: drawing.lut,
       },
     });
-    volumeState.handleLoadVolumeCommand({
+    volumeState.handleLoadLayerCommand({
       downloadPath: artifact.downloadPath,
       filename: artifact.name,
       type: 'segmentation',
@@ -422,7 +467,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
 
   const loadSelectedLayer = useCallback((option: OutputVolume) => {
     const layerType = outputVolumeLayerType(option);
-    volumeState.handleLoadVolumeCommand({
+    volumeState.handleLoadLayerCommand({
       downloadPath: option.downloadUrl,
       filename: option.filename,
       type: layerType,
@@ -525,6 +570,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
               canAddLayers={Boolean(controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId)}
               onLocationChange={setCurrentLocation}
               externalCoordinate={requestedCursor}
+              onBackendChange={handleViewerBackendChange}
             />
           </Suspense>
         </ErrorBoundary>
@@ -553,7 +599,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
               <ErrorBoundary label="Chat">
                 <Suspense fallback={<div className="p-4 text-sm text-[var(--nc-tx-muted)]">Loading chat...</div>}>
                   <Chat
-                    externalMessages={controller.chatNotifications}
+                    externalMessages={chatMessages}
                     style={{ flex: 1, minHeight: 0, marginTop: 0, borderRadius: 0 }}
                     hideHeader
                     currentLocation={currentLocation}
@@ -569,7 +615,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
             ) : (
               <div className="flex min-h-0 flex-1 flex-col bg-[var(--nc-bg-deep)]">
                 <pre data-testid="terminal-content" className="nc-mono min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap p-3 text-[11px] leading-[1.45] text-[var(--nc-tx-muted)]">
-                  {controller.logs.trim() || 'No analysis run yet. Click Analyze to start.'}
+                  {terminalOutput || 'No analysis run yet. Click Analyze to start.'}
                 </pre>
               </div>
             )}

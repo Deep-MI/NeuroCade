@@ -17,7 +17,7 @@ from api_service.helpers import get_case_for_user, get_workspace_for_user  # noq
 from api_service.runtime.service import RuntimeService, runtime_service  # noqa: E402
 from api_service.schemas import ChatMessageSummary  # noqa: E402
 from backend_common.auth import AuthContext  # noqa: E402
-from backend_common.db import AssistantScope, Case, Workspace  # noqa: E402
+from backend_common.db import AssistantScope, Case, Workspace, run_with_sqlite_lock_retry  # noqa: E402
 from backend_common.providers import ModelConfig, ProviderRole, provider_registry  # noqa: E402
 from backend_common.settings import ROOT_DIR, get_settings  # noqa: E402
 
@@ -169,16 +169,25 @@ class AssistantRuntime:
         if persist and db is not None and context is not None and workspace_id is not None:
             _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)
 
-        thread, conversation, latest_messages = self.conversations.prepare_chat(
-            db,
-            context,
-            persist=persist,
-            scope=scope,
-            workspace_id=workspace_id,
-            case_id=case_id,
-            provider_config=provider_config,
-            messages=messages,
-        )
+        def prepare_conversation():
+            prepared = self.conversations.prepare_chat(
+                db,
+                context,
+                persist=persist,
+                scope=scope,
+                workspace_id=workspace_id,
+                case_id=case_id,
+                provider_config=provider_config,
+                messages=messages,
+            )
+            if db is not None and db.in_transaction():
+                db.commit()
+            return prepared
+
+        if db is not None:
+            thread, conversation, latest_messages = run_with_sqlite_lock_retry(db, prepare_conversation)
+        else:
+            thread, conversation, latest_messages = prepare_conversation()
         max_rounds = max(int(settings.assistant_max_rounds), 1)
         state: dict[str, Any] = {
             "db": db,

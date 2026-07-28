@@ -31,12 +31,12 @@ def _artifact_path_for_output_resource(
     return artifact_download_path_for_output(db, context, output_descriptor_path.removeprefix("outputs/"))
 
 
-def resolve_load_volume_command(
+def resolve_load_layer_command(
     db: Session,
     context: AuthContext,
     command: Any,
 ) -> Any:
-    """Attach browser-facing artifact paths to an explicit load-volume command."""
+    """Attach browser-facing artifact paths to an explicit typed layer command."""
     if not isinstance(command, dict):
         return command
     resolved = dict(command)
@@ -62,10 +62,17 @@ def resolve_load_volume_command(
 def resolve_gui_resource_descriptors(db: Session, context: AuthContext, payload: dict) -> dict:
     """Resolve typed GUI resource descriptors to app-relative artifact paths."""
     resolved = dict(payload)
-    if "requested_load_volume" in resolved:
-        resolved["requested_load_volume"] = resolve_load_volume_command(
-            db,
-            context,
-            resolved["requested_load_volume"],
-        )
+    commands = []
+    for command in resolved.get("commands", []):
+        if not isinstance(command, dict):
+            continue
+        resolved_command = dict(command)
+        if command.get("type") == "load_layer":
+            resolved_command["payload"] = resolve_load_layer_command(
+                db,
+                context,
+                command.get("payload"),
+            )
+        commands.append(resolved_command)
+    resolved["commands"] = commands
     return resolved

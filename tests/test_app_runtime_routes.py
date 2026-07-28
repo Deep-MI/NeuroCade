@@ -93,7 +93,18 @@ def test_gui_state_sync_resolves_case_scope_from_current_case_id(monkeypatch, te
             "current_case_id": CASE_ID,
             "gui_session_id": "gui-session-1",
             "is_job_running": False,
-            "loaded_volumes": ["orig.mgz"],
+            "layers": [
+                {
+                    "id": "orig.mgz",
+                    "filename": "orig.mgz",
+                    "name": "orig",
+                    "type": "intensity",
+                    "loaded": True,
+                    "visible": True,
+                    "opacity": 1,
+                    "display": {},
+                }
+            ],
         },
     )
 
@@ -104,10 +115,19 @@ def test_gui_state_sync_resolves_case_scope_from_current_case_id(monkeypatch, te
                 "current_case_id": CASE_ID,
                 "current_workspace_id": "workspace-1",
                 "is_job_running": False,
-                "has_valid_segmentation": False,
-                "loaded_volumes": ["orig.mgz"],
-                "loaded_volume_names": [],
-                "visible_volumes": [],
+                "layers": [
+                    {
+                        "id": "orig.mgz",
+                        "filename": "orig.mgz",
+                        "name": "orig",
+                        "type": "intensity",
+                        "loaded": True,
+                        "visible": True,
+                        "opacity": 1,
+                        "display": {},
+                    }
+                ],
+                "acknowledged_command_ids": [],
             },
             "gui_state_key": f"user:user-1|workspace:workspace-1|case:{CASE_ID}|session:gui-session-1",
         }
@@ -115,6 +135,7 @@ def test_gui_state_sync_resolves_case_scope_from_current_case_id(monkeypatch, te
     assert response.json() == {
         "status": "success",
         "current_state": {"current_case_id": CASE_ID},
+        "commands": [],
     }
 
 
@@ -146,12 +167,19 @@ def test_gui_state_sync_resolves_output_resource_descriptor_to_artifact_path(mon
 
     async def fake_sync_gui_state(payload: dict, *, gui_state_key: str | None = None) -> dict:
         return {
-            "requested_load_volume": {
-                "resource": {"kind": "output", "path": "outputs/workspaces/workspace-1/cases/case-1/mri/orig.mgz"},
-                "filename": "orig.mgz",
-                "name": "orig",
-                "type": "intensity",
-            }
+            "commands": [
+                {
+                    "id": "command-1",
+                    "type": "load_layer",
+                    "created_at": "2026-07-28T00:00:00Z",
+                    "payload": {
+                        "resource": {"kind": "output", "path": "outputs/workspaces/workspace-1/cases/case-1/mri/orig.mgz"},
+                        "filename": "orig.mgz",
+                        "name": "orig",
+                        "type": "intensity",
+                    },
+                }
+            ]
         }
 
     monkeypatch.setattr(app_runtime_module.runtime_service, "sync_gui_state", fake_sync_gui_state)
@@ -162,4 +190,4 @@ def test_gui_state_sync_resolves_output_resource_descriptor_to_artifact_path(mon
     )
 
     assert response.status_code == 200
-    assert response.json()["requested_load_volume"]["download_path"] == "/artifacts/artifact-1/download"
+    assert response.json()["commands"][0]["payload"]["download_path"] == "/artifacts/artifact-1/download"

@@ -65,8 +65,27 @@ def runtime_case(tmp_path, monkeypatch):
         "current_case_id": case_id,
         "current_intensity_artifact_id": "artifact-input",
         "current_intensity_volume": "input.mgz",
-        "loaded_volumes": ["orig.mgz"],
-        "has_valid_segmentation": True,
+        "layers": [
+            {
+                "id": "orig.mgz",
+                "filename": "orig.mgz",
+                "name": "orig",
+                "type": "intensity",
+                "role": "intensity",
+                "visible": True,
+                "opacity": 1.0,
+            },
+            {
+                "id": "lh.pial",
+                "filename": "lh.pial",
+                "name": "Left pial surface",
+                "type": "surface",
+                "role": "pial",
+                "hemisphere": "left",
+                "visible": False,
+                "opacity": 1.0,
+            },
+        ],
         "is_job_running": False,
     }
     return RuntimeService(), state
@@ -89,9 +108,10 @@ def test_gui_run_fastsurfer_without_selected_input_requests_frontend_selector(ru
     )
 
     gui_state = service.gui_state_for_key()
-    requested_run = gui_state["requested_run_fastsurfer"]
-    assert "will ask the user to choose an input volume" in result
-    assert requested_run == {
+    requested_run = gui_state["commands"][0]
+    assert "will ask the user to choose an input layer" in result
+    assert requested_run["type"] == "run_fastsurfer"
+    assert requested_run["payload"] == {
         "case_id": "workspace-1__case-a",
         "seg_only": True,
         "case_name": "case-a",
@@ -341,11 +361,12 @@ def test_runtime_service_exposes_expected_llm_tools(runtime_case):
         "case_file_tree",
         "read_stats",
         "gui_run_fastsurfer",
-        "gui_review_segmentation",
-        "gui_load_volume",
-        "gui_close_volume",
-        "gui_select_volume",
-        "gui_adjust_display",
+        "gui_list_layers",
+        "gui_load_layer",
+        "gui_remove_layer",
+        "gui_set_layer_visibility",
+        "gui_set_layer_display",
+        "gui_apply_view_preset",
         "gui_move_cursor",
         "gui_focus_label",
     }.issubset(names)
@@ -358,14 +379,50 @@ def test_runtime_service_exposes_case_tools_without_gui_context():
     tools = asyncio.run(service.fetch_tools(gui_state_override={}))
     names = {tool["function"]["name"] for tool in tools}
 
-    assert "gui_load_volume" in names
-    assert "gui_close_volume" in names
+    assert "gui_load_layer" in names
+    assert "gui_remove_layer" in names
     assert "gui_move_cursor" in names
-    assert "gui_review_segmentation" in names
+    assert "gui_apply_view_preset" in names
     assert "read_stats" in names
 
     result = asyncio.run(service.call_tool("gui_move_cursor", {"x": 1, "y": 2, "z": 3}, gui_state_override={}))
-    assert "requires at least one loaded volume" in result
+    assert "requires a loaded layer" in result
+
+
+@pytest.mark.parametrize("file_path", ["mri/orig.mgz", "/case/../other-case/mri/orig.mgz"])
+def test_gui_load_layer_rejects_paths_outside_active_case(runtime_case, file_path):
+    service, state = runtime_case
+
+    result = asyncio.run(
+        service.call_tool(
+            "gui_load_layer",
+            {"file_path": file_path},
+            gui_state_override=state,
+        )
+    )
+
+    assert result.startswith("Error:")
+
+
+@pytest.mark.parametrize(
+    ("layer_ids", "updates", "expected"),
+    [
+        (["lh.pial"], {"brightness": 10}, "brightness and contrast apply only"),
+        (["orig.mgz"], {"surface_color_mode": "curvature"}, "surface_color_mode applies only"),
+    ],
+)
+def test_gui_set_layer_display_rejects_type_mismatches(runtime_case, layer_ids, updates, expected):
+    service, state = runtime_case
+
+    result = asyncio.run(
+        service.call_tool(
+            "gui_set_layer_display",
+            {"layer_ids": layer_ids, **updates},
+            gui_state_override=state,
+        )
+    )
+
+    assert expected in result
 
 
 def test_workspace_command_passes_runtime_metadata(monkeypatch, tmp_path):
@@ -469,13 +526,14 @@ def test_synchronous_runtime_task_threads_workspace_sync_metadata(monkeypatch, t
         ("freesurfer_lut", {"query": "17"}, "Left-Hippocampus"),
         ("case_file_tree", {}, "/case/"),
         ("read_stats", {"label_query": "Left-Hippocampus"}, "456.700"),
-        ("gui_run_fastsurfer", {"case_name": "case-a", "seg_only": True}, "Successfully triggered FastSurfer"),
-        ("gui_review_segmentation", {}, "REVIEW_SEGMENTATION"),
-        ("gui_load_volume", {"file_path": "/case/mri/orig.mgz"}, "LOAD_VOLUME"),
-        ("gui_close_volume", {"volume_id": "orig.mgz"}, "CLOSE_VOLUME"),
-        ("gui_select_volume", {"intensity_volume": "orig.mgz", "segmentation_volume": ""}, "SELECT_VOLUMES"),
-        ("gui_adjust_display", {"opacity": 0.5}, "ADJUST_DISPLAY"),
-        ("gui_move_cursor", {"x": 1, "y": 2, "z": 3}, "MOVE_CURSOR"),
+        ("gui_run_fastsurfer", {"case_name": "case-a", "seg_only": True}, "Queued GUI command"),
+        ("gui_list_layers", {}, '"type": "surface"'),
+        ("gui_load_layer", {"file_path": "/case/mri/orig.mgz"}, "load intensity layer"),
+        ("gui_remove_layer", {"layer_ids": ["orig.mgz"]}, "remove"),
+        ("gui_set_layer_visibility", {"changes": [{"layer_id": "lh.pial", "visible": True}]}, "visibility"),
+        ("gui_set_layer_display", {"layer_ids": ["lh.pial"], "opacity": 0.5}, "update"),
+        ("gui_apply_view_preset", {"preset": "pial_surfaces"}, "pial_surfaces"),
+        ("gui_move_cursor", {"x": 1, "y": 2, "z": 3}, "move the cursor"),
         ("gui_focus_label", {"label_query": "Left-Hippocampus"}, "Failed to focus label"),
     ],
 )
@@ -491,16 +549,44 @@ def test_gui_tool_override_mutations_are_visible_to_sync(runtime_case):
 
     result = asyncio.run(
         service.call_tool(
-            "gui_close_volume",
-            {"volume_id": "orig.mgz"},
+            "gui_set_layer_visibility",
+            {"changes": [{"layer_id": "lh.pial", "visible": True}]},
             gui_state_override={**state, "current_cursor": {"voxel": [1, 2, 3]}},
             gui_state_key=state_key,
         )
     )
     response = asyncio.run(service.sync_gui_state(state, gui_state_key=state_key))
 
-    assert "CLOSE_VOLUME" in result
-    assert response["requested_close_volumes"] == [{"volume_id": "orig.mgz"}]
+    assert "visibility" in result
+    assert response["commands"][0]["type"] == "set_layer_visibility"
+    command_id = response["commands"][0]["id"]
+    acknowledged = asyncio.run(
+        service.sync_gui_state(
+            {**state, "acknowledged_command_ids": [command_id]},
+            gui_state_key=state_key,
+        )
+    )
+    assert acknowledged["commands"] == []
+
+
+def test_gui_surface_preset_enqueues_a_frontend_command(runtime_case):
+    service, state = runtime_case
+    state_key = "gui-review-regression"
+
+    result = asyncio.run(
+        service.call_tool(
+            "gui_apply_view_preset",
+            {"preset": "pial_surfaces"},
+            gui_state_override=state,
+            gui_state_key=state_key,
+        )
+    )
+    response = asyncio.run(service.sync_gui_state(state, gui_state_key=state_key))
+    assert "pial_surfaces" in result
+    assert response["commands"][0]["payload"]["changes"] == [
+        {"layer_id": "orig.mgz", "visible": True},
+        {"layer_id": "lh.pial", "visible": True},
+    ]
 
 
 def test_freesurfer_lut_filters_results_to_labels_present_in_volume(runtime_case):

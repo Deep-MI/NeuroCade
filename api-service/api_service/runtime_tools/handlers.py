@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path, PurePosixPath
@@ -9,6 +10,7 @@ from typing import Any, cast
 
 from dotenv import load_dotenv
 
+from api_service.runtime.gui_state import enqueue_gui_command
 from backend_common.settings import ROOT_DIR, get_settings
 
 from .case_resolver import (
@@ -42,19 +44,37 @@ ALLOWED_VIEWER_SUFFIXES = (
     ".dicom",
     ".lut.txt",
 )
+SURFACE_ROLES = {"pial", "white", "inflated", "sphere", "smoothwm", "orig"}
 
 
-def _loaded_volume_names(gui_state: dict) -> list[str]:
-    """Return loaded viewer volume display names from GUI state."""
-    values = gui_state.get("loaded_volume_names") or gui_state.get("loaded_volumes") or []
+def _layers(gui_state: dict) -> list[dict[str, Any]]:
+    """Return the typed frontend layer snapshot."""
+    values = gui_state.get("layers") or []
     if not isinstance(values, list):
         return []
-    return [str(value) for value in values if isinstance(value, str) and value]
+    return [value for value in values if isinstance(value, dict)]
 
 
-def _missing_loaded_volume_error(action: str) -> list[ToolTextContent]:
-    """Return a standard error for viewer actions that require a loaded volume."""
-    return error_response(f"{action} requires at least one loaded volume in the GUI. Load a volume first with gui_load_volume.")
+def _layer_id(layer: dict[str, Any]) -> str:
+    return str(layer.get("id") or layer.get("filename") or "")
+
+
+def _find_layer(gui_state: dict, requested_id: str) -> dict[str, Any] | None:
+    return next(
+        (
+            layer
+            for layer in _layers(gui_state)
+            if requested_id in {_layer_id(layer), str(layer.get("filename") or "")}
+        ),
+        None,
+    )
+
+
+def _missing_layer_error(action: str) -> list[ToolTextContent]:
+    return error_response(
+        f"{action} requires a loaded layer. Inspect the current state with gui_list_layers "
+        "or load one with gui_load_layer."
+    )
 
 
 def handle_case_file_tree(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
@@ -220,8 +240,15 @@ def handle_lut_lookup(arguments: dict, gui_state: dict | None = None) -> list[To
     return text_response(header + "\n" + "\n".join(results))
 
 
-def handle_gui_load_volume(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
-    """Request the frontend to load (or reload) a volume in the viewer."""
+def _surface_parts(filename: str) -> tuple[str, str] | None:
+    parts = filename.split(".")
+    if len(parts) == 2 and parts[0] in {"lh", "rh"} and parts[1] in SURFACE_ROLES:
+        return parts[0], parts[1]
+    return None
+
+
+def handle_gui_load_layer(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
+    """Queue loading of a typed volume or FreeSurfer surface layer."""
     file_path = str(arguments.get("file_path", "")).strip()
     name = arguments.get("name", "")
     visible = arguments.get("visible")
@@ -229,34 +256,33 @@ def handle_gui_load_volume(arguments: dict, gui_state: dict) -> list[ToolTextCon
     if not file_path:
         return error_response("file_path is required.")
 
-    if file_path.startswith("/") and not file_path.startswith(f"{CONTAINER_CASE_ROOT}/"):
-        return error_response("gui_load_volume accepts /case paths or output-root-relative paths only.")
-
-    if not _is_supported_viewer_path(file_path):
-        return error_response(
-            "gui_load_volume only supports viewer-compatible files "
-            f"({', '.join(ALLOWED_VIEWER_SUFFIXES)}), not '{os.path.basename(file_path)}'."
-        )
-
-    # Determine resource path based on path prefix
-    if file_path.startswith(f"{CONTAINER_CASE_ROOT}/"):
-        current_case_path = _current_case_relative_output_path(gui_state)
-        if not current_case_path:
-            return error_response("/case paths require an active case in the GUI state.")
-        relative_case_path = file_path[len(f"{CONTAINER_CASE_ROOT}/") :]
-        file_path = f"{current_case_path}/{relative_case_path}"
-        descriptor_path = output_descriptor_path_from_file(file_path)
-    else:
-        descriptor_path = output_descriptor_path_from_file(file_path)
-
-    # Validate the file exists on disk before telling the frontend to load it
-    disk_path = os.path.join(LOCAL_OUTPUT_ROOT, file_path) if descriptor_path.startswith("outputs/") else None
-    if disk_path and not os.path.isfile(disk_path):
-        return error_response(
-            f"file not found on disk: {file_path}. Check the exact filename with the available_layers tool or case artifacts endpoint."
-        )
+    if not file_path.startswith(f"{CONTAINER_CASE_ROOT}/"):
+        return error_response("gui_load_layer accepts active-case /case/... paths only.")
 
     filename = os.path.basename(file_path)
+    surface_parts = _surface_parts(filename)
+    if not _is_supported_viewer_path(file_path) and surface_parts is None:
+        return error_response(
+            "gui_load_layer supports MRI volumes and FreeSurfer surface meshes, "
+            f"not '{filename}'."
+        )
+
+    current_case_path = _current_case_relative_output_path(gui_state)
+    if not current_case_path:
+        return error_response("/case paths require an active case in the GUI state.")
+    relative_path = PurePosixPath(file_path.removeprefix(f"{CONTAINER_CASE_ROOT}/"))
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        return error_response("file_path must stay inside the active /case directory.")
+    file_path = f"{current_case_path}/{'/'.join(relative_path.parts)}"
+    descriptor_path = output_descriptor_path_from_file(file_path)
+
+    # Validate the file exists on disk before telling the frontend to load it
+    disk_path = os.path.join(LOCAL_OUTPUT_ROOT, file_path)
+    if not os.path.isfile(disk_path):
+        return error_response(
+            f"file not found on disk: {file_path}. Check the exact filename with case_file_tree."
+        )
+
     display_name = name or filename.replace(".mgz", "").replace(".nii.gz", "")
 
     # Classify type heuristically
@@ -269,19 +295,40 @@ def handle_gui_load_volume(arguments: dict, gui_state: dict) -> list[ToolTextCon
     )
     lut_type = "binary" if is_binary_mask else ("freesurfer" if is_seg else None)
 
-    load_cmd: dict = {
+    layer_type = "surface" if surface_parts else ("segmentation" if is_seg else "intensity")
+    load_cmd: dict[str, Any] = {
         "resource": output_resource_descriptor(descriptor_path),
         "filename": filename,
         "name": display_name,
-        "type": "segmentation" if is_seg else "intensity",
+        "type": layer_type,
     }
     if lut_type:
         load_cmd["lut"] = lut_type
     if isinstance(visible, bool):
         load_cmd["visible"] = visible
 
-    gui_state["requested_load_volume"] = load_cmd
-    return text_response(f"Successfully requested frontend to LOAD_VOLUME: {display_name} ({descriptor_path}).")
+    if surface_parts:
+        hemisphere, role = surface_parts
+        load_cmd["hemisphere"] = "left" if hemisphere == "lh" else "right"
+        load_cmd["role"] = role
+        case_prefix = str(PurePosixPath(file_path).parent.parent)
+        curvature_path = f"{case_prefix}/surf/{hemisphere}.curv"
+        annotation_path = f"{case_prefix}/label/{hemisphere}.aparc.DKTatlas.mapped.annot"
+        for resource_key, companion_path in (
+            ("curvature_resource", curvature_path),
+            ("annotation_resource", annotation_path),
+        ):
+            companion_disk_path = os.path.join(LOCAL_OUTPUT_ROOT, companion_path)
+            if os.path.isfile(companion_disk_path):
+                load_cmd[resource_key] = output_resource_descriptor(
+                    output_descriptor_path_from_file(companion_path)
+                )
+
+    command_id = enqueue_gui_command(gui_state, "load_layer", load_cmd)
+    return text_response(
+        f"Queued GUI command {command_id} to load {layer_type} layer "
+        f"'{display_name}' ({descriptor_path})."
+    )
 
 
 def _requested_focus_label_segmentation(arguments: dict) -> str | None:
@@ -457,56 +504,216 @@ def _is_supported_viewer_path(file_path: str) -> bool:
     return lowered.endswith(ALLOWED_VIEWER_SUFFIXES)
 
 
-def handle_gui_close_volume(
-    arguments: dict, gui_state: dict
-) -> list[ToolTextContent]:
-    """Request the frontend to remove a volume from the viewer."""
-    loaded_volumes = _loaded_volume_names(gui_state)
-    if not loaded_volumes:
-        return _missing_loaded_volume_error("gui_close_volume")
-    volume_id = arguments.get("volume_id", "")
-    if not volume_id:
-        return error_response("volume_id is required.")
-    if str(volume_id) not in loaded_volumes:
-        return error_response(
-            f"volume_id '{volume_id}' is not currently loaded. Loaded volumes: "
-            + ", ".join(loaded_volumes)
-        )
-
-    close_requests = gui_state.setdefault("requested_close_volumes", [])
-    if not isinstance(close_requests, list):
-        close_requests = [close_requests]
-        gui_state["requested_close_volumes"] = close_requests
-    close_requests.append({"volume_id": volume_id})
-    return text_response(f"Successfully requested frontend to CLOSE_VOLUME: {volume_id}.")
+def handle_gui_list_layers(_arguments: dict, gui_state: dict) -> list[ToolTextContent]:
+    """Return the typed viewer-layer snapshot."""
+    layers = _layers(gui_state)
+    if not layers:
+        return text_response("No layers are currently loaded in the viewer.")
+    rows = [
+        {
+            "id": _layer_id(layer),
+            "filename": layer.get("filename"),
+            "type": layer.get("type"),
+            "role": layer.get("role"),
+            "hemisphere": layer.get("hemisphere"),
+            "visible": bool(layer.get("visible")),
+            "opacity": layer.get("opacity"),
+            "display": layer.get("display") or {},
+        }
+        for layer in layers
+    ]
+    return text_response(json.dumps(rows, ensure_ascii=True))
 
 
-def handle_gui_select_volume(
-    arguments: dict, gui_state: dict
-) -> list[ToolTextContent]:
-    """Request the frontend to change which intensity/segmentation volumes are visible."""
-    loaded_volumes = _loaded_volume_names(gui_state)
-    if not loaded_volumes:
-        return _missing_loaded_volume_error("gui_select_volume")
-    intensity = arguments.get("intensity_volume", "")
-    segmentation = arguments.get("segmentation_volume", "")
-    requested = [str(value) for value in (intensity, segmentation) if value]
-    missing = [value for value in requested if value not in loaded_volumes]
+def handle_gui_remove_layer(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
+    """Queue removal of one or more loaded layers."""
+    layer_ids = [str(value) for value in arguments.get("layer_ids", []) if value]
+    if not layer_ids:
+        return error_response("layer_ids must contain at least one layer identifier.")
+    missing = [layer_id for layer_id in layer_ids if _find_layer(gui_state, layer_id) is None]
     if missing:
+        return error_response("Layer(s) are not loaded: " + ", ".join(missing))
+    command_id = enqueue_gui_command(gui_state, "remove_layers", {"layer_ids": layer_ids})
+    return text_response(f"Queued GUI command {command_id} to remove: {', '.join(layer_ids)}.")
+
+
+def handle_gui_set_layer_visibility(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
+    """Queue atomic visibility changes across any layer type."""
+    changes = arguments.get("changes")
+    if not isinstance(changes, list) or not changes:
+        return error_response("changes must contain at least one layer visibility update.")
+    normalized: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        requested_id = str(change.get("layer_id") or "")
+        layer = _find_layer(gui_state, requested_id)
+        if layer is None:
+            missing.append(requested_id)
+            continue
+        normalized.append({"layer_id": _layer_id(layer), "visible": bool(change.get("visible"))})
+    if missing:
+        return error_response("Layer(s) are not loaded: " + ", ".join(missing))
+    if not normalized:
+        return error_response("No valid layer visibility changes were provided.")
+    command_id = enqueue_gui_command(
+        gui_state,
+        "set_layer_visibility",
+        {"changes": normalized},
+    )
+    return text_response(
+        f"Queued GUI command {command_id} with {len(normalized)} layer visibility change(s)."
+    )
+
+
+def handle_gui_set_layer_display(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
+    """Queue targeted display changes for volumes or surfaces."""
+    layer_ids = [str(value) for value in arguments.get("layer_ids", []) if value]
+    if not layer_ids:
+        return error_response("layer_ids must contain at least one layer identifier.")
+    missing = [layer_id for layer_id in layer_ids if _find_layer(gui_state, layer_id) is None]
+    if missing:
+        return error_response("Layer(s) are not loaded: " + ", ".join(missing))
+    target_layers = [
+        layer
+        for layer_id in layer_ids
+        if (layer := _find_layer(gui_state, layer_id)) is not None
+    ]
+    has_surface = any(layer.get("type") == "surface" for layer in target_layers)
+    has_volume = any(layer.get("type") != "surface" for layer in target_layers)
+    if has_surface and ("brightness" in arguments or "contrast" in arguments):
+        return error_response("brightness and contrast apply only to intensity or segmentation layers.")
+    if has_volume and "surface_color_mode" in arguments:
+        return error_response("surface_color_mode applies only to surface layers.")
+
+    updates: dict[str, Any] = {}
+    if "opacity" in arguments:
+        updates["opacity"] = max(0.0, min(1.0, float(arguments["opacity"])))
+    if "brightness" in arguments:
+        updates["brightness"] = max(-100.0, min(100.0, float(arguments["brightness"])))
+    if "contrast" in arguments:
+        updates["contrast"] = max(0.0, min(3.0, float(arguments["contrast"])))
+    if "surface_color_mode" in arguments:
+        mode = str(arguments["surface_color_mode"])
+        if mode not in {"solid", "curvature", "annotation"}:
+            return error_response("surface_color_mode must be solid, curvature, or annotation.")
+        updates["surface_color_mode"] = mode
+    if not updates:
         return error_response(
-            "requested volume(s) are not currently loaded: "
-            + ", ".join(missing)
-            + ". Loaded volumes: "
-            + ", ".join(loaded_volumes)
+            "Provide opacity, brightness, contrast, or surface_color_mode."
         )
 
-    gui_state["requested_select_volumes"] = {
-        "intensity_volume": intensity,
-        "segmentation_volume": segmentation,
-    }
+    command_id = enqueue_gui_command(
+        gui_state,
+        "set_layer_display",
+        {"layer_ids": layer_ids, "updates": updates},
+    )
+    return text_response(
+        f"Queued GUI command {command_id} to update {', '.join(layer_ids)}."
+    )
 
-    desc = f"intensity={intensity if intensity else 'none'}, segmentation={segmentation if segmentation else 'none'}"
-    return text_response(f"Successfully requested frontend to SELECT_VOLUMES: {desc}.")
+
+def _preset_visibility_changes(gui_state: dict, preset: str) -> list[dict[str, Any]]:
+    layers = _layers(gui_state)
+    intensity_layers = [layer for layer in layers if layer.get("type") == "intensity"]
+    current_intensity = str(gui_state.get("current_intensity_volume") or "").lower()
+    selected_intensity = next(
+        (
+            layer
+            for layer in intensity_layers
+            if str(layer.get("filename") or "").lower() == current_intensity
+        ),
+        intensity_layers[0] if intensity_layers else None,
+    )
+    segmentation_layers = [layer for layer in layers if layer.get("type") == "segmentation"]
+    selected_segmentation = next(
+        (
+            layer
+            for preferred in (
+                "aparc.dktatlas+aseg.deep.mgz",
+                "aparc.dktatlas+aseg.mgz",
+            )
+            for layer in segmentation_layers
+            if str(layer.get("filename") or "").lower().endswith(preferred)
+        ),
+        next(
+            (
+                layer
+                for layer in segmentation_layers
+                if "aparc" in str(layer.get("filename") or "").lower()
+                and "aseg" in str(layer.get("filename") or "").lower()
+            ),
+            None,
+        ),
+    )
+    changes: list[dict[str, Any]] = []
+    for layer in layers:
+        layer_type = str(layer.get("type") or "intensity")
+        role = str(layer.get("role") or "")
+        desired: bool | None = None
+        if preset == "intensity_only" or layer_type == "intensity":
+            desired = layer is selected_intensity
+        elif layer_type == "segmentation":
+            desired = preset in {
+                "whole_brain_segmentation",
+                "segmentation_with_pial_surfaces",
+                "segmentation_with_surfaces",
+            } and layer is selected_segmentation
+        elif layer_type == "surface":
+            if preset in {"pial_surfaces", "segmentation_with_pial_surfaces"}:
+                desired = role == "pial"
+            elif preset == "white_surfaces":
+                desired = role == "white"
+            elif preset in {"cortical_surfaces", "segmentation_with_surfaces"}:
+                desired = role in {"pial", "white"}
+        if desired is not None:
+            changes.append({"layer_id": _layer_id(layer), "visible": desired})
+    return changes
+
+
+def handle_gui_apply_view_preset(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
+    """Resolve a semantic viewer preset into one atomic visibility command."""
+    preset = str(arguments.get("preset") or "")
+    supported = {
+        "intensity_only",
+        "whole_brain_segmentation",
+        "pial_surfaces",
+        "white_surfaces",
+        "cortical_surfaces",
+        "segmentation_with_pial_surfaces",
+        "segmentation_with_surfaces",
+    }
+    if preset not in supported:
+        return error_response("Unsupported preset. Choose one of: " + ", ".join(sorted(supported)))
+    changes = _preset_visibility_changes(gui_state, preset)
+    target_matches = {
+        "intensity_only": lambda layer: layer.get("type") == "intensity",
+        "whole_brain_segmentation": lambda layer: layer.get("type") == "segmentation",
+        "pial_surfaces": lambda layer: layer.get("type") == "surface" and layer.get("role") == "pial",
+        "white_surfaces": lambda layer: layer.get("type") == "surface" and layer.get("role") == "white",
+        "cortical_surfaces": lambda layer: layer.get("type") == "surface" and layer.get("role") in {"pial", "white"},
+        "segmentation_with_pial_surfaces": lambda layer: (
+            layer.get("type") == "segmentation"
+            or (layer.get("type") == "surface" and layer.get("role") == "pial")
+        ),
+        "segmentation_with_surfaces": lambda layer: (
+            layer.get("type") == "segmentation"
+            or (layer.get("type") == "surface" and layer.get("role") in {"pial", "white"})
+        ),
+    }
+    has_target = any(target_matches[preset](layer) for layer in _layers(gui_state))
+    if not changes or not has_target:
+        return error_response(f"Preset '{preset}' has no matching loaded layers.")
+    command_id = enqueue_gui_command(
+        gui_state,
+        "set_layer_visibility",
+        {"changes": changes, "preset": preset},
+    )
+    return text_response(
+        f"Queued GUI command {command_id} to apply view preset '{preset}' "
+        f"across {len(changes)} layer(s)."
+    )
 
 
 def handle_gui_run_fastsurfer(
@@ -548,36 +755,19 @@ def handle_gui_run_fastsurfer(
         run_request["input_artifact_id"] = input_artifact_id
     if input_volume_name:
         run_request["input_volume"] = input_volume_name
-    gui_state["requested_run_fastsurfer"] = run_request
+    command_id = enqueue_gui_command(gui_state, "run_fastsurfer", run_request)
     if input_artifact_id:
         gui_state["is_job_running"] = True
 
     display_name = case_name if case_name else current_case_id
     if not input_artifact_id:
         return text_response(
-            f"Successfully requested FastSurfer run for case '{display_name}'. The frontend will ask the user to choose an input volume before starting the analysis pipeline."
+            f"Queued GUI command {command_id} for FastSurfer case '{display_name}'. "
+            "The frontend will ask the user to choose an input layer."
         )
     return text_response(
-        f"Successfully triggered FastSurfer run for case '{display_name}'. The frontend will start the analysis pipeline and the user can monitor progress in the terminal panel."
+        f"Queued GUI command {command_id} to run FastSurfer for case '{display_name}'."
     )
-
-
-def handle_gui_review_segmentation(gui_state: dict) -> list[ToolTextContent]:
-    """Request segmentation review after confirming a valid segmentation is loaded.
-
-    Parameters
-    ----------
-    gui_state : dict
-        Current GUI state containing segmentation validity.
-
-    Returns
-    -------
-    list[ToolTextContent]
-        Success or validation error message for the runtime tool call.
-    """
-    if not gui_state.get("has_valid_segmentation"):
-        return error_response("No valid segmentation loaded in the GUI.")
-    return text_response("Successfully triggered frontend event: REVIEW_SEGMENTATION.")
 
 
 def handle_gui_move_cursor(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
@@ -595,44 +785,19 @@ def handle_gui_move_cursor(arguments: dict, gui_state: dict) -> list[ToolTextCon
     list[ToolTextContent]
         Confirmation message for the cursor move request.
     """
-    if not _loaded_volume_names(gui_state):
-        return _missing_loaded_volume_error("gui_move_cursor")
+    if not _layers(gui_state):
+        return _missing_layer_error("gui_move_cursor")
     x = arguments.get("x")
     y = arguments.get("y")
     z = arguments.get("z")
-    gui_state["requested_cursor_position"] = [x, y, z]
-    return text_response(f"Successfully requested frontend to MOVE_CURSOR to ({x}, {y}, {z}).")
-
-
-def handle_gui_adjust_display(
-    arguments: dict, gui_state: dict
-) -> list[ToolTextContent]:
-    """Request the frontend to adjust viewer display settings (opacity, brightness, contrast)."""
-    if not _loaded_volume_names(gui_state):
-        return _missing_loaded_volume_error("gui_adjust_display")
-    payload: dict = {}
-    parts: list[str] = []
-
-    if "opacity" in arguments:
-        val = max(0.0, min(1.0, float(arguments["opacity"])))
-        payload["opacity"] = val
-        parts.append(f"opacity={val}")
-
-    if "brightness" in arguments:
-        val = max(-100.0, min(100.0, float(arguments["brightness"])))
-        payload["brightness"] = val
-        parts.append(f"brightness={val}")
-
-    if "contrast" in arguments:
-        val = max(0.0, min(3.0, float(arguments["contrast"])))
-        payload["contrast"] = val
-        parts.append(f"contrast={val}")
-
-    if not payload:
-        return error_response("at least one of opacity, brightness, or contrast is required.")
-
-    gui_state["requested_adjust_display"] = payload
-    return text_response(f"Successfully requested frontend to ADJUST_DISPLAY: {', '.join(parts)}.")
+    command_id = enqueue_gui_command(
+        gui_state,
+        "move_cursor",
+        {"position": [x, y, z]},
+    )
+    return text_response(
+        f"Queued GUI command {command_id} to move the cursor to ({x}, {y}, {z})."
+    )
 
 
 def handle_gui_focus_label(arguments: dict, gui_state: dict) -> list[ToolTextContent]:
@@ -680,10 +845,15 @@ def handle_gui_focus_label(arguments: dict, gui_state: dict) -> list[ToolTextCon
             return text_response(f"Failed to focus label: {data['error']}")
 
         x, y, z = data["x"], data["y"], data["z"]
-        gui_state["requested_cursor_position"] = [x, y, z]
+        command_id = enqueue_gui_command(
+            gui_state,
+            "move_cursor",
+            {"position": [x, y, z]},
+        )
 
         return text_response(
-            f"Successfully found centroid for {data['label_name']} ({data['label_id']}) and requested frontend to MOVE_CURSOR to ({x}, {y}, {z})."
+            f"Found centroid for {data['label_name']} ({data['label_id']}) and queued "
+            f"GUI command {command_id} to move the cursor to ({x}, {y}, {z})."
         )
     except Exception as e:
         return error_response(f"An unexpected error occurred during label focus: {str(e)}")

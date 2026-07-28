@@ -56,7 +56,8 @@ APP_HTTP_BIND=127.0.0.1
 APP_HTTP_PORT=8000
 NEUROCADE_IMAGE=ghcr.io/deep-mi/neurocade:latest
 HOST_DATA_DIR=/path/to/NeuroCade/neurocade-data
-DATABASE_URL=sqlite+pysqlite:////path/to/NeuroCade/neurocade-data/neurocade.db
+NEUROCADE_DB_DIR=/path/on/local-disk/neurocade-db
+DATABASE_URL=sqlite+pysqlite:////path/on/local-disk/neurocade-db/neurocade.db
 NEUROCADE_RUNTIME_BACKEND=apptainer
 ```
 
@@ -69,7 +70,10 @@ reproducible deployment.
 ```
 
 `DATABASE_URL` is the host-side path used by local/admin tooling. The launcher
-maps the same SQLite database to `/data/neurocade.db` inside Docker.
+mounts `NEUROCADE_DB_DIR` separately at `/database` and uses
+`/database/neurocade.db` inside Docker. Keep this directory on a local
+filesystem; SQLite WAL is not suitable for NFS or other network filesystems.
+Large imaging inputs and outputs can remain under `HOST_DATA_DIR`.
 
 ## Apple Silicon
 

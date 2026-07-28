@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from langchain_core.messages import BaseMessage
+from sqlalchemy.orm import Session
 
 from api_service.assistant.prompts import build_structured_response_messages, build_system_prompt, stringify_content
 from api_service.assistant.structured_response import AssistantStructuredResponse, AssistantToolCall, coerce_structured_response
@@ -49,16 +50,26 @@ class AssistantLoop:
         """
         current_state: AssistantState = dict(state)
         current_state.update(await self._bootstrap(current_state))
+        self._finish_db_transaction(current_state)
 
         while True:
             if self._done(current_state):
                 return current_state
             if current_state.get("pending_tool_calls"):
                 current_state.update(await self._execute_tools(current_state))
+                self._finish_db_transaction(current_state)
                 continue
+            self._finish_db_transaction(current_state)
             current_state.update(await self._model_turn(current_state))
             if self._done(current_state) or not current_state.get("pending_tool_calls"):
                 return current_state
+
+    @staticmethod
+    def _finish_db_transaction(state: AssistantState) -> None:
+        """Commit short DB work before the loop awaits external model/tool work."""
+        db = state.get("db")
+        if isinstance(db, Session) and db.in_transaction():
+            db.commit()
 
     async def _bootstrap(self, state: AssistantState) -> dict[str, Any]:
         """Load tools, GUI context, and workspace summaries before round one."""
@@ -249,6 +260,9 @@ class AssistantLoop:
                 logger.warning("assistant.tool_call.cancelled request_id=%s round=%s tool=%s elapsed_ms=%s", request_id, state.get("round_count"), tool.name, elapsed_ms)
                 raise
             except Exception as exc:
+                db = state.get("db")
+                if isinstance(db, Session) and db.in_transaction():
+                    db.rollback()
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
                 tool_result = self._tool_exception_result(exc)
                 if isinstance(exc, HTTPException):

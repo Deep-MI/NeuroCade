@@ -1,6 +1,6 @@
 import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
+import { createBrowserRouter, Navigate, RouterProvider } from 'react-router'
 import './index.css'
 import { AppSessionProvider, RequireAuth } from './auth/AppSession.tsx'
 import { FrontendConfigProvider } from './auth/FrontendConfigProvider.tsx'

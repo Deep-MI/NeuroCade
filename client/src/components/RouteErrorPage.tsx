@@ -1,4 +1,4 @@
-import { isRouteErrorResponse, Link, useLocation, useRouteError } from 'react-router-dom';
+import { isRouteErrorResponse, Link, useLocation, useRouteError } from 'react-router';
 import { useEffect } from 'react';
 
 import { reportFrontendError } from '../utils/monitoring';

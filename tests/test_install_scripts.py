@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pty
 import shutil
 import subprocess
 from pathlib import Path
@@ -39,6 +40,7 @@ def _launcher_env(env_file: Path, bin_dir: Path, log_file: Path, **overrides: st
     env = os.environ.copy()
     for key in (
         "HOST_DATA_DIR",
+        "NEUROCADE_DB_DIR",
         "NEUROCADE_IMAGE",
         "NEUROCADE_DOCKER_PLATFORM",
         "NEUROCADE_SAMPLE_CASE_URL",
@@ -103,6 +105,85 @@ def test_docker_launcher_replaces_compose() -> None:
     assert "APP_HTTP_PORT" in run_script
     assert "docker compose" not in run_script
     assert run_script.index("load_env_file") < run_script.index('CONTAINER_NAME="${NEUROCADE_CONTAINER_NAME:-neurocade}"')
+
+
+def test_docker_launcher_accepts_explicit_port(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+    (checkout / ".env").write_text("NEUROCADE_SKIP_SAMPLE_CASE=true\n", encoding="utf-8")
+
+    env = _launcher_env(checkout / ".env", bin_dir, log_file)
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "run.sh"), "start", "--port", "9123"],
+        check=True,
+        cwd=checkout,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "-p 127.0.0.1:9123:8000" in log_file.read_text(encoding="utf-8")
+    assert "Starting NeuroCade at http://127.0.0.1:9123" in result.stdout
+
+
+def test_docker_launcher_selects_next_available_port(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+    ss = bin_dir / "ss"
+    ss.write_text(
+        "#!/usr/bin/env bash\n"
+        '[[ "$*" == *":${FAKE_OCCUPIED_PORT}"* ]] && printf "LISTEN occupied\\n"\n',
+        encoding="utf-8",
+    )
+    ss.chmod(0o755)
+    (checkout / ".env").write_text("NEUROCADE_SKIP_SAMPLE_CASE=true\n", encoding="utf-8")
+
+    env = _launcher_env(
+        checkout / ".env",
+        bin_dir,
+        log_file,
+        FAKE_OCCUPIED_PORT="8000",
+    )
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "run.sh"), "start"],
+        check=True,
+        cwd=checkout,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "-p 127.0.0.1:8001:8000" in log_file.read_text(encoding="utf-8")
+    assert "Port 8000 is already in use; using port 8001 instead." in result.stdout
+
+
+def test_docker_launcher_rejects_invalid_port() -> None:
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "run.sh"), "start", "--port", "70000"],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "Invalid port: 70000" in result.stderr
 
 
 def test_build_image_is_independent_of_runtime_auth_env(tmp_path) -> None:
@@ -173,7 +254,15 @@ def test_install_no_start_writes_env_from_temp_checkout(tmp_path) -> None:
     shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
 
     env = os.environ.copy()
-    for key in ("APP_BASE_URL", "APP_HTTP_BIND", "APP_HTTP_PORT", "HOST_DATA_DIR"):
+    for key in (
+        "APP_BASE_URL",
+        "APP_HTTP_BIND",
+        "APP_HTTP_PORT",
+        "DATABASE_URL",
+        "HOST_DATA_DIR",
+        "NEUROCADE_DB_DIR",
+        "NEUROCADE_IMAGE",
+    ):
         env.pop(key, None)
     env.update(
         {
@@ -202,6 +291,7 @@ def test_install_no_start_writes_env_from_temp_checkout(tmp_path) -> None:
     assert "APP_BASE_URL=http://localhost:8000" in env_text
     assert "DATABASE_URL=sqlite+pysqlite:///" in env_text
     assert f"HOST_DATA_DIR={checkout / 'neurocade-data'}" in env_text
+    assert f"NEUROCADE_DB_DIR={checkout / 'neurocade-data'}" in env_text
     assert "LOCAL_AUTH_NAME=Local User" in env_text
     assert 'LOCAL_AUTH_NAME="Local User"' not in env_text
     assert "NEUROCADE_HOST_DATA_DIR" not in env_text
@@ -210,6 +300,68 @@ def test_install_no_start_writes_env_from_temp_checkout(tmp_path) -> None:
     assert "NEUROCADE_DOCKER_PLATFORM=" in env_text
     assert "LLM_BACKEND_URL=https://llm.example.test" in env_text
     assert "LLM_BACKEND_MODEL=model-from-env" in env_text
+
+
+def test_install_hides_existing_secret_in_interactive_prompt(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+
+    existing_key = "existing-secret-api-key"
+    (checkout / ".env").write_text(
+        "\n".join(
+            [
+                "LLM_BACKEND_URL=https://llm.example.test",
+                f"LLM_BACKEND_API_KEY={existing_key}",
+                "LLM_BACKEND_MODEL=model-from-env",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        process = subprocess.Popen(
+            [
+                "bash",
+                str(scripts_dir / "install.sh"),
+                "--mode",
+                "local",
+                "--llm-provider",
+                "openai-compatible",
+                "--no-start",
+            ],
+            cwd=checkout,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        os.write(master_fd, b"\n" * 8)
+        assert process.wait(timeout=10) == 0
+
+        output_chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = os.read(master_fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output_chunks.append(chunk)
+        output = b"".join(output_chunks).decode(errors="replace")
+    finally:
+        os.close(master_fd)
+        if slave_fd >= 0:
+            os.close(slave_fd)
+
+    assert "OpenAI-compatible API key (optional) [**existing key**]:" in output
+    assert existing_key not in output
+    assert f"LLM_BACKEND_API_KEY={existing_key}" in (checkout / ".env").read_text(encoding="utf-8")
 
 
 def test_install_can_pin_an_exact_published_image(tmp_path) -> None:
@@ -330,12 +482,54 @@ def test_install_defaults_apple_silicon_to_amd64_emulation(tmp_path) -> None:
 def test_container_launcher_uses_mounted_sqlite_database() -> None:
     run_script = (REPO_ROOT / "scripts" / "run.sh").read_text(encoding="utf-8")
 
-    assert "sqlite+pysqlite:////data/neurocade.db" in run_script
+    assert "sqlite+pysqlite:////database/neurocade.db" in run_script
+    assert 'NEUROCADE_DB_DIR="${NEUROCADE_DB_DIR:-$HOST_DATA_DIR}"' in run_script
+    assert '"${NEUROCADE_DB_DIR}:/database"' in run_script
     assert "-e HOST_DATA_DIR=/data" in run_script
     assert "NEUROCADE_CONTAINER_DATABASE_URL" not in run_script
     assert "NEUROCADE_SAMPLE_CASE_URL" in run_script
     assert "NEUROCADE_SAMPLE_CASE_SHA256" in run_script
     assert "NEUROCADE_SKIP_SAMPLE_CASE" in run_script
+
+
+def test_docker_launcher_mounts_configured_database_directory(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+
+    host_data_dir = tmp_path / "data"
+    db_dir = tmp_path / "database"
+    env_file = checkout / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"HOST_DATA_DIR={host_data_dir}",
+                f"NEUROCADE_DB_DIR={db_dir}",
+                "NEUROCADE_IMAGE=neurocade:test",
+                "NEUROCADE_SKIP_SAMPLE_CASE=true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+
+    subprocess.run(
+        ["bash", str(scripts_dir / "run.sh"), "start"],
+        check=True,
+        cwd=checkout,
+        env=_launcher_env(env_file, bin_dir, log_file),
+    )
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert f"-v {host_data_dir}:/data" in log_text
+    assert f"-v {db_dir}:/database" in log_text
+    assert "-e DATABASE_URL=sqlite+pysqlite:////database/neurocade.db" in log_text
 
 
 def test_docker_launcher_downloads_missing_sample_case_with_app_image(tmp_path) -> None:
@@ -519,6 +713,7 @@ def test_env_example_documents_runtime_backend() -> None:
     assert "NEUROCADE_RUNTIME_BACKEND=" in env_example
     assert "NEUROCADE_IMAGE=ghcr.io/deep-mi/neurocade:latest" in env_example
     assert "NEUROCADE_DOCKER_PLATFORM=" in env_example
+    assert "NEUROCADE_DB_DIR=" in env_example
     removed_catalog_env = "NEUROCADE_" + "INSTALLED_TOOLS_JSONL"
     for term in (
         "RUNTIME_RUNNER_TOKEN=",

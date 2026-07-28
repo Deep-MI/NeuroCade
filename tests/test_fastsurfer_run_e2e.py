@@ -5,7 +5,7 @@ Flow:
   1. Seed GUI state for a real demo upload (idle, with uploaded file)
   2. Send "Run FastSurfer on the current case" via chat API
   3. Verify the agent calls gui_run_fastsurfer (from proxy logs)
-  4. Drain requested_run_fastsurfer from GUI state sync
+  4. Drain the typed run_fastsurfer command from GUI state sync
   5. Submit /run using that command (mimics the frontend handoff)
   6. Verify the job reaches a cancellable state
   7. POST /cancel/<demo-case>
@@ -76,9 +76,14 @@ class TestFastSurferRunCancel:
         result = seed_gui_state(
             {
                 "is_job_running": False,
-                "has_valid_segmentation": False,
                 "current_case_id": self.demo_run_case_id,
-                "loaded_volumes": [self.demo_run_upload_filename],
+                "layers": [{
+                    "id": "intensity:input",
+                    "filename": self.demo_run_upload_filename,
+                    "type": "intensity",
+                    "role": "intensity",
+                    "visible": True,
+                }],
                 "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
                 "current_intensity_volume": self.demo_run_upload_filename,
             },
@@ -114,16 +119,24 @@ class TestFastSurferRunCancel:
             {
                 "is_job_running": True,
                 "current_case_id": self.demo_run_case_id,
-                "loaded_volumes": [self.demo_run_upload_filename],
+                "layers": [{
+                    "id": "intensity:input",
+                    "filename": self.demo_run_upload_filename,
+                    "type": "intensity",
+                    "role": "intensity",
+                    "visible": True,
+                }],
                 "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
                 "current_intensity_volume": self.demo_run_upload_filename,
             },
             self.gateway_url,
         )
-        assert "requested_run_fastsurfer" in state_data, (
-            f"Expected requested_run_fastsurfer in GUI sync response, got: {state_data}"
-        )
-        run_cmd = state_data["requested_run_fastsurfer"]
+        commands = [
+            command for command in state_data.get("commands", [])
+            if command.get("type") == "run_fastsurfer"
+        ]
+        assert commands, f"Expected run_fastsurfer command in GUI sync response, got: {state_data}"
+        run_cmd = commands[0]["payload"]
 
         # Step 5: Submit the run explicitly to mimic the frontend handoff.
         run_r = requests.post(

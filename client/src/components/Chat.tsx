@@ -1,4 +1,5 @@
 import { Children, useCallback, useState, useRef, useEffect } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import type { LocationInfo, MriSnapshots } from '../types';
 import type {
@@ -11,6 +12,7 @@ import type {
     ReasoningEntry,
 } from '../types';
 import { appFetch, clearAssistantHistory, fetchAssistantHistory, fetchProviders, parseError, reportClientError } from '../utils/api';
+import { messagesVisibleToAssistant } from '../utils/chatContext';
 
 export type { ChatMessage };
 
@@ -255,6 +257,8 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     const historyRequestVersionRef = useRef(0);
     const suppressAbortMessageRef = useRef(false);
     const lastClearRequestTokenRef = useRef(clearRequestToken);
+    const externalMessagesRef = useRef(externalMessages);
+    externalMessagesRef.current = externalMessages;
 
     useEffect(() => {
         if (!workspaceId) {
@@ -270,10 +274,14 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     setMessages([
                         ...defaultMessages(scope),
                         ...history.messages,
+                        ...externalMessagesRef.current,
                     ]);
                     return;
                 }
-                setMessages(defaultMessages(scope));
+                setMessages([
+                    ...defaultMessages(scope),
+                    ...externalMessagesRef.current,
+                ]);
             })
             .catch((error) => {
                 if (cancelled || historyRequestVersionRef.current !== requestVersion) return;
@@ -402,7 +410,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    messages: [...messages.filter(m => m.role !== 'system' && m.role !== 'info' && m.role !== 'tool-calls'), userMsg],
+                    messages: [...messagesVisibleToAssistant(messages), userMsg],
                     workspace_id: workspaceId,
                     case_id: scope === 'case' ? caseId : null,
                     gui_session_id: guiSessionId,
@@ -588,8 +596,15 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                             msg.role === 'info' ? 'info' :
                                 msg.role === 'system' ? 'system' :
                                     msg.role === 'tool-calls' ? 'tool-calls' : 'assistant'
-                            }`}
+                            }${msg.severity === 'warning' ? ' chat-message-warning' : ''}`}
+                        role={msg.severity === 'warning' ? 'status' : undefined}
                     >
+                        {msg.severity === 'warning' && (
+                            <div className="chat-message-warning-label">
+                                <AlertTriangle size={14} aria-hidden="true" />
+                                <span>Warning</span>
+                            </div>
+                        )}
                         {msg.role === 'tool-calls' && msg.toolCalls ? (
                             <ToolCallsContent
                                 toolCalls={msg.toolCalls}

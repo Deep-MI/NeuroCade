@@ -17,7 +17,7 @@ interface UseWorkspaceVolumeStateArgs {
   setVolumes: Dispatch<SetStateAction<Volume[]>>;
 }
 
-interface LoadVolumeCommand {
+interface LoadLayerCommand {
   downloadPath: string;
   filename: string;
   name?: string;
@@ -38,7 +38,7 @@ export function useWorkspaceVolumeState({
   setVolumes,
 }: UseWorkspaceVolumeStateArgs) {
   const buildLoadedLayer = useCallback((
-    cmd: LoadVolumeCommand,
+    cmd: LoadLayerCommand,
     layerType: LoadableLayerType,
   ): Volume => {
     return createViewerLayer({
@@ -53,7 +53,7 @@ export function useWorkspaceVolumeState({
     });
   }, []);
 
-  const handleLoadVolumeCommand = useCallback((cmd: LoadVolumeCommand) => {
+  const handleLoadLayerCommand = useCallback((cmd: LoadLayerCommand) => {
     const layerType: LoadableLayerType = cmd.type === 'surface' || cmd.type === 'segmentation' || cmd.type === 'intensity'
       ? cmd.type
       : 'intensity';
@@ -77,54 +77,47 @@ export function useWorkspaceVolumeState({
     });
   }, [activeCaseId, buildLoadedLayer, initialCaseId, setVolumes, uploadCaseId]);
 
-  const handleCloseVolumeCommand = useCallback((cmd: { volume_id: string }) => {
+  const handleRemoveLayersCommand = useCallback((layerIds: string[]) => {
     const persistCaseId = activeCaseId ?? initialCaseId ?? uploadCaseId;
     if (persistCaseId) {
-      rememberClosedCaseVolume(persistCaseId, cmd.volume_id);
+      layerIds.forEach(layerId => rememberClosedCaseVolume(persistCaseId, layerId));
     }
-    setVolumes(prev => prev.filter(v => v.filename !== cmd.volume_id && v.id !== cmd.volume_id));
+    const removed = new Set(layerIds);
+    setVolumes(prev => prev.filter(v => !removed.has(v.filename) && !removed.has(v.id)));
   }, [activeCaseId, initialCaseId, setVolumes, uploadCaseId]);
 
-  const handleSelectVolumesCommand = useCallback((cmd: { intensity_volume: string; segmentation_volume: string }) => {
+  const handleSetLayerVisibilityCommand = useCallback((changes: { layer_id: string; visible: boolean }[]) => {
+    const visibilityById = new Map(changes.map(change => [change.layer_id, change.visible]));
     setVolumes(prev => prev.map(v => {
-      const vType = v.type ?? 'intensity';
-      if (vType === 'intensity') {
-        if (!cmd.intensity_volume) return { ...v, visible: false };
-        return (v.filename === cmd.intensity_volume || v.id === cmd.intensity_volume)
-          ? { ...v, visible: true }
-          : v;
-      }
-      if (vType === 'segmentation') {
-        if (!cmd.segmentation_volume) return { ...v, visible: false };
-        return (v.filename === cmd.segmentation_volume || v.id === cmd.segmentation_volume)
-          ? { ...v, visible: true }
-          : v;
-      }
-      return v;
+      const visible = visibilityById.get(v.id) ?? visibilityById.get(v.filename);
+      return visible === undefined ? v : { ...v, visible };
     }));
   }, [setVolumes]);
 
-  const handleAdjustDisplayCommand = useCallback((cmd: { opacity?: number; brightness?: number; contrast?: number }) => {
+  const handleSetLayerDisplayCommand = useCallback((
+    layerIds: string[],
+    updates: { opacity?: number; brightness?: number; contrast?: number; surface_color_mode?: 'solid' | 'curvature' | 'annotation' },
+  ) => {
+    const targets = new Set(layerIds);
     setVolumes(prev => prev.map(v => {
-      if (cmd.opacity !== undefined && v.type === 'segmentation') {
-        return { ...v, opacity: cmd.opacity };
-      }
-      if (v.type === 'surface' || v.type === 'segmentation') {
-        return v;
-      }
-      if (cmd.brightness !== undefined || cmd.contrast !== undefined) {
+      if (!targets.has(v.id) && !targets.has(v.filename)) return v;
+      const common = updates.opacity === undefined ? v : { ...v, opacity: updates.opacity };
+      if (common.type === 'surface') {
         return {
-          ...v,
-          brightness: cmd.brightness ?? v.brightness,
-          contrast: cmd.contrast ?? v.contrast,
+          ...common,
+          surfaceColorMode: updates.surface_color_mode ?? common.surfaceColorMode,
         };
       }
-      return v;
+      return {
+        ...common,
+        brightness: updates.brightness ?? common.brightness,
+        contrast: updates.contrast ?? common.contrast,
+      };
     }));
   }, [setVolumes]);
 
   const updateVolume = useCallback((id: string, updates: Partial<Volume>) => {
-    setVolumes(prev => prev.map(v => v.id === id ? { ...v, ...updates } as Volume : v));
+    setVolumes(prev => prev.map(v => v.id === id ? { ...v, ...updates } : v));
   }, [setVolumes]);
 
   const removeVolume = useCallback((id: string) => {
@@ -160,10 +153,10 @@ export function useWorkspaceVolumeState({
   }, [setVolumes]);
 
   return {
-    handleLoadVolumeCommand,
-    handleCloseVolumeCommand,
-    handleSelectVolumesCommand,
-    handleAdjustDisplayCommand,
+    handleLoadLayerCommand,
+    handleRemoveLayersCommand,
+    handleSetLayerVisibilityCommand,
+    handleSetLayerDisplayCommand,
     updateVolume,
     removeVolume,
     reorderVolume,

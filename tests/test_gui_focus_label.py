@@ -57,8 +57,7 @@ class TestGuiFocusLabel:
 
         take_screenshot(page, "focus_01_case_loaded", screenshot_dir)
 
-        # Wait for the volumes and segmentation to fully load
-        # (the state sync needs to report has_valid_segmentation=True)
+        # Wait for the typed intensity and segmentation layers to synchronize.
         time.sleep(5)
 
         # Step 3: Send chat message

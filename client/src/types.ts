@@ -154,23 +154,33 @@ export interface RunResult {
 }
 
 export interface GuiStateSyncResponse {
-  requested_cursor_position?: [number, number, number];
-  requested_load_volume?: {
-    download_path: string;
-    filename: string;
-    name: string;
-    type: string;
-    lut?: string;
-    custom_lut_download_path?: string;
-    curvature_download_path?: string;
-    annotation_download_path?: string;
-    visible?: boolean;
+  commands: GuiCommand[];
+}
+
+export interface GuiLayerState {
+  id: string;
+  artifact_id?: string;
+  filename: string;
+  name: string;
+  type: Exclude<LayerType, 'drawing'>;
+  role?: string;
+  hemisphere?: 'left' | 'right';
+  loaded: true;
+  visible: boolean;
+  opacity: number;
+  display: {
+    brightness?: number;
+    contrast?: number;
+    surface_color_mode?: SurfaceColorMode;
   };
-  requested_close_volume?: { volume_id: string };
-  requested_close_volumes?: { volume_id: string }[];
-  requested_select_volumes?: { intensity_volume: string; segmentation_volume: string };
-  requested_run_fastsurfer?: { case_id: string; input_artifact_id?: string; input_volume?: string; seg_only?: boolean; case_name?: string };
-  requested_adjust_display?: { opacity?: number; brightness?: number; contrast?: number };
+}
+
+export interface GuiCommand {
+  id: string;
+  type: 'load_layer' | 'remove_layers' | 'set_layer_visibility' | 'set_layer_display' | 'move_cursor' | 'run_fastsurfer';
+  payload: Record<string, unknown>;
+  created_at: string;
+  expires_at: string;
 }
 
 export interface ErrorResponse {
@@ -389,6 +399,7 @@ export interface ReasoningEntry {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'info' | 'tool-calls';
   content: string | ChatContentPart[];
+  severity?: 'warning';
   toolCalls?: ToolCallEntry[];
   reasoningEntries?: ReasoningEntry[];
 }

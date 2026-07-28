@@ -6,7 +6,7 @@ This test exercises the full backend round-trip without a browser:
   2. Seed GUI state with the case ID
   3. Send a chat message to run FastSurfer
   4. Verify the agent calls gui_run_fastsurfer
-  5. Verify requested_run_fastsurfer appears in the state sync response
+  5. Verify a run_fastsurfer command appears in the state sync response
   6. Submit the run via /run (simulating what the frontend does)
   7. Verify job status transitions
 
@@ -101,9 +101,14 @@ class TestAgentRunFastSurfer:
         """After seeding state with the selected input volume, the server stores it."""
         state = {
             "is_job_running": False,
-            "has_valid_segmentation": False,
             "current_case_id": self.demo_case["case_id"],
-            "loaded_volumes": [self.demo_case["upload_filename"]],
+            "layers": [{
+                "id": "intensity:input",
+                "filename": self.demo_case["upload_filename"],
+                "type": "intensity",
+                "role": "intensity",
+                "visible": True,
+            }],
             "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
             "current_intensity_volume": self.demo_case["upload_filename"],
         }
@@ -113,13 +118,18 @@ class TestAgentRunFastSurfer:
         assert current.get("current_intensity_volume") == self.demo_case["upload_filename"]
         assert current.get("current_case_id") == self.demo_case["case_id"]
 
-    def test_agent_chat_sets_requested_command(self):
-        """Authenticated chat should set requested_run_fastsurfer in the scoped GUI state."""
+    def test_agent_chat_sets_run_command(self):
+        """Authenticated chat should queue a typed run_fastsurfer command."""
         seed_gui_state({
             "is_job_running": False,
-            "has_valid_segmentation": False,
             "current_case_id": self.demo_case["case_id"],
-            "loaded_volumes": [self.demo_case["upload_filename"]],
+            "layers": [{
+                "id": "intensity:input",
+                "filename": self.demo_case["upload_filename"],
+                "type": "intensity",
+                "role": "intensity",
+                "visible": True,
+            }],
             "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
             "current_intensity_volume": self.demo_case["upload_filename"],
         }, self.gateway_url)
@@ -136,17 +146,24 @@ class TestAgentRunFastSurfer:
             {
                 "is_job_running": True,
                 "current_case_id": self.demo_case["case_id"],
-                "loaded_volumes": [self.demo_case["upload_filename"]],
+                "layers": [{
+                    "id": "intensity:input",
+                    "filename": self.demo_case["upload_filename"],
+                    "type": "intensity",
+                    "role": "intensity",
+                    "visible": True,
+                }],
                 "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
                 "current_intensity_volume": self.demo_case["upload_filename"],
             },
             self.gateway_url,
         )
-        assert "requested_run_fastsurfer" in state_data, (
-            f"Expected requested_run_fastsurfer in state sync response. "
-            f"Got: {state_data}"
-        )
-        cmd = state_data["requested_run_fastsurfer"]
+        commands = [
+            command for command in state_data.get("commands", [])
+            if command.get("type") == "run_fastsurfer"
+        ]
+        assert commands, f"Expected run_fastsurfer command in state sync response. Got: {state_data}"
+        cmd = commands[0]["payload"]
         assert cmd["case_id"] == self.demo_case["case_id"]
 
     def test_agent_chat_triggers_run(self):
@@ -154,9 +171,14 @@ class TestAgentRunFastSurfer:
         # Seed state: demo case uploaded, idle
         seed_gui_state({
             "is_job_running": False,
-            "has_valid_segmentation": False,
             "current_case_id": self.demo_case["case_id"],
-            "loaded_volumes": [self.demo_case["upload_filename"]],
+            "layers": [{
+                "id": "intensity:input",
+                "filename": self.demo_case["upload_filename"],
+                "type": "intensity",
+                "role": "intensity",
+                "visible": True,
+            }],
             "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
             "current_intensity_volume": self.demo_case["upload_filename"],
         }, self.gateway_url)
@@ -183,13 +205,19 @@ class TestAgentRunFastSurfer:
             f"Response doesn't mention FastSurfer execution: {content[:300]}"
         )
 
-        # The state sync should now have requested_run_fastsurfer
-        # (unless it was already consumed by a frontend poll)
+        # The state sync should now expose a typed command unless the browser
+        # already acknowledged it.
         state_data = seed_gui_state(
             {
                 "is_job_running": True,
                 "current_case_id": self.demo_case["case_id"],
-                "loaded_volumes": [self.demo_case["upload_filename"]],
+                "layers": [{
+                    "id": "intensity:input",
+                    "filename": self.demo_case["upload_filename"],
+                    "type": "intensity",
+                    "role": "intensity",
+                    "visible": True,
+                }],
                 "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
                 "current_intensity_volume": self.demo_case["upload_filename"],
             },

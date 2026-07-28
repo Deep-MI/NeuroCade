@@ -1,6 +1,6 @@
 import { ClerkProvider, SignInButton, SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { useEffect, useLayoutEffect, useState, type PropsWithChildren } from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router';
 
 import { SessionContext } from './sessionContext';
 import type { SessionState } from './sessionContext';

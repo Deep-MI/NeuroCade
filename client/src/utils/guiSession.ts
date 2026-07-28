@@ -1,4 +1,12 @@
 export function createGuiSessionId(): string {
+  const storageKey = 'neurocade.gui-session-id';
+  if (typeof window !== 'undefined') {
+    const existing = window.sessionStorage.getItem(storageKey);
+    if (existing) return existing;
+    const created = `gui-${globalThis.crypto.randomUUID()}`;
+    window.sessionStorage.setItem(storageKey, created);
+    return created;
+  }
   return `gui-${globalThis.crypto.randomUUID()}`;
 }
 

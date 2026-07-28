@@ -13,7 +13,7 @@ globalThis.localStorage = {
   clear: () => { storage.clear(); },
   key: (index: number) => [...storage.keys()][index] ?? null,
   get length() { return storage.size; },
-} as Storage;
+};
 
 function intensity(id: string): Volume {
   return {

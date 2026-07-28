@@ -78,7 +78,18 @@ class FakeRuntimeService(RuntimeService):
         ]
 
     async def fetch_gui_state(self, *, gui_state_key=None):
-        return {"current_case_id": "ext-case-1", "has_valid_segmentation": True}
+        return {
+            "current_case_id": "ext-case-1",
+            "layers": [
+                {
+                    "id": "segmentation:aseg",
+                    "filename": "aparc.DKTatlas+aseg.deep.mgz",
+                    "type": "segmentation",
+                    "role": "segmentation",
+                    "visible": True,
+                }
+            ],
+        }
 
     async def call_tool(self, name, arguments, gui_state_override=None, *, gui_state_key=None):
         self.tool_calls.append(
@@ -218,13 +229,27 @@ def test_run_chat_uses_explicit_gui_state_override(monkeypatch):
         "current_job_id": "Rhineland_0000",
         "current_workspace_id": "workspace-1",
         "current_case_id": "workspace-1__case-1",
-        "loaded_volumes": ["orig.mgz"],
-        "has_valid_segmentation": True,
+        "layers": [
+            {
+                "id": "intensity:orig",
+                "filename": "orig.mgz",
+                "type": "intensity",
+                "role": "intensity",
+                "visible": True,
+            }
+        ],
     }
     sanitized_override = {
         "current_job_id": "Rhineland_0000",
-        "loaded_volumes": ["orig.mgz"],
-        "has_valid_segmentation": True,
+        "layers": [
+            {
+                "id": "intensity:orig",
+                "filename": "orig.mgz",
+                "type": "intensity",
+                "role": "intensity",
+                "visible": True,
+            }
+        ],
         "current_workspace_id": None,
         "current_case_id": None,
     }
@@ -269,16 +294,52 @@ def test_gui_state_override_cannot_retarget_authorized_case(seeded_context):
                 "current_workspace_id": "other-workspace",
                 "current_case_id": case_b.id,
                 "current_case_output_path": f"workspaces/{workspace.id}/cases/case-b",
-                "has_valid_segmentation": True,
+                "layers": [{"id": "surface:lh:pial", "type": "surface"}],
             },
         }
     )
 
     assert override == {
-        "has_valid_segmentation": True,
+        "layers": [{"id": "surface:lh:pial", "type": "surface"}],
         "current_workspace_id": workspace.id,
         "current_case_id": case_a.id,
     }
+
+
+def test_run_chat_commits_preparation_before_model_loop(seeded_context):
+    db_session, context, workspace, case_a, _case_b = seeded_context
+    runtime = AssistantRuntime(FakeRuntimeService())
+
+    class InspectingLoop:
+        async def run(self, state):
+            assert state["db"] is db_session
+            assert not db_session.in_transaction()
+            return {
+                **state,
+                "status": "completed",
+                "final_response": "ready",
+                "tool_calls_log": [],
+                "reasoning_entries": [],
+            }
+
+    runtime.loop = InspectingLoop()  # type: ignore[assignment]
+
+    payload = asyncio.run(
+        runtime.run_chat(
+            db=db_session,
+            context=context,
+            messages=[{"role": "user", "content": "Reply with ready."}],
+            workspace_id=workspace.id,
+            case_id=case_a.id,
+            scope="case",
+            provider=None,
+            model=None,
+            persist=True,
+        )
+    )
+
+    assert payload["message"]["content"] == "ready"
+    assert db_session.query(AssistantMessage).count() == 2
 
 
 def test_system_prompt_exposes_sanitized_gui_state(tmp_path):
@@ -291,12 +352,28 @@ def test_system_prompt_exposes_sanitized_gui_state(tmp_path):
             "tool_specs": [],
             "gui_state": {
                 "is_job_running": False,
-                "has_valid_segmentation": True,
                 "current_workspace_id": "workspace-1",
                 "current_case_id": "workspace-1__case-1",
-                "loaded_volumes": ["orig.mgz", "aparc.DKTatlas+aseg.deep.mgz"],
-                "loaded_volume_names": ["orig.mgz", "aparc.DKTatlas+aseg.deep.mgz"],
-                "visible_volumes": ["orig.mgz"],
+                "layers": [
+                    {
+                        "id": "intensity:orig",
+                        "filename": "orig.mgz",
+                        "type": "intensity",
+                        "role": "intensity",
+                        "visible": True,
+                        "opacity": 1.0,
+                        "display": {},
+                    },
+                    {
+                        "id": "segmentation:aseg",
+                        "filename": "aparc.DKTatlas+aseg.deep.mgz",
+                        "type": "segmentation",
+                        "role": "segmentation",
+                        "visible": False,
+                        "opacity": 0.7,
+                        "display": {},
+                    },
+                ],
                 "current_intensity_artifact_id": "artifact-input",
                 "current_intensity_volume": "orig.mgz",
                 "current_cursor": {
@@ -308,13 +385,13 @@ def test_system_prompt_exposes_sanitized_gui_state(tmp_path):
         },
     )
 
-    assert '"loaded_volume_names": ["orig.mgz", "aparc.DKTatlas+aseg.deep.mgz"]' in prompt
-    assert '"visible_volumes": ["orig.mgz"]' in prompt
+    assert '"id": "intensity:orig"' in prompt
+    assert '"type": "segmentation"' in prompt
+    assert '"visible": false' in prompt
     assert '"current_intensity_volume": "orig.mgz"' in prompt
     assert '"current_cursor": {"voxel": [12.0, 34.25, 56.0], "label_id": 251, "label_name": "CC_Posterior"}' in prompt
     assert '"has_active_case": true' in prompt
-    assert '"has_loaded_volumes": true' in prompt
-    assert '"has_valid_segmentation": true' in prompt
+    assert '"has_loaded_layers": true' in prompt
     assert "current_workspace_id" not in prompt
     assert "current_intensity_artifact_id" not in prompt
 
@@ -591,11 +668,11 @@ def test_execute_tools_records_tool_error_result():
                 "result": {},
                 "round_count": 5,
                 "diagnostic_request_id": "request-2",
-                "pending_tool_calls": [{"name": "gui_load_volume", "arguments": {"file_path": "/case/mri/missing.mgz"}}],
+                "pending_tool_calls": [{"name": "gui_load_layer", "arguments": {"file_path": "/case/mri/missing.mgz"}}],
                 "tool_definitions": [
                     ToolDefinition(
-                        name="gui_load_volume",
-                        description="Load volume.",
+                        name="gui_load_layer",
+                        description="Load a layer.",
                         parameters={},
                         execute=execute,
                     )

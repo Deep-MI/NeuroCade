@@ -1,23 +1,63 @@
-"""In-memory GUI state store for runtime tool sessions."""
+"""In-memory typed GUI state and acknowledged command queues."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 DEFAULT_GUI_STATE_KEY = "default"
+GUI_COMMAND_TTL = timedelta(minutes=5)
+MAX_QUEUED_GUI_COMMANDS = 100
+
+
+def _command_is_active(command: dict[str, Any], now: datetime) -> bool:
+    try:
+        created_at = datetime.fromisoformat(str(command["created_at"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return now - created_at <= GUI_COMMAND_TTL
+
+
+def _active_commands(gui_state: dict[str, Any], now: datetime | None = None) -> list[dict[str, Any]]:
+    current_time = now or datetime.now(UTC)
+    return [
+        command
+        for command in gui_state.get("commands", [])
+        if isinstance(command, dict) and _command_is_active(command, current_time)
+    ][-MAX_QUEUED_GUI_COMMANDS:]
 
 
 def new_gui_state() -> dict[str, Any]:
     return {
         "is_job_running": False,
-        "has_valid_segmentation": False,
         "current_workspace_id": None,
         "current_case_id": None,
-        "loaded_volume_names": [],
-        "visible_volumes": [],
         "current_intensity_artifact_id": None,
         "current_intensity_volume": None,
+        "layers": [],
+        "commands": [],
     }
+
+
+def enqueue_gui_command(gui_state: dict[str, Any], command_type: str, payload: dict[str, Any]) -> str:
+    """Append an idempotent frontend command and return its acknowledgement ID."""
+    command_id = uuid4().hex
+    now = datetime.now(UTC)
+    commands = _active_commands(gui_state, now)
+    commands.append(
+        {
+            "id": command_id,
+            "type": command_type,
+            "payload": payload,
+            "created_at": now.isoformat(),
+            "expires_at": (now + GUI_COMMAND_TTL).isoformat(),
+        }
+    )
+    gui_state["commands"] = commands[-MAX_QUEUED_GUI_COMMANDS:]
+    return command_id
 
 
 class GuiStateStore:
@@ -33,55 +73,51 @@ class GuiStateStore:
         return state
 
     def fetch(self, *, gui_state_key: str | None = None) -> dict[str, Any]:
-        return dict(self.state_for_key(gui_state_key))
+        state = self.state_for_key(gui_state_key)
+        return {key: value for key, value in state.items() if key != "commands"}
 
     def sync(self, payload: dict, *, gui_state_key: str | None = None) -> dict[str, Any]:
         gui_state = self.state_for_key(gui_state_key)
         previous_case_id = gui_state.get("current_case_id")
-        requested_run = gui_state.get("requested_run_fastsurfer")
+        gui_state["commands"] = _active_commands(gui_state)
+
+        acknowledged = {
+            str(command_id)
+            for command_id in payload.get("acknowledged_command_ids", [])
+            if command_id
+        }
+        if acknowledged:
+            gui_state["commands"] = [
+                command
+                for command in gui_state.get("commands", [])
+                if command.get("id") not in acknowledged
+            ]
 
         for key in (
             "is_job_running",
-            "has_valid_segmentation",
             "current_workspace_id",
             "current_case_id",
-            "loaded_volumes",
-            "loaded_volume_names",
-            "visible_volumes",
             "current_intensity_artifact_id",
             "current_intensity_volume",
             "current_cursor",
+            "layers",
         ):
             if key in payload:
-                default_value = [] if key in {"loaded_volumes", "loaded_volume_names", "visible_volumes"} else payload.get(key)
-                gui_state[key] = payload.get(key) or default_value
-        if not gui_state.get("loaded_volume_names") and gui_state.get("loaded_volumes"):
-            gui_state["loaded_volume_names"] = list(gui_state.get("loaded_volumes") or [])
-        if not gui_state.get("loaded_volumes") and gui_state.get("loaded_volume_names"):
-            gui_state["loaded_volumes"] = list(gui_state.get("loaded_volume_names") or [])
+                gui_state[key] = payload.get(key)
 
-        case_context_changed = "current_case_id" in payload and payload.get("current_case_id") != previous_case_id
+        case_context_changed = (
+            "current_case_id" in payload
+            and payload.get("current_case_id") != previous_case_id
+        )
         if case_context_changed:
             gui_state["is_job_running"] = False
-            if gui_state.get("current_case_id") is None:
-                gui_state.pop("requested_run_fastsurfer", None)
+            gui_state["commands"] = []
 
-        response = {"status": "success", "current_state": gui_state}
-        for key in (
-            "requested_cursor_position",
-            "requested_load_volume",
-            "requested_close_volume",
-            "requested_close_volumes",
-            "requested_select_volumes",
-            "requested_adjust_display",
-        ):
-            if key in gui_state:
-                response[key] = gui_state.pop(key)
-
-        if requested_run is not None:
-            target_case_id = requested_run.get("case_id")
-            if target_case_id is None or payload.get("current_case_id") == target_case_id:
-                response["requested_run_fastsurfer"] = requested_run
-                gui_state.pop("requested_run_fastsurfer", None)
-
-        return response
+        current_state = {
+            key: value for key, value in gui_state.items() if key != "commands"
+        }
+        return {
+            "status": "success",
+            "current_state": current_state,
+            "commands": list(gui_state.get("commands", [])),
+        }

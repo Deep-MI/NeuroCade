@@ -89,6 +89,26 @@ def _loaded_volumes_for_case(case_dir: Path) -> list[str]:
     return [name for name in preferred if _case_file_exists(case_dir, name)]
 
 
+def _gui_layers_for_volumes(filenames: list[str], *, visible: bool = True) -> list[dict]:
+    """Build typed GUI layer snapshots for test state seeding."""
+    layers = []
+    for index, filename in enumerate(filenames):
+        is_segmentation = "aseg" in filename.lower() or "seg" in filename.lower()
+        layer_type = "segmentation" if is_segmentation else "intensity"
+        layers.append(
+            {
+                "id": f"{layer_type}:{index}:{filename}",
+                "filename": filename,
+                "type": layer_type,
+                "role": layer_type,
+                "visible": visible,
+                "opacity": 0.7 if is_segmentation else 1.0,
+                "display": {},
+            }
+        )
+    return layers
+
+
 def _case_has_processed_outputs(case_dir: Path) -> bool:
     """Return whether a case has the minimum processed outputs for GUI tests."""
     has_orig = _case_file_exists(case_dir, "orig.mgz")
@@ -184,9 +204,12 @@ DEMO_CASE_ID, DEMO_UPLOAD_FILENAME = _safe_demo_case_pair(_find_processed_demo_c
 # The standard GUI state when the demo case is fully loaded
 ADNI2_GUI_STATE = {
     "is_job_running": False,
-    "has_valid_segmentation": True,
     "current_case_id": DEMO_CASE_ID,
-    "loaded_volumes": _loaded_volumes_for_case(_resolve_case_dir(DEMO_CASE_ID)) if DEMO_CASE_ID else [],
+    "layers": (
+        _gui_layers_for_volumes(_loaded_volumes_for_case(_resolve_case_dir(DEMO_CASE_ID)))
+        if DEMO_CASE_ID
+        else []
+    ),
     "current_intensity_volume": DEMO_UPLOAD_FILENAME,
     "current_intensity_artifact_id": None,
 }
@@ -444,7 +467,6 @@ def _build_case_context(workspace: dict, upload_result: dict) -> dict:
     """Assemble case metadata and GUI state expected by tests."""
     case_dir = _case_storage_dir(workspace["id"], upload_result["case_id"])
     loaded_volumes = _loaded_volumes_for_case(case_dir)
-    has_valid_segmentation = _case_has_processed_outputs(case_dir)
     return {
         "id": upload_result["case_id"],
         "workspace_id": workspace["id"],
@@ -458,9 +480,8 @@ def _build_case_context(workspace: dict, upload_result: dict) -> dict:
             "workspace_id": workspace["id"],
             "case_id": upload_result["case_id"],
             "is_job_running": False,
-            "has_valid_segmentation": has_valid_segmentation,
             "current_case_id": upload_result["case_id"],
-            "loaded_volumes": loaded_volumes,
+            "layers": _gui_layers_for_volumes(loaded_volumes),
             "current_intensity_volume": upload_result["filename"],
             "current_intensity_artifact_id": None,
         },

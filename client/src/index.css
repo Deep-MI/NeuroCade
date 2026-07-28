@@ -2090,6 +2090,28 @@ input[type="range"]::-moz-focus-outer {
   color: var(--nc-tx);
 }
 
+.chat-message.chat-message-warning {
+  max-width: 92%;
+  border-color: var(--nc-warning-border);
+  border-left-width: 3px;
+  background: var(--nc-warning-bg);
+  color: var(--nc-tx);
+}
+
+.chat-message-warning-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  color: var(--nc-warning);
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--nc-fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .chat-message.chat-loading {
   display: inline-flex;
   align-items: center;

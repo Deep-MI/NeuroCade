@@ -52,10 +52,18 @@ require_repo_local_path() {
 }
 
 HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
+NEUROCADE_DB_DIR="${NEUROCADE_DB_DIR:-$HOST_DATA_DIR}"
 RUNTIME_DIR="${NEUROCADE_RUNTIME_DIR:-$ROOT_DIR/.runtime}"
 
 require_repo_local_path ".runtime" "$RUNTIME_DIR"
 require_repo_local_path "HOST_DATA_DIR" "$HOST_DATA_DIR"
+if [[ "$NEUROCADE_DB_DIR" != /* ]]; then
+  NEUROCADE_DB_DIR="$ROOT_DIR/$NEUROCADE_DB_DIR"
+fi
+if [[ "$(realpath -m "$NEUROCADE_DB_DIR")" == "/" ]]; then
+  echo "Refusing to use the filesystem root as NEUROCADE_DB_DIR." >&2
+  exit 1
+fi
 
 kill_repo_service_orphans() {
   local pids pid
@@ -84,6 +92,14 @@ mkdir -p "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 echo "Wiping $HOST_DATA_DIR contents..."
 find "$HOST_DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 mkdir -p "$HOST_DATA_DIR/output"
+if [[ "$(realpath -m "$NEUROCADE_DB_DIR")" != "$(realpath -m "$HOST_DATA_DIR")" ]]; then
+  echo "Removing SQLite state from $NEUROCADE_DB_DIR..."
+  rm -f \
+    "$NEUROCADE_DB_DIR/neurocade.db" \
+    "$NEUROCADE_DB_DIR/neurocade.db-shm" \
+    "$NEUROCADE_DB_DIR/neurocade.db-wal"
+  mkdir -p "$NEUROCADE_DB_DIR"
+fi
 
 if [[ "$KEEP_STACK_DOWN" -eq 1 ]]; then
   echo "Reset complete. Stack left stopped."

@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from api_service.assistant.runtime import AssistantRuntime
 from api_service.chat_limits import chat_request_guard
-from api_service.monitoring.events import record_app_event
+from api_service.monitoring.events import record_app_event_best_effort
 from api_service.runtime import logger, settings
 from api_service.schemas import AssistantTurnRequest
 from backend_common.auth import AuthContext
@@ -34,7 +34,7 @@ def record_assistant_turn_event(
 ) -> None:
     try:
         with SessionLocal() as db:
-            record_app_event(
+            record_app_event_best_effort(
                 db,
                 source="backend",
                 level=level,

@@ -1,5 +1,5 @@
 import { SignUp, SignedIn, SignedOut } from '@clerk/clerk-react';
-import { Navigate, useLocation } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router';
 
 import { useFrontendConfig } from '../auth/frontendConfigContext';
 import { useAppSession } from '../auth/sessionContext';

@@ -21,5 +21,5 @@ export type NiivueInterop = Omit<Niivue, 'volumes' | 'meshes'> & {
 };
 
 export function asNiivueInterop(nv: Niivue): NiivueInterop {
-  return nv as NiivueInterop;
+  return nv;
 }

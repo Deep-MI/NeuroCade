@@ -27,7 +27,7 @@ function source(id: string, type: Volume['type'], visible: boolean): Volume {
     visible,
     opacity: 1,
     colormap: 'gray',
-  } as Volume;
+  };
 }
 
 function loadedVolume(id: string, obliqueAngle: number): NiivueVolumeInterop {

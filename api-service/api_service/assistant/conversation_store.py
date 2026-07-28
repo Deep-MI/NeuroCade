@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from api_service.schemas import ChatMessageSummary, ChatToolCallEntry, ReasoningEntry
 from backend_common.auth import AuthContext
 from backend_common.concurrency import lock_assistant_thread_for_update
-from backend_common.db import AssistantCheckpoint, AssistantMessage, AssistantScope, AssistantThread
+from backend_common.db import AssistantCheckpoint, AssistantMessage, AssistantScope, AssistantThread, run_with_sqlite_lock_retry
 from backend_common.providers import ModelConfig
 from backend_common.settings import ROOT_DIR
 
@@ -142,6 +142,38 @@ def load_thread_history(db: Session, thread_id: str) -> list[dict[str, Any]]:
 
 
 def persist_turn(
+    db: Session,
+    context: AuthContext,
+    thread: AssistantThread,
+    *,
+    incoming_messages: list[dict[str, Any]],
+    assistant_messages: list[str] | None = None,
+    tool_calls_log: list[dict[str, Any]],
+    reasoning_entries: list[dict[str, Any]],
+    assistant_content: str,
+) -> None:
+    """Persist a completed turn, retrying the complete SQLite transaction."""
+    thread_id = thread.id
+
+    def operation() -> None:
+        current_thread = db.get(AssistantThread, thread_id)
+        if current_thread is None:
+            raise ValueError(f"Assistant thread {thread_id} no longer exists")
+        _persist_turn_once(
+            db,
+            context,
+            current_thread,
+            incoming_messages=incoming_messages,
+            assistant_messages=assistant_messages,
+            tool_calls_log=tool_calls_log,
+            reasoning_entries=reasoning_entries,
+            assistant_content=assistant_content,
+        )
+
+    run_with_sqlite_lock_retry(db, operation)
+
+
+def _persist_turn_once(
     db: Session,
     context: AuthContext,
     thread: AssistantThread,

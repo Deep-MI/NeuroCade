@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from api_service.deps import get_context, get_db
 from api_service.jobs import job_manager
-from api_service.monitoring.events import record_app_event
+from api_service.monitoring.events import record_app_event_best_effort
 from api_service.monitoring.security import require_monitoring_admin
 from api_service.runtime import settings
 from api_service.runtime.service import runtime_service
@@ -301,7 +301,7 @@ def ingest_client_error(
     context: AuthContext = Depends(get_context),
 ) -> MonitoringIngestResponse:
     """Record a frontend error event from the authenticated client."""
-    record_app_event(
+    event = record_app_event_best_effort(
         db,
         source="frontend",
         level=request.level,
@@ -311,4 +311,4 @@ def ingest_client_error(
         path=request.path,
         details=request.details,
     )
-    return MonitoringIngestResponse(status="recorded")
+    return MonitoringIngestResponse(status="recorded" if event is not None else "dropped")

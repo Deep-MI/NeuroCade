@@ -1,18 +1,25 @@
 """Provide shared backend db utilities for NeuroCade."""
 
-from collections.abc import Generator
+import time
+from collections.abc import Callable, Generator
 from datetime import datetime
 from enum import Enum
+from typing import TypeVar
 from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event, func, text
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from backend_common.settings import get_settings
 
 settings = get_settings()
+T = TypeVar("T")
+
+SQLITE_LOCK_RETRY_ATTEMPTS = 3
+SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS = 0.05
 
 
 def _build_engine(url: str) -> Engine:
@@ -72,6 +79,36 @@ def _sqlite_begin(conn):  # noqa: ANN001
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+
+def is_sqlite_lock_error(exc: BaseException) -> bool:
+    """Return whether an exception represents SQLite write-lock contention."""
+    return isinstance(exc, OperationalError) and "database is locked" in str(exc).lower()
+
+
+def run_with_sqlite_lock_retry(
+    db: Session,
+    operation: Callable[[], T],
+    *,
+    attempts: int = SQLITE_LOCK_RETRY_ATTEMPTS,
+    base_delay_seconds: float = SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS,
+) -> T:
+    """Run one complete DB unit of work with bounded SQLite-lock retries.
+
+    The callback must contain the full transaction, including its commit.
+    A failed attempt is rolled back before retrying so no partial ORM state is
+    reused. Non-locking failures and exhausted retries are raised unchanged.
+    """
+    max_attempts = max(int(attempts), 1)
+    for attempt in range(max_attempts):
+        try:
+            return operation()
+        except OperationalError as exc:
+            db.rollback()
+            if not is_sqlite_lock_error(exc) or attempt + 1 >= max_attempts:
+                raise
+            time.sleep(max(float(base_delay_seconds), 0.0) * (2**attempt))
+    raise RuntimeError("SQLite retry loop exhausted unexpectedly")
 
 
 class Base(DeclarativeBase):

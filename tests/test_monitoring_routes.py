@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
+from api_service.monitoring import events as monitoring_events_module  # noqa: E402
 from api_service.routers import auth as auth_module  # noqa: E402
 from api_service.routers import monitoring as monitoring_module  # noqa: E402
 from api_service.routers.monitoring import ingest_client_error, monitoring_health, monitoring_summary  # noqa: E402
@@ -169,6 +170,72 @@ def test_client_error_ingestion_records_user_event(seeded_monitoring_context):
     assert event.user_id == "admin-user"
     assert event.path == "/workspaces/workspace-1/cases/case-1"
     assert event.details_json["stack"] == "trace"
+
+
+def test_client_error_ingestion_is_best_effort(seeded_monitoring_context, monkeypatch):
+    db_session, context, _member = seeded_monitoring_context
+    monkeypatch.setattr(monitoring_module, "record_app_event_best_effort", lambda *_args, **_kwargs: None)
+
+    response = ingest_client_error(
+        MonitoringClientErrorRequest(
+            event_type="frontend.error_boundary",
+            message="Viewer crashed",
+            path="/workspaces/workspace-1/cases/case-1",
+        ),
+        db=db_session,
+        context=context,
+    )
+
+    assert response.status == "dropped"
+
+
+def test_monitoring_retention_cleanup_runs_periodically(seeded_monitoring_context, monkeypatch):
+    db_session, context, _member = seeded_monitoring_context
+    monkeypatch.setattr(monitoring_events_module, "_next_retention_cleanup_at", 0.0)
+    old_created_at = datetime.now(UTC) - timedelta(days=60)
+    db_session.add(
+        AppEvent(
+            source="frontend",
+            level="error",
+            event_type="old.first",
+            message="old first",
+            details_json={},
+            created_at=old_created_at,
+        )
+    )
+    db_session.commit()
+
+    monitoring_events_module.record_app_event(
+        db_session,
+        source="frontend",
+        level="error",
+        event_type="new.first",
+        message="new first",
+        context=context,
+    )
+    assert db_session.query(AppEvent).filter(AppEvent.event_type == "old.first").count() == 0
+
+    db_session.add(
+        AppEvent(
+            source="frontend",
+            level="error",
+            event_type="old.second",
+            message="old second",
+            details_json={},
+            created_at=old_created_at,
+        )
+    )
+    db_session.commit()
+    monitoring_events_module.record_app_event(
+        db_session,
+        source="frontend",
+        level="error",
+        event_type="new.second",
+        message="new second",
+        context=context,
+    )
+
+    assert db_session.query(AppEvent).filter(AppEvent.event_type == "old.second").count() == 1
 
 
 def test_session_bootstrap_exposes_monitoring_feature_for_admin(seeded_monitoring_context, monkeypatch):

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle2, Database, RefreshCw, Server, Users } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 
 import { SessionActions } from '../auth/AppSession';
 import { useAppSession } from '../auth/sessionContext';

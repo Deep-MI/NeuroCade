@@ -8,8 +8,8 @@ This test validates the full round-trip:
   2. runtime state sync picks up the uploaded file + case ID
   3. User asks agent "Run FastSurfer on this case"
   4. Agent calls gui_run_fastsurfer tool
-  5. runtime handler sets requested_run_fastsurfer in gui_state
-  6. Frontend picks up the command and submits /run to the backend
+  5. runtime handler queues a typed run_fastsurfer command
+  6. Frontend applies and acknowledges the command, then submits /run
   7. GUI updates: terminal panel opens, status transitions, case list refreshes
 
 Prerequisites:
@@ -136,7 +136,7 @@ class TestGuiAgentTriggeredRun:
         print(f"  Agent response markers: {found}")
 
         # Step 4: Verify GUI updates — terminal/output panel should be visible
-        # Wait for the frontend to pick up requested_run_fastsurfer and submit.
+        # Wait for the frontend to apply the typed run command and submit.
         deadline = time.time() + 15
         terminal_visible = False
         cancel_visible = False

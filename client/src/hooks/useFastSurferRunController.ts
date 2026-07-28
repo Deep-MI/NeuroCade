@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react';
-import type { NavigateFunction } from 'react-router-dom';
+import type { NavigateFunction } from 'react-router';
 
 import { isRunFailed } from '../constants';
 import type { CaseSummary, ChatMessage, FastSurferParams, OutputVolume, Volume } from '../types';
@@ -165,7 +165,7 @@ export function useFastSurferRunController({
     } catch (error: unknown) {
       console.error('Run error:', error);
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(message);
+      throw new Error(message, { cause: error });
     }
   }, [availableCases, currentCaseId, currentCaseTitle, initialWorkspaceId, navigate, setActiveCaseId, setChatNotifications, setLogs]);
 

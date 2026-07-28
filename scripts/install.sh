@@ -66,13 +66,14 @@ is_tty() {
 }
 
 prompt() {
-  local label="$1" default_value="${2:-}" secret="${3:-false}" value
+  local label="$1" default_value="${2:-}" secret="${3:-false}" value default_hint=""
   if [[ "${ASSUME_YES:-0}" -eq 1 || ! is_tty ]]; then
     printf '%s\n' "$default_value"
     return
   fi
   if [[ "$secret" == "true" ]]; then
-    read -r -s -p "$label${default_value:+ [$default_value]}: " value
+    [[ -n "$default_value" ]] && default_hint=" [**existing key**]"
+    read -r -s -p "$label${default_hint}: " value
     printf '\n' >&2
   else
     read -r -p "$label${default_value:+ [$default_value]}: " value
@@ -172,11 +173,15 @@ require_option_value() {
 write_env() {
   local root="$1" mode="$2" provider="$3" image_override="${4:-}" env_path
   env_path="$root/.env"
-  local host_data_dir app_base_url app_bind app_port docker_platform image local_auth
+  local host_data_dir db_dir app_base_url app_bind app_port docker_platform image local_auth
   local clerk_publishable="" clerk_secret="" clerk_jwks="" clerk_issuer="" clerk_audience="" clerk_jwt_template=""
   host_data_dir="$(configured_or_default "$root" HOST_DATA_DIR "$root/neurocade-data")"
   if [[ "$host_data_dir" != /* ]]; then
     host_data_dir="$root/$host_data_dir"
+  fi
+  db_dir="$(configured_or_default "$root" NEUROCADE_DB_DIR "$host_data_dir")"
+  if [[ "$db_dir" != /* ]]; then
+    db_dir="$root/$db_dir"
   fi
   docker_platform="$(configured_or_default "$root" NEUROCADE_DOCKER_PLATFORM "$(default_docker_platform)")"
   image="${image_override:-$(configured_or_default "$root" NEUROCADE_IMAGE "$DEFAULT_IMAGE")}"
@@ -250,7 +255,7 @@ write_env() {
   if [[ -n "$app_host" && "$app_host" != "localhost" && "$app_host" != "127.0.0.1" ]]; then
     allowed_hosts="$app_host,$allowed_hosts"
   fi
-  mkdir -p "$host_data_dir/output"
+  mkdir -p "$host_data_dir/output" "$db_dir"
   [[ -f "$env_path" ]] && cp "$env_path" "$env_path.backup.$(date +%Y%m%d%H%M%S)"
 
   {
@@ -263,10 +268,11 @@ write_env() {
     env_line APP_HTTP_BIND "$app_bind"
     env_line APP_HTTP_PORT "$app_port"
     env_line HOST_DATA_DIR "$host_data_dir"
+    env_line NEUROCADE_DB_DIR "$db_dir"
     env_line NEUROCADE_SIF_DIR "$host_data_dir/sif"
     env_line NEUROCADE_IMAGE "$image"
     env_line NEUROCADE_DOCKER_PLATFORM "$docker_platform"
-    env_line DATABASE_URL "sqlite+pysqlite:///$host_data_dir/neurocade.db"
+    env_line DATABASE_URL "sqlite+pysqlite:///$db_dir/neurocade.db"
     env_line NEUROCADE_RUNTIME_BACKEND "apptainer"
     env_line LOCAL_AUTH_ENABLED "$local_auth"
     env_line LOCAL_AUTH_USER_ID "local-user"

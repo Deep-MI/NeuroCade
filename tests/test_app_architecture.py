@@ -141,8 +141,20 @@ def test_docker_launcher_exposes_clerk_environment():
 def test_docker_launcher_uses_mounted_sqlite_database():
     run_text = Path("scripts/run.sh").read_text()
 
-    assert "sqlite+pysqlite:////data/neurocade.db" in run_text
+    assert "sqlite+pysqlite:////database/neurocade.db" in run_text
+    assert '"${NEUROCADE_DB_DIR}:/database"' in run_text
     assert "NEUROCADE_CONTAINER_DATABASE_URL" not in run_text
+
+
+def test_gui_command_channel_polls_immediately_and_continuously():
+    sync_hook = Path("client/src/hooks/useGuiStateSync.ts").read_text()
+
+    assert "const GUI_STATE_SYNC_INTERVAL_MS = 2000" in sync_hook
+    assert sync_hook.index("syncState()") < sync_hook.index(
+        "window.setInterval(syncState, GUI_STATE_SYNC_INTERVAL_MS)"
+    )
+    assert "lastSyncedSignatureRef" not in sync_hook
+    assert "if (syncInFlight) return" in sync_hook
 
 
 def test_docker_image_pins_project_python_version():

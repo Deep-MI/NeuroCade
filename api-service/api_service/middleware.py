@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
 
-from api_service.monitoring.events import record_app_event
+from api_service.monitoring.events import record_app_event_best_effort
 from api_service.runtime import logger, settings
 from backend_common.db import SessionLocal
 from backend_common.deployment_policy import get_deployment_policy
@@ -85,7 +85,7 @@ def register_app_middleware(app: FastAPI) -> None:
             if not skip_event_capture:
                 try:
                     with SessionLocal() as db:
-                        record_app_event(
+                        record_app_event_best_effort(
                             db,
                             source="backend",
                             level="error",
@@ -103,7 +103,7 @@ def register_app_middleware(app: FastAPI) -> None:
         if response.status_code >= 500 and not skip_event_capture:
             try:
                 with SessionLocal() as db:
-                    record_app_event(
+                    record_app_event_best_effort(
                         db,
                         source="backend",
                         level="error",

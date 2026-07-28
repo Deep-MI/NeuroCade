@@ -333,16 +333,40 @@ class StartRunRequest(BaseModel):
     case_name: str | None = None
 
 
+class GuiLayerDisplay(BaseModel):
+    brightness: float | None = None
+    contrast: float | None = None
+    surface_color_mode: Literal["solid", "curvature", "annotation"] | None = None
+
+
+class GuiLayerState(BaseModel):
+    id: str
+    artifact_id: str | None = None
+    filename: str
+    name: str | None = None
+    type: Literal["intensity", "segmentation", "surface"]
+    role: str | None = None
+    hemisphere: Literal["left", "right"] | None = None
+    loaded: bool = True
+    visible: bool
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    display: GuiLayerDisplay = Field(default_factory=GuiLayerDisplay)
+
+
+class GuiCursorState(BaseModel):
+    voxel: tuple[float, float, float]
+    label_id: int
+    label_name: str
+
+
 class GuiStateSyncRequest(BaseModel):
     workspace_id: str | None = None
     case_id: str | None = None
     gui_session_id: str | None = None
     is_job_running: bool = False
-    has_valid_segmentation: bool = False
     current_case_id: str | None = None
-    loaded_volumes: list[str] = Field(default_factory=list)
-    loaded_volume_names: list[str] = Field(default_factory=list)
-    visible_volumes: list[str] = Field(default_factory=list)
+    layers: list[GuiLayerState] = Field(default_factory=list)
+    acknowledged_command_ids: list[str] = Field(default_factory=list)
     current_intensity_artifact_id: str | None = None
     current_intensity_volume: str | None = None
-    current_cursor: dict[str, Any] | None = None
+    current_cursor: GuiCursorState | None = None

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { GuiStateSyncResponse, Volume } from '../types'
 import * as api from '../utils/api'
 
-const GUI_STATE_SYNC_INTERVAL_MS = 60000
+const GUI_STATE_SYNC_INTERVAL_MS = 2000
 
 interface UseGuiStateSyncOptions {
   workspaceId: string | null
@@ -33,17 +33,26 @@ export function useGuiStateSync({
   onError,
 }: UseGuiStateSyncOptions): void {
   const volumeSnapshot = useMemo(() => {
-    const loadedVolumeNames: string[] = []
-    const visibleVolumeNames: string[] = []
-    let hasValidSegmentation = false
-
-    for (const volume of volumes) {
-      loadedVolumeNames.push(volume.filename)
-      if (volume.visible) visibleVolumeNames.push(volume.filename)
-      if (volume.type === 'segmentation') hasValidSegmentation = true
-    }
-
-    return { loadedVolumeNames, visibleVolumeNames, hasValidSegmentation }
+    return volumes.map(volume => {
+      const surfaceMatch = /^([lr]h)\.([^.]+)$/.exec(volume.filename.split('/').pop() ?? volume.filename)
+      return {
+        id: volume.id,
+        artifact_id: volume.artifactId,
+        filename: volume.filename,
+        name: volume.name,
+        type: volume.type ?? 'intensity',
+        role: surfaceMatch?.[2] ?? (volume.type === 'segmentation' ? 'segmentation' : 'intensity'),
+        hemisphere: surfaceMatch?.[1] === 'lh' ? 'left' as const : surfaceMatch?.[1] === 'rh' ? 'right' as const : undefined,
+        loaded: true as const,
+        visible: volume.visible,
+        opacity: volume.opacity,
+        display: {
+          brightness: 'brightness' in volume ? volume.brightness : undefined,
+          contrast: 'contrast' in volume ? volume.contrast : undefined,
+          surface_color_mode: volume.type === 'surface' ? volume.surfaceColorMode : undefined,
+        },
+      }
+    })
   }, [volumes])
 
   const payload = useMemo(() => {
@@ -52,11 +61,8 @@ export function useGuiStateSync({
       case_id: caseId,
       gui_session_id: guiSessionId,
       is_job_running: isRunActive(runStatus),
-      has_valid_segmentation: volumeSnapshot.hasValidSegmentation,
       current_case_id: currentCaseId,
-      loaded_volumes: volumeSnapshot.loadedVolumeNames,
-      loaded_volume_names: volumeSnapshot.loadedVolumeNames,
-      visible_volumes: volumeSnapshot.visibleVolumeNames,
+      layers: volumeSnapshot,
       current_intensity_artifact_id: currentIntensityArtifactId,
       current_intensity_volume: currentIntensityVolume,
     }
@@ -72,52 +78,44 @@ export function useGuiStateSync({
     workspaceId,
   ])
 
-  const signature = useMemo(() => [
-    workspaceId ?? '',
-    caseId ?? '',
-    guiSessionId,
-    isRunActive(runStatus) ? '1' : '0',
-    volumeSnapshot.hasValidSegmentation ? '1' : '0',
-    currentCaseId ?? '',
-    volumeSnapshot.loadedVolumeNames.map((name) => `${name.length}:${name}`).join('|'),
-    volumeSnapshot.visibleVolumeNames.map((name) => `${name.length}:${name}`).join('|'),
-    currentIntensityArtifactId ?? '',
-    currentIntensityVolume ?? '',
-  ].join('\u001f'), [
-    caseId,
-    currentCaseId,
-    currentIntensityArtifactId,
-    currentIntensityVolume,
-    guiSessionId,
-    isRunActive,
-    runStatus,
-    volumeSnapshot,
-    workspaceId,
-  ])
-  const lastSyncedSignatureRef = useRef<string | null>(null)
-  const signatureRef = useRef(signature)
   const payloadRef = useRef(payload)
   const onSyncResponseRef = useRef(onSyncResponse)
   const onErrorRef = useRef(onError)
-  signatureRef.current = signature
+  const acknowledgedCommandIdsRef = useRef<string[]>([])
   payloadRef.current = payload
   onSyncResponseRef.current = onSyncResponse
   onErrorRef.current = onError
 
   useEffect(() => {
+    let disposed = false
+    let syncInFlight = false
+
     const syncState = () => {
-      const currentSignature = signatureRef.current
-      if (lastSyncedSignatureRef.current === currentSignature) return
-      lastSyncedSignatureRef.current = currentSignature
-      api.syncGuiState(payloadRef.current).then(onSyncResponseRef.current).catch(error => {
-        lastSyncedSignatureRef.current = null
-        onErrorRef.current?.(error)
+      if (syncInFlight) return
+      syncInFlight = true
+      api.syncGuiState({
+        ...payloadRef.current,
+        acknowledged_command_ids: acknowledgedCommandIdsRef.current,
       })
+        .then(response => {
+          if (!disposed) {
+            onSyncResponseRef.current(response)
+            acknowledgedCommandIdsRef.current = response.commands.map(command => command.id)
+          }
+        })
+        .catch(error => {
+          if (!disposed) onErrorRef.current?.(error)
+        })
+        .finally(() => {
+          syncInFlight = false
+        })
     }
 
+    syncState()
     const interval = window.setInterval(syncState, GUI_STATE_SYNC_INTERVAL_MS)
 
     return () => {
+      disposed = true
       window.clearInterval(interval)
     }
   }, [])

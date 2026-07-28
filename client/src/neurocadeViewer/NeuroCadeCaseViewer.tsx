@@ -31,6 +31,7 @@ interface NeuroCadeCaseViewerProps {
   canAddLayers?: boolean;
   onLocationChange?: (location: LocationInfo) => void;
   externalCoordinate?: [number, number, number] | null;
+  onBackendChange?: (backend: ViewerBackend | null) => void;
 }
 
 // Curated, MRI-sensible colormaps for intensity volumes, filtered against
@@ -82,6 +83,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   canAddLayers = false,
   onLocationChange,
   externalCoordinate,
+  onBackendChange,
 }, ref) => {
   const {
     instanceRef,
@@ -93,7 +95,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   onLocationChangeRef.current = onLocationChange;
 
   const [paneLoading, setPaneLoading] = useState(false);
-  const [viewerBackend, setViewerBackend] = useState<ViewerBackend | null>(null);
   const [viewMode, setViewMode] = useState<NeuroCadeViewMode>('multi');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dragMode, setDragMode] = useState<ViewerDragMode>('pan');
@@ -141,7 +142,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const applyImmediateVolumeUpdate = useCallback((id: string, updates: Partial<Volume>) => {
     const source = volumes.find((volume) => volume.id === id);
     if (!source) return;
-    const next = { ...source, ...updates } as Volume;
+    const next = { ...source, ...updates };
     const nv = instanceRef.current;
     if (nv) {
       const action = applyLayerDisplay(nv, id, next, updates);
@@ -161,7 +162,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const previewVolumeOpacity = useCallback((id: string, opacity: number) => {
     const source = volumes.find((volume) => volume.id === id);
     if (!source) return;
-    const next = { ...source, opacity } as Volume;
+    const next = { ...source, opacity };
     const nv = instanceRef.current;
     if (nv) {
       const action = previewLayerOpacity(nv, id, next);
@@ -183,6 +184,10 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
     setCurrentLocation(location);
     onLocationChangeRef.current?.(location);
   }, []);
+
+  const handleBackendChange = useCallback((backend: ViewerBackend | null) => {
+    onBackendChange?.(backend);
+  }, [onBackendChange]);
 
   const {
     drawingSession,
@@ -440,7 +445,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
             onLoadingChange={handlePaneLoading}
             onError={setLoadError}
             onColormaps={handlePaneColormaps}
-            onBackendChange={setViewerBackend}
+            onBackendChange={handleBackendChange}
           />
           {loading && (
             <div className="nc-viewer-canvas-spinner" role="status" aria-label="Loading imaging data">
@@ -452,11 +457,6 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           )}
           {loadError && (
             <div className="nc-viewer-canvas-error">{loadError}</div>
-          )}
-          {viewerBackend === 'webgl2' && (
-            <div className="nc-viewer-canvas-warning" role="status">
-              WebGPU is unavailable. Using WebGL2; layer visibility and windowing may be significantly slower.
-            </div>
           )}
         </div>
         <ViewerToolbar

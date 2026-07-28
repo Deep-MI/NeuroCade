@@ -111,8 +111,21 @@ def prompt_gui_state(gui_state: Mapping[str, Any]) -> dict[str, Any]:
     dict[str, Any]
         Sanitized GUI state with current case, volumes, running status, and cursor data.
     """
-    loaded_volume_names = gui_state.get("loaded_volume_names") or gui_state.get("loaded_volumes") or []
-    visible_volumes = gui_state.get("visible_volumes") or []
+    raw_layers = gui_state.get("layers") or []
+    layers = [
+        {
+            "id": layer.get("id") or layer.get("filename"),
+            "filename": layer.get("filename"),
+            "type": layer.get("type"),
+            "role": layer.get("role"),
+            "hemisphere": layer.get("hemisphere"),
+            "visible": bool(layer.get("visible")),
+            "opacity": layer.get("opacity"),
+            "display": layer.get("display") or {},
+        }
+        for layer in raw_layers
+        if isinstance(layer, Mapping)
+    ]
     current_intensity_volume = gui_state.get("current_intensity_volume")
     current_cursor = gui_state.get("current_cursor") if isinstance(gui_state.get("current_cursor"), Mapping) else None
     cursor_payload = None
@@ -133,19 +146,9 @@ def prompt_gui_state(gui_state: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "is_job_running": bool(gui_state.get("is_job_running", False)),
         "has_active_case": bool(gui_state.get("current_case_id")),
-        "has_loaded_volumes": bool(loaded_volume_names),
-        "has_valid_segmentation": bool(gui_state.get("has_valid_segmentation", False)),
+        "has_loaded_layers": bool(layers),
         "current_case_id": gui_state.get("current_case_id"),
-        "loaded_volume_names": [
-            str(volume_name)
-            for volume_name in loaded_volume_names
-            if isinstance(volume_name, str) and volume_name
-        ],
-        "visible_volumes": [
-            str(volume_name)
-            for volume_name in visible_volumes
-            if isinstance(volume_name, str) and volume_name
-        ],
+        "layers": layers,
         "current_intensity_volume": str(current_intensity_volume)[:255] if isinstance(current_intensity_volume, str) else None,
         "current_cursor": cursor_payload,
     }
@@ -199,24 +202,17 @@ def build_system_prompt(
         llm_gui_state = prompt_gui_state(gui_state)
         session_lines.append(f"GUI state: {json.dumps(llm_gui_state, ensure_ascii=True)}")
         current_case_id = gui_state.get("current_case_id")
-        loaded_volumes = llm_gui_state.get("loaded_volume_names") or []
-        visible_volumes = llm_gui_state.get("visible_volumes") or []
+        layers = llm_gui_state.get("layers") or []
         current_intensity_volume = llm_gui_state.get("current_intensity_volume")
         if current_case_id:
             session_lines.append("Current case directory for runtime tools: /case")
-        if loaded_volumes:
+        if layers:
             session_lines.append(
-                "Loaded volume display filenames: "
-                + json.dumps(loaded_volumes, ensure_ascii=True)
+                "Typed viewer layers: " + json.dumps(layers, ensure_ascii=True)
             )
             session_lines.append(
-                "Loaded volume path rule: these are display filenames, not guaranteed direct /case paths. "
-                "If an exact runtime path is needed, inspect the case tree; FastSurfer volumes usually live under /case/mri/."
-            )
-        if visible_volumes:
-            session_lines.append(
-                "Currently visible volume display filenames: "
-                + json.dumps(visible_volumes, ensure_ascii=True)
+                "Layer filenames are display identifiers, not guaranteed /case paths. "
+                "Use case_file_tree before gui_load_layer when an exact path is needed."
             )
         if current_intensity_volume:
             session_lines.append(f"Current FastSurfer input volume: {current_intensity_volume}")
