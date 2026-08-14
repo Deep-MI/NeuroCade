@@ -1,22 +1,22 @@
 """Parse FreeSurfer/FastSurfer .stats files in-process.
 
-The ``aseg+DKT.stats`` file is written by FastSurfer's ``segstats.py`` at the
-end of every normal run.  This module reads it directly from disk so the agent
-never needs to shell out to ``mri_segstats``.
+The regular ``aseg+DKT.VINN.stats`` file is written by FastSurfer's ``segstats.py``
+at the end of every normal run. This module reads it directly from disk so the
+agent never needs to shell out to ``mri_segstats``.
 """
 
 from __future__ import annotations
 
 import os
 from contextlib import suppress
+from pathlib import Path
 
-from backend_common.case_storage import case_slug_from_id
-from backend_common.settings import get_settings
+from api_service.runtime import settings
+from backend_common.case_storage import case_storage_dir
 
 from .lut import resolve_label
 from .types import ToolTextContent
-
-_OUTPUT_DIR = str(get_settings().outputs_dir)
+from .viewer_paths import local_output_root
 
 
 def _case_output_root_from_ids(workspace_id: str, case_id: str) -> str | None:
@@ -27,7 +27,10 @@ def _case_output_root_from_ids(workspace_id: str, case_id: str) -> str | None:
         return None
     if workspace_id in {".", ".."} or case_id in {".", ".."}:
         return None
-    return f"workspaces/{workspace_id}/cases/{case_slug_from_id(workspace_id, case_id)}"
+    try:
+        return case_storage_dir(settings, workspace_id, case_id).relative_to(settings.outputs_dir).as_posix()
+    except (FileNotFoundError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +38,7 @@ def _case_output_root_from_ids(workspace_id: str, case_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def parse_stats_file(path: str) -> dict:
+def parse_stats_file(path: str | Path) -> dict:
     """Parse a FreeSurfer/FastSurfer ``.stats`` file.
 
     Returns a dict with two keys:
@@ -97,9 +100,7 @@ def _fmt_rows(rows: list[dict]) -> str:
     header = f"{'SegId':<8} {'NVoxels':<10} {'Volume_mm3':<14} StructName"
     lines = [header]
     for r in rows:
-        lines.append(
-            f"{r['seg_id']:<8} {r['n_voxels']:<10} {r['volume_mm3']:<14.3f} {r['struct_name']}"
-        )
+        lines.append(f"{r['seg_id']:<8} {r['n_voxels']:<10} {r['volume_mm3']:<14.3f} {r['struct_name']}")
     return "\n".join(lines)
 
 
@@ -107,9 +108,7 @@ def _fmt_measures(measures: list[dict]) -> str:
     """Format global volume measures as readable summary lines."""
     lines = []
     for m in measures:
-        lines.append(
-            f"  {m['name']} ({m['description']}): {m['value']:.3f} {m['unit']}"
-        )
+        lines.append(f"  {m['name']} ({m['description']}): {m['value']:.3f} {m['unit']}")
     return "\n".join(lines)
 
 
@@ -119,18 +118,12 @@ def _fmt_measures(measures: list[dict]) -> str:
 
 
 def _resolve_case_output_root(arguments: dict, gui_state: dict) -> tuple[str | None, str | None]:
-    """Choose the case output directory from explicit args or GUI state."""
-    explicit_case_id = str(arguments.get("case_id") or "").strip()
-    if explicit_case_id:
-        explicit_workspace_id = str(arguments.get("workspace_id") or gui_state.get("current_workspace_id") or gui_state.get("workspace_id") or "").strip()
-        if explicit_workspace_id:
-            return _case_output_root_from_ids(explicit_workspace_id, explicit_case_id), explicit_case_id
-        return None, None
-
-    current_case_id = str(gui_state.get("current_case_id") or "").strip()
-    current_workspace_id = str(gui_state.get("current_workspace_id") or gui_state.get("workspace_id") or "").strip()
-    if current_case_id and current_workspace_id:
-        return _case_output_root_from_ids(current_workspace_id, current_case_id), current_case_id
+    """Resolve the active case output directory from canonical GUI state."""
+    del arguments
+    case_id = str(gui_state.get("case_id") or "").strip()
+    workspace_id = str(gui_state.get("workspace_id") or "").strip()
+    if case_id and workspace_id:
+        return _case_output_root_from_ids(workspace_id, case_id), case_id
     return None, None
 
 
@@ -141,39 +134,30 @@ def handle_read_stats(arguments: dict, gui_state: dict) -> list[ToolTextContent]
         return [
             ToolTextContent(
                 type="text",
-                text="Error: no active case. Pass case_id explicitly or load a case first.",
+                text="Error: no active case is loaded.",
             )
         ]
 
-    stats_file = (arguments.get("stats_file") or "aseg+DKT.stats").strip().lstrip("/")
+    stats_file = (arguments.get("stats_file") or "aseg+DKT.VINN.stats").strip().lstrip("/")
     # Accept bare filename or full path-like strings — always resolve under stats/
     if os.sep in stats_file or "/" in stats_file:
-        # caller passed something like "bert/stats/aseg+DKT.stats" — take the basename
+        # Caller passed something like "bert/stats/aseg+DKT.VINN.stats" — take the basename.
         stats_file = os.path.basename(stats_file)
 
-    path = os.path.join(_OUTPUT_DIR, case_output_root, "stats", stats_file)
-    if not os.path.isfile(path):
+    stats_dir = local_output_root() / case_output_root / "stats"
+    path = stats_dir / stats_file
+    if not path.is_file():
         return [
             ToolTextContent(
                 type="text",
-                text=(
-                    f"Stats file not found: {path}\n"
-                    f"Available files: "
-                    + ", ".join(
-                        os.listdir(os.path.join(_OUTPUT_DIR, case_output_root, "stats"))
-                        if os.path.isdir(os.path.join(_OUTPUT_DIR, case_output_root, "stats"))
-                        else []
-                    )
-                ),
+                text=(f"Stats file not found: {path}\nAvailable files: " + ", ".join(os.listdir(stats_dir) if stats_dir.is_dir() else [])),
             )
         ]
 
     try:
         parsed = parse_stats_file(path)
     except Exception as exc:
-        return [
-            ToolTextContent(type="text", text=f"Error parsing {stats_file}: {exc}")
-        ]
+        return [ToolTextContent(type="text", text=f"Error parsing {stats_file}: {exc}")]
 
     label_query = (arguments.get("label_query") or "").strip()
 
@@ -208,11 +192,7 @@ def handle_read_stats(arguments: dict, gui_state: dict) -> list[ToolTextContent]
     # 2. Also search global measures by short name, long name, or description
     q = label_query.lower()
     matched_measures = [
-        m
-        for m in parsed["measures"]
-        if q in m["name"].lower()
-        or q in m["long_name"].lower()
-        or q in m["description"].lower()
+        m for m in parsed["measures"] if q in m["name"].lower() or q in m["long_name"].lower() or q in m["description"].lower()
     ]
     if matched_measures:
         result_parts.append(f"\n## Global measures matching '{label_query}'")

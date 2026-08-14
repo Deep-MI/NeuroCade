@@ -10,12 +10,13 @@ from api_service.runtime_tools import (
     get_dynamic_gui_tools,
     handle_case_file_tree,
     handle_gui_apply_view_preset,
+    handle_gui_command_status,
     handle_gui_focus_label,
     handle_gui_list_layers,
     handle_gui_load_layer,
     handle_gui_move_cursor,
     handle_gui_remove_layer,
-    handle_gui_run_fastsurfer,
+    handle_gui_reorder_layer,
     handle_gui_set_layer_display,
     handle_gui_set_layer_visibility,
     handle_lut_lookup,
@@ -31,10 +32,10 @@ class RuntimeToolDispatcher:
     def __init__(self, gui_state_store: GuiStateStore) -> None:
         self.gui_state_store = gui_state_store
 
-    def fetch_tools(
+    def available_tools(
         self,
         *,
-        gui_state_key: str | None = None,
+        gui_state_key: str,
         gui_state_override: dict | None = None,
     ) -> list[dict[str, Any]]:
         base_gui_state = self.gui_state_store.state_for_key(gui_state_key)
@@ -47,18 +48,19 @@ class RuntimeToolDispatcher:
         arguments: dict,
         gui_state_override: dict | None = None,
         *,
-        gui_state_key: str | None = None,
+        gui_state_key: str,
     ) -> str:
         base_gui_state = self.gui_state_store.state_for_key(gui_state_key)
         if gui_state_override is not None:
             base_gui_state.update(gui_state_override)
         effective_gui_state = base_gui_state
         gui_tools = {
-            "gui_run_fastsurfer": handle_gui_run_fastsurfer,
             "gui_move_cursor": handle_gui_move_cursor,
+            "gui_command_status": handle_gui_command_status,
             "gui_focus_label": handle_gui_focus_label,
             "gui_list_layers": handle_gui_list_layers,
             "gui_load_layer": handle_gui_load_layer,
+            "gui_reorder_layer": handle_gui_reorder_layer,
             "gui_remove_layer": handle_gui_remove_layer,
             "gui_set_layer_visibility": handle_gui_set_layer_visibility,
             "gui_set_layer_display": handle_gui_set_layer_display,

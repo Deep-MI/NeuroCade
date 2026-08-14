@@ -30,13 +30,13 @@ def _build_engine(url: str) -> Engine:
     busy timeout to ride out brief write contention. ``check_same_thread=False``
     lets a connection move between the worker and request threads.
     """
-    if url.startswith("sqlite"):
-        return create_engine(
-            url,
-            future=True,
-            connect_args={"check_same_thread": False},
-        )
-    return create_engine(url, future=True)
+    if not url.startswith("sqlite"):
+        raise RuntimeError("NeuroCade supports SQLite DATABASE_URL values only")
+    return create_engine(
+        url,
+        future=True,
+        connect_args={"check_same_thread": False},
+    )
 
 
 engine = _build_engine(settings.sqlalchemy_database_url)
@@ -45,8 +45,6 @@ engine = _build_engine(settings.sqlalchemy_database_url)
 @event.listens_for(engine, "connect")
 def _configure_sqlite_connection(dbapi_connection, _connection_record):  # noqa: ANN001
     """Apply WAL/safety pragmas and hand transaction control to SQLAlchemy."""
-    if engine.dialect.name != "sqlite":
-        return
     dbapi_connection.isolation_level = None
     cursor = dbapi_connection.cursor()
     try:
@@ -70,8 +68,6 @@ def _sqlite_begin(conn):  # noqa: ANN001
     Code that truly needs an eager write lock can opt in with the
     ``sqlite_begin_immediate`` execution option.
     """
-    if engine.dialect.name != "sqlite":
-        return
     if conn.get_execution_options().get("sqlite_begin_immediate"):
         conn.exec_driver_sql("BEGIN IMMEDIATE")
         return
@@ -162,9 +158,6 @@ class User(Base, TimestampMixin):
 
 class Case(Base, TimestampMixin):
     __tablename__ = "cases"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "title", name="uq_cases_workspace_title"),
-    )
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
@@ -185,7 +178,6 @@ class Workspace(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String(32), default="personal", nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
 
 
 class WorkspaceMembership(Base, TimestampMixin):
@@ -210,7 +202,6 @@ class Artifact(Base, TimestampMixin):
             "case_id",
             "relative_path",
             unique=True,
-            postgresql_where=text("case_id IS NOT NULL"),
             sqlite_where=text("case_id IS NOT NULL"),
         ),
         Index(
@@ -218,7 +209,6 @@ class Artifact(Base, TimestampMixin):
             "workspace_id",
             "relative_path",
             unique=True,
-            postgresql_where=text("case_id IS NULL AND workspace_id IS NOT NULL"),
             sqlite_where=text("case_id IS NULL AND workspace_id IS NOT NULL"),
         ),
     )
@@ -226,7 +216,6 @@ class Artifact(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     case_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True)
     workspace_id: Mapped[str | None] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"))
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
     kind: Mapped[ArtifactKind] = mapped_column(SqlEnum(ArtifactKind), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     relative_path: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -258,33 +247,45 @@ class Run(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_runs_case_status", "case_id", "status"),
         Index("ix_runs_workspace_scope_type", "workspace_id", "scope_type"),
-        Index("ix_runs_parent_status", "parent_run_id", "status"),
         Index(
             "uq_runs_active_case",
             "case_id",
             unique=True,
-            postgresql_where=text("case_id IS NOT NULL AND status IN ('queued', 'running')"),
             sqlite_where=text("case_id IS NOT NULL AND status IN ('queued', 'running')"),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
-    parent_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), index=True)
     scope_type: Mapped[AssistantScope] = mapped_column(SqlEnum(AssistantScope), nullable=False, default=AssistantScope.case)
     case_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
     created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
-    assistant_thread_id: Mapped[str | None] = mapped_column(ForeignKey("assistant_threads.id"), index=True)
     status: Mapped[RunStatus] = mapped_column(SqlEnum(RunStatus), nullable=False, default=RunStatus.queued)
     run_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    thread_id: Mapped[str | None] = mapped_column(String(255))
-    provider_name: Mapped[str | None] = mapped_column(String(64))
-    model_name: Mapped[str | None] = mapped_column(String(255))
-    runtime_job_id: Mapped[str | None] = mapped_column(String(255), index=True)
-    external_task_id: Mapped[str | None] = mapped_column(String(255))
+    job_id: Mapped[str | None] = mapped_column(String(128), index=True)
     input_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class BackgroundJob(Base, TimestampMixin):
+    """Durable submission and lifecycle state for in-process background work."""
+
+    __tablename__ = "background_jobs"
+    __table_args__ = (
+        Index("ix_background_jobs_state_queue", "state", "queue_name"),
+        Index("ix_background_jobs_finished_at", "finished_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    queue_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    kwargs_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    result_json: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuditEvent(Base):
@@ -354,14 +355,56 @@ class AssistantMessage(Base, TimestampMixin):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
 
-class AssistantCheckpoint(Base, TimestampMixin):
-    __tablename__ = "assistant_checkpoints"
+class AssistantTurn(Base, TimestampMixin):
+    """Durable lifecycle record for one private assistant request."""
+
+    __tablename__ = "assistant_turns"
+    __table_args__ = (
+        Index("ix_assistant_turns_thread_status", "thread_id", "status"),
+    )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     thread_id: Mapped[str] = mapped_column(ForeignKey("assistant_threads.id"), nullable=False, index=True)
-    run_id: Mapped[str | None] = mapped_column(String(128), index=True)
-    step_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    state_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
+    case_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    request_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class AssistantToolExecution(Base, TimestampMixin):
+    """Durable, exactly-addressed execution record for one assistant tool call."""
+
+    __tablename__ = "assistant_tool_executions"
+    __table_args__ = (
+        UniqueConstraint("turn_id", "call_id", name="uq_assistant_tool_executions_turn_call"),
+        Index("ix_assistant_tool_executions_turn_status", "turn_id", "status"),
+        Index("ix_assistant_tool_executions_external_run", "external_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
+    turn_id: Mapped[str] = mapped_column(
+        ForeignKey("assistant_turns.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    thread_id: Mapped[str] = mapped_column(ForeignKey("assistant_threads.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True
+    )
+    case_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    call_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    arguments_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    arguments_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    risk: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned")
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    external_run_id: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
 
 
 def get_db() -> Generator[Session, None, None]:

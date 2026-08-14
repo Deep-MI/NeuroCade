@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 
 from api_service.deps import get_context, get_db
 from api_service.jobs import job_manager
+from api_service.jobs.manager import FASTSURFER_QUEUE
 from api_service.monitoring.events import record_app_event_best_effort
 from api_service.monitoring.security import require_monitoring_admin
 from api_service.runtime import settings
-from api_service.runtime.service import runtime_service
 from api_service.schemas import (
     MonitoringAuditEventSummary,
     MonitoringClientErrorRequest,
@@ -92,9 +92,9 @@ def _check_database(db: Session) -> MonitoringStatusItem:
 
 
 def _check_job_worker() -> tuple[MonitoringStatusItem, dict[str, Any]]:
-    """Report in-process background job worker health (replaces Celery/Redis)."""
+    """Report in-process background job worker health."""
     try:
-        counts = job_manager.queue_status()
+        counts = job_manager.queue_status({"api", FASTSURFER_QUEUE})
         payload = {
             "status": "ok",
             "active": int(counts.get("active", 0)),
@@ -107,10 +107,10 @@ def _check_job_worker() -> tuple[MonitoringStatusItem, dict[str, Any]]:
         return _service_status("Background jobs", "down", str(exc)), payload
 
 
-async def _check_fastsurfer_queue() -> tuple[MonitoringStatusItem, dict[str, Any]]:
-    """Fetch FastSurfer queue health from the runtime service."""
+def _check_fastsurfer_queue() -> tuple[MonitoringStatusItem, dict[str, Any]]:
+    """Fetch FastSurfer queue health from the job manager."""
     try:
-        payload = await runtime_service.fetch_queue_status()
+        payload = job_manager.queue_status({FASTSURFER_QUEUE})
         normalized = {
             "status": "ok",
             "active": int(payload.get("active", 0)),
@@ -179,7 +179,7 @@ def _overall_status(services: list[MonitoringStatusItem]) -> OverallStatus:
     return "ok"
 
 
-async def _build_summary(db: Session) -> MonitoringSummary:
+def _build_summary(db: Session) -> MonitoringSummary:
     """Assemble dashboard totals, service health, and recent activity."""
     generated_at = _now()
     active_window_minutes = max(settings.monitoring_active_window_minutes, 1)
@@ -188,7 +188,7 @@ async def _build_summary(db: Session) -> MonitoringSummary:
 
     database_status = _check_database(db)
     job_worker_status, job_worker_payload = _check_job_worker()
-    fastsurfer_status, fastsurfer_payload = await _check_fastsurfer_queue()
+    fastsurfer_status, fastsurfer_payload = _check_fastsurfer_queue()
     services = [
         _service_status("API service", "ok"),
         database_status,
@@ -199,7 +199,7 @@ async def _build_summary(db: Session) -> MonitoringSummary:
     totals = {
         "users": db.query(User).count(),
         "recently_active_users": len(users),
-        "workspaces": db.query(Workspace).filter(Workspace.status == "active").count(),
+        "workspaces": db.query(Workspace).count(),
         "cases": db.query(Case).count(),
         "artifacts": db.query(Artifact).count(),
         "active_runs": db.query(Run).filter(Run.status.in_(ACTIVE_RUN_STATUSES)).count(),
@@ -224,11 +224,11 @@ async def _build_summary(db: Session) -> MonitoringSummary:
     )
 
 
-async def _build_health(db: Session) -> MonitoringHealth:
+def _build_health(db: Session) -> MonitoringHealth:
     """Assemble the lightweight monitoring health payload."""
     database_status = _check_database(db)
     job_worker_status, job_worker_payload = _check_job_worker()
-    fastsurfer_status, fastsurfer_payload = await _check_fastsurfer_queue()
+    fastsurfer_status, fastsurfer_payload = _check_fastsurfer_queue()
     services = [
         _service_status("API service", "ok"),
         database_status,
@@ -244,23 +244,23 @@ async def _build_health(db: Session) -> MonitoringHealth:
 
 
 @router.get("/summary", response_model=MonitoringSummary)
-async def monitoring_summary(
+def monitoring_summary(
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> MonitoringSummary:
     """Return the admin monitoring dashboard summary."""
     require_monitoring_admin(context)
-    return await _build_summary(db)
+    return _build_summary(db)
 
 
 @router.get("/health", response_model=MonitoringHealth)
-async def monitoring_health(
+def monitoring_health(
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> MonitoringHealth:
     """Return current service health for monitoring admins."""
     require_monitoring_admin(context)
-    return await _build_health(db)
+    return _build_health(db)
 
 
 @router.get("/events", response_model=MonitoringEventsResponse)

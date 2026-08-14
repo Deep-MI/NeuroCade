@@ -29,8 +29,6 @@ from conftest import (
     utc_timestamp,
 )
 
-pytestmark = pytest.mark.skip(reason="mri_info is no longer preconfigured; add it to config/runtime_tools.json to enable this E2E.")
-
 
 @pytest.fixture(autouse=True)
 def require_services(services_up):
@@ -42,14 +40,14 @@ class TestMriInfo:
     """Ask the agent to run mri_info on the orig volume."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, gateway_url):
-        """Store the gateway URL for chat and GUI state requests."""
-        self.gateway_url = gateway_url
+    def setup(self, app_url):
+        """Store the application URL for chat and GUI state requests."""
+        self.app_url = app_url
 
     def test_mri_info_orig(self, adni2_state):
         """Agent should call tool_call with mri_info and return volume metadata."""
         # Seed GUI state
-        seed_gui_state(adni2_state, self.gateway_url)
+        seed_gui_state(adni2_state, self.app_url)
 
         log_ts = utc_timestamp()
         time.sleep(0.3)
@@ -57,7 +55,7 @@ class TestMriInfo:
         messages = [
             {"role": "user", "content": "Show me the header info for the orig volume"},
         ]
-        response = chat_send(messages, self.gateway_url, timeout=180)
+        response = chat_send(messages, self.app_url, timeout=180)
         content = get_response_content(response)
 
         # Verify tool execution from logs
@@ -90,7 +88,7 @@ class TestMriInfo:
 
     def test_mri_info_specific_file(self, adni2_state):
         """Agent should run mri_info on a specific file when asked."""
-        seed_gui_state(adni2_state, self.gateway_url)
+        seed_gui_state(adni2_state, self.app_url)
 
         log_ts = utc_timestamp()
         time.sleep(0.3)
@@ -101,7 +99,7 @@ class TestMriInfo:
                 "content": "Run mri_info on the brainmask (mask.mgz) and tell me the voxel size",
             },
         ]
-        response = chat_send(messages, self.gateway_url, timeout=180)
+        response = chat_send(messages, self.app_url, timeout=180)
         content = get_response_content(response)
 
         logs = runtime_logs_since(since=log_ts)

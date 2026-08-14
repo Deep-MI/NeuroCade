@@ -5,10 +5,8 @@ This test exercises the full backend round-trip without a browser:
   1. Upload a file via /upload
   2. Seed GUI state with the case ID
   3. Send a chat message to run FastSurfer
-  4. Verify the agent calls gui_run_fastsurfer
-  5. Verify a run_fastsurfer command appears in the state sync response
-  6. Submit the run via /run (simulating what the frontend does)
-  7. Verify job status transitions
+  4. Verify the agent starts a configured FastSurfer workflow directly
+  5. Verify the durable run status transitions
 
 Prerequisites:
   ./scripts/run.sh start -d
@@ -47,9 +45,9 @@ class TestAgentRunFastSurfer:
     """Test the agent-triggered FastSurfer run flow at the API level."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, gateway_url, fresh_run_case):
-        """Store gateway context and a fresh case for each test."""
-        self.gateway_url = gateway_url
+    def setup(self, app_url, fresh_run_case):
+        """Store application context and a fresh case for each test."""
+        self.app_url = app_url
         self.app_headers = require_app_auth_headers()
         self.demo_case = fresh_run_case
 
@@ -60,7 +58,7 @@ class TestAgentRunFastSurfer:
         last_status = "unknown"
         while time.time() < deadline:
             try:
-                runs = get_case_runs(case_id, self.gateway_url)
+                runs = get_case_runs(case_id, self.app_url)
                 last_status = runs[0].get("status", "unknown") if runs else "unknown"
                 if last_status in target_statuses:
                     return last_status
@@ -78,7 +76,7 @@ class TestAgentRunFastSurfer:
         subject_name = f"e2e-upload-{uuid4().hex[:8]}"
         with upload_path.open("rb") as f:
             r = requests.post(
-                f"{self.gateway_url}/api/app/cases",
+                f"{self.app_url}/api/app/cases",
                 headers=self.app_headers,
                 data={
                     "workspace_id": self.demo_case["workspace_id"],
@@ -93,7 +91,7 @@ class TestAgentRunFastSurfer:
         assert data.get("case_id")
         assert data.get("title") == subject_name
 
-        uploaded_case = get_case_summary_by_case_id(data["case_id"], self.gateway_url)
+        uploaded_case = get_case_summary_by_case_id(data["case_id"], self.app_url)
         assert uploaded_case["id"] == data["case_id"]
         assert uploaded_case["title"] == subject_name
 
@@ -101,7 +99,7 @@ class TestAgentRunFastSurfer:
         """After seeding state with the selected input volume, the server stores it."""
         state = {
             "is_job_running": False,
-            "current_case_id": self.demo_case["case_id"],
+            "case_id": self.demo_case["case_id"],
             "layers": [{
                 "id": "intensity:input",
                 "filename": self.demo_case["upload_filename"],
@@ -112,17 +110,17 @@ class TestAgentRunFastSurfer:
             "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
             "current_intensity_volume": self.demo_case["upload_filename"],
         }
-        result = seed_gui_state(state, self.gateway_url)
+        result = seed_gui_state(state, self.app_url)
         assert result.get("status") == "success"
         current = result.get("current_state", {})
         assert current.get("current_intensity_volume") == self.demo_case["upload_filename"]
-        assert current.get("current_case_id") == self.demo_case["case_id"]
+        assert current.get("case_id") == self.demo_case["case_id"]
 
-    def test_agent_chat_sets_run_command(self):
-        """Authenticated chat should queue a typed run_fastsurfer command."""
+    def test_agent_chat_starts_configured_run(self):
+        """Authenticated chat should create a durable configured workflow run."""
         seed_gui_state({
             "is_job_running": False,
-            "current_case_id": self.demo_case["case_id"],
+            "case_id": self.demo_case["case_id"],
             "layers": [{
                 "id": "intensity:input",
                 "filename": self.demo_case["upload_filename"],
@@ -132,46 +130,29 @@ class TestAgentRunFastSurfer:
             }],
             "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
             "current_intensity_volume": self.demo_case["upload_filename"],
-        }, self.gateway_url)
+        }, self.app_url)
 
         response = chat_send(
             [{"role": "user", "content": "Run FastSurfer on the current case"}],
-            self.gateway_url,
+            self.app_url,
             timeout=120,
         )
         content = get_response_content(response)
         assert "fastsurfer" in content.lower()
 
-        state_data = seed_gui_state(
-            {
-                "is_job_running": True,
-                "current_case_id": self.demo_case["case_id"],
-                "layers": [{
-                    "id": "intensity:input",
-                    "filename": self.demo_case["upload_filename"],
-                    "type": "intensity",
-                    "role": "intensity",
-                    "visible": True,
-                }],
-                "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
-                "current_intensity_volume": self.demo_case["upload_filename"],
-            },
-            self.gateway_url,
+        status = self._poll_status(
+            self.demo_case["case_id"],
+            ["queued", "running", "completed", "failed"],
+            timeout=15,
         )
-        commands = [
-            command for command in state_data.get("commands", [])
-            if command.get("type") == "run_fastsurfer"
-        ]
-        assert commands, f"Expected run_fastsurfer command in state sync response. Got: {state_data}"
-        cmd = commands[0]["payload"]
-        assert cmd["case_id"] == self.demo_case["case_id"]
+        assert status in {"queued", "running", "completed", "failed"}
 
     def test_agent_chat_triggers_run(self):
-        """Full E2E: Chat message → agent calls gui_run_fastsurfer → command set."""
+        """Full E2E: chat starts the catalog workflow without a GUI-command handoff."""
         # Seed state: demo case uploaded, idle
         seed_gui_state({
             "is_job_running": False,
-            "current_case_id": self.demo_case["case_id"],
+            "case_id": self.demo_case["case_id"],
             "layers": [{
                 "id": "intensity:input",
                 "filename": self.demo_case["upload_filename"],
@@ -181,7 +162,7 @@ class TestAgentRunFastSurfer:
             }],
             "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
             "current_intensity_volume": self.demo_case["upload_filename"],
-        }, self.gateway_url)
+        }, self.app_url)
 
         log_ts = utc_timestamp()
         time.sleep(0.3)
@@ -190,14 +171,14 @@ class TestAgentRunFastSurfer:
         messages = [
             {"role": "user", "content": "Run FastSurfer on the current case"},
         ]
-        response = chat_send(messages, self.gateway_url, timeout=120)
+        response = chat_send(messages, self.app_url, timeout=120)
         content = get_response_content(response)
 
-        # Verify agent called gui_run_fastsurfer
+        # Verify the agent executed the configured workflow tools.
         logs = runtime_logs_since(since=log_ts)
         assert_tool_executed(logs)
 
-        run_markers = ["run_fastsurfer", "triggered", "started", "running",
+        run_markers = ["fastsurfer_fast", "queued", "started", "running",
                        "fastsurfer", "pipeline"]
         content_lower = content.lower()
         found = [m for m in run_markers if m in content_lower]
@@ -205,12 +186,11 @@ class TestAgentRunFastSurfer:
             f"Response doesn't mention FastSurfer execution: {content[:300]}"
         )
 
-        # The state sync should now expose a typed command unless the browser
-        # already acknowledged it.
+        # GUI state remains independent; the durable run is the shared authority.
         state_data = seed_gui_state(
             {
                 "is_job_running": True,
-                "current_case_id": self.demo_case["case_id"],
+                "case_id": self.demo_case["case_id"],
                 "layers": [{
                     "id": "intensity:input",
                     "filename": self.demo_case["upload_filename"],
@@ -221,17 +201,15 @@ class TestAgentRunFastSurfer:
                 "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
                 "current_intensity_volume": self.demo_case["upload_filename"],
             },
-            self.gateway_url,
+            self.app_url,
         )
-        # It may or may not still be there (it's a one-shot), but the tool
-        # call in the logs confirms it was set
         print(f"\n  Agent response: {content[:200]}")
         print(f"  State sync keys: {list(state_data.keys())}")
 
     def test_submitted_run_transitions_status(self):
         """After submitting /api/app/runs for the case, the status should transition."""
         r = requests.post(
-            f"{self.gateway_url}/api/app/runs",
+            f"{self.app_url}/api/app/runs",
             headers=self.app_headers,
             json={
                 "workspace_id": self.demo_case["workspace_id"],
@@ -264,6 +242,6 @@ class TestAgentRunFastSurfer:
 
     def test_run_appears_in_case_runs(self):
         """The authenticated case runs endpoint should return runs for the selected case."""
-        runs = get_case_runs(self.demo_case["id"], self.gateway_url)
+        runs = get_case_runs(self.demo_case["id"], self.app_url)
         assert runs, "Expected at least one run for the demo case"
         assert all(run.get("case_id") == self.demo_case["id"] for run in runs)

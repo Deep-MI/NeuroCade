@@ -1,10 +1,4 @@
-"""Startup reconciliation of runs left active by a crash.
-
-The in-process JobWorker holds queued/running jobs in memory, so a process
-restart loses any in-flight work. Rows in the ``runs`` table that were left
-``queued``/``running`` by the previous process can never be resumed and are
-marked ``failed`` on startup so the UI does not show perpetually-active runs.
-"""
+"""Reconcile application run rows with durable background-job recovery."""
 
 from __future__ import annotations
 
@@ -14,16 +8,24 @@ from collections.abc import Callable
 from sqlalchemy.orm import Session
 
 from backend_common.db import Run, RunStatus
+from backend_common.run_statuses import ACTIVE_RUN_STATUSES
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE = (RunStatus.queued, RunStatus.running)
-
-
-def reconcile_interrupted_runs(session_factory: Callable[[], Session]) -> int:
-    """Mark runs left active by a previous process as failed. Returns the count."""
+def reconcile_interrupted_runs(
+    session_factory: Callable[[], Session],
+    *,
+    recovered_job_ids: set[str] | None = None,
+) -> int:
+    """Fail active runs without a recovered queued job and return the count."""
+    recovered = recovered_job_ids or set()
     with session_factory() as db:
-        stuck = db.query(Run).filter(Run.status.in_(_ACTIVE)).all()
+        active_runs = db.query(Run).filter(Run.status.in_(ACTIVE_RUN_STATUSES)).all()
+        stuck = [
+            run
+            for run in active_runs
+            if run.job_id not in recovered
+        ]
         for run in stuck:
             run.status = RunStatus.failed
             if not run.error_message:

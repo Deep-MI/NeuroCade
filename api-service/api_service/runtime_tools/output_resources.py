@@ -1,9 +1,6 @@
 """Helpers for mapping runtime output files to typed resource descriptors."""
 
-def output_descriptor_path(*parts: str) -> str:
-    """Build a normalized descriptor path under the outputs namespace."""
-    normalized = "/".join(part.strip("/") for part in parts if part)
-    return f"outputs/{normalized}"
+from pathlib import PurePosixPath
 
 
 def output_resource_descriptor(output_descriptor_path: str) -> dict[str, str]:
@@ -13,9 +10,7 @@ def output_resource_descriptor(output_descriptor_path: str) -> dict[str, str]:
 
 def output_descriptor_path_from_file(file_path: str) -> str:
     """Map a stored output file path to its typed descriptor path."""
-    normalized = file_path.lstrip("/")
-    if normalized.startswith("output/"):
-        normalized = normalized[len("output/") :]
-    if normalized.startswith("data/"):
-        normalized = normalized[len("data/") :]
-    return output_descriptor_path(normalized)
+    path = PurePosixPath(file_path)
+    if path.is_absolute() or not path.parts or path.parts[0] != "workspaces" or ".." in path.parts:
+        raise ValueError("Output files must use a workspaces/... path")
+    return f"outputs/{path.as_posix()}"

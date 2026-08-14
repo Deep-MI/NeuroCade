@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -10,15 +11,16 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from api_service.assistant.conversation_store import AssistantConversationStore, done_payload  # noqa: E402
+from api_service.assistant.conversation_store import AssistantHistoryStore  # noqa: E402
 from api_service.assistant.loop import AssistantLoop  # noqa: E402
 from api_service.assistant.tools import AssistantToolBuilder  # noqa: E402
+from api_service.assistant.turn_store import AssistantTurnStore  # noqa: E402
 from api_service.helpers import get_case_for_user, get_workspace_for_user  # noqa: E402
-from api_service.runtime.service import RuntimeService, runtime_service  # noqa: E402
+from api_service.runtime.gui_runtime import GuiRuntime, gui_runtime  # noqa: E402
 from api_service.schemas import ChatMessageSummary  # noqa: E402
 from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.db import AssistantScope, Case, Workspace, run_with_sqlite_lock_retry  # noqa: E402
-from backend_common.providers import ModelConfig, ProviderRole, provider_registry  # noqa: E402
+from backend_common.providers import ModelConfig, provider_registry  # noqa: E402
 from backend_common.settings import ROOT_DIR, get_settings  # noqa: E402
 
 settings = get_settings()
@@ -38,6 +40,44 @@ def _assistant_round_limit_message(max_rounds: int) -> str:
         f"I could not finish the request within {max_rounds} assistant/tool rounds. "
         "Please try again with a narrower request, or ask me to continue from the last completed tool result."
     )
+
+
+def _checkpoint_content(content: Any) -> Any:
+    """Remove large transient image payloads from durable turn checkpoints."""
+    if not isinstance(content, list):
+        return content
+    return [
+        {"type": "text", "text": "[MRI snapshot omitted from durable turn checkpoint.]"}
+        if isinstance(part, dict) and part.get("type") == "image_url"
+        else part
+        for part in content
+    ]
+
+
+def _checkpoint_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Select only JSON-safe state required to resume at a tool boundary."""
+    return {
+        "conversation": [
+            (
+                {
+                    "role": "tool",
+                    "name": message.get("name"),
+                    "call_id": message.get("call_id"),
+                    "ledger_call_id": message.get("call_id"),
+                    "content": "",
+                }
+                if message.get("role") == "tool" and message.get("call_id")
+                else {**message, "content": _checkpoint_content(message.get("content"))}
+            )
+            for message in state.get("conversation", [])
+            if isinstance(message, dict)
+        ],
+        "pending_tool_calls": list(state.get("pending_tool_calls", [])),
+        "reasoning_entries": list(state.get("reasoning_entries", [])),
+        "assistant_messages": list(state.get("assistant_messages", [])),
+        "round_count": int(state.get("round_count", 0)),
+        "last_tool_call_fingerprint": state.get("last_tool_call_fingerprint"),
+    }
 
 
 def _ensure_scope_access(
@@ -99,16 +139,16 @@ def _ensure_scope_access(
         raise HTTPException(status_code=400, detail=f"Unsupported assistant scope: {scope}")
     if not case_id:
         raise HTTPException(status_code=400, detail="Case scope requires case_id")
-    case, _case_role = get_case_for_user(db, case_id, context.user.id, workspace_id=workspace.id)
+    case, _workspace, _case_role, _case_dir = get_case_for_user(db, case_id, context.user.id, workspace_id=workspace.id)
     return workspace, case
 
 
 class AssistantRuntime:
-    def __init__(self, runtime_service: RuntimeService) -> None:
-        self.runtime_service = runtime_service
-        self.tools = AssistantToolBuilder(runtime_service, settings=settings, root_dir=ROOT_DIR)
+    def __init__(self, gui_runtime: GuiRuntime) -> None:
+        self.tools = AssistantToolBuilder(gui_runtime, settings=settings)
         self.loop = AssistantLoop(self.tools, config_dir=CONFIG_DIR)
-        self.conversations = AssistantConversationStore()
+        self.history = AssistantHistoryStore()
+        self.turns = AssistantTurnStore()
 
     async def list_history(
         self,
@@ -120,7 +160,7 @@ class AssistantRuntime:
         case_id: str | None = None,
     ) -> list[ChatMessageSummary]:
         _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)
-        return self.conversations.list_history(db, scope=scope, workspace_id=workspace_id, case_id=case_id)
+        return self.history.list_history(db, user_id=context.user.id, scope=scope, workspace_id=workspace_id, case_id=case_id)
 
     async def clear_history(
         self,
@@ -132,7 +172,7 @@ class AssistantRuntime:
         case_id: str | None = None,
     ) -> None:
         _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)
-        self.conversations.clear_history(db, scope=scope, workspace_id=workspace_id, case_id=case_id)
+        self.history.clear_history(db, user_id=context.user.id, scope=scope, workspace_id=workspace_id, case_id=case_id)
 
     async def get_thread_key(
         self,
@@ -144,7 +184,7 @@ class AssistantRuntime:
         case_id: str | None = None,
     ) -> str | None:
         _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)
-        return self.conversations.thread_key(db, scope=scope, workspace_id=workspace_id, case_id=case_id)
+        return self.history.thread_key(db, user_id=context.user.id, scope=scope, workspace_id=workspace_id, case_id=case_id)
 
     async def run_chat(
         self,
@@ -157,20 +197,21 @@ class AssistantRuntime:
         scope: str,
         provider: str | None,
         model: str | None,
-        gui_session_id: str | None = None,
+        gui_session_id: str,
         gui_state_override: dict[str, Any] | None = None,
+        tool_approvals: list[dict[str, Any]] | None = None,
         event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         diagnostic_request_id: str | None = None,
         persist: bool = True,
     ) -> dict[str, Any]:
-        provider_config = provider_registry.get(ProviderRole.chat, provider_override=provider, model_override=model)
+        provider_config = provider_registry.get(provider_override=provider, model_override=model)
         if not provider_config.available:
             raise HTTPException(status_code=502, detail=provider_unavailable_message(provider_config))
         if persist and db is not None and context is not None and workspace_id is not None:
             _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)
 
         def prepare_conversation():
-            prepared = self.conversations.prepare_chat(
+            prepared = self.history.prepare_chat(
                 db,
                 context,
                 persist=persist,
@@ -188,6 +229,13 @@ class AssistantRuntime:
             thread, conversation, latest_messages = run_with_sqlite_lock_retry(db, prepare_conversation)
         else:
             thread, conversation, latest_messages = prepare_conversation()
+        approved_tools: list[dict[str, Any]] = []
+        resume_checkpoint: dict[str, Any] = {}
+        turn = None
+        if tool_approvals:
+            if not persist or db is None or thread is None:
+                raise HTTPException(status_code=400, detail="Tool approvals require a persisted private chat")
+            turn, approved_tools, resume_checkpoint = self.turns.consume_approvals(db, thread, tool_approvals)
         max_rounds = max(int(settings.assistant_max_rounds), 1)
         state: dict[str, Any] = {
             "db": db,
@@ -197,13 +245,45 @@ class AssistantRuntime:
             "case_id": case_id,
             "gui_session_id": gui_session_id,
             "gui_state_override": dict(gui_state_override or {}),
+            "tool_approvals": list(approved_tools),
+            "pending_tool_calls": list(resume_checkpoint.get("pending_tool_calls", [])),
             "provider_config": provider_config,
             "event_sink": event_sink,
             "diagnostic_request_id": diagnostic_request_id,
-            "conversation": conversation,
-            "round_count": 0,
+            "conversation": list(resume_checkpoint.get("conversation", conversation)),
+            "round_count": int(resume_checkpoint.get("round_count", 0)),
             "max_rounds": max_rounds,
+            "tool_calls_log": [],
+            "reasoning_entries": list(resume_checkpoint.get("reasoning_entries", [])),
+            "assistant_messages": list(resume_checkpoint.get("assistant_messages", [])),
+            "last_tool_call_fingerprint": resume_checkpoint.get("last_tool_call_fingerprint"),
         }
+        if turn is None and persist and db is not None and context is not None and thread is not None:
+            turn = self.turns.start(
+                db,
+                context,
+                thread,
+                request_id=diagnostic_request_id,
+                message_count=len(latest_messages),
+            )
+        state["turn_id"] = turn.id if turn is not None else None
+        if resume_checkpoint and turn is not None:
+            state["conversation"] = self.loop.executions.hydrate_conversation(
+                db,
+                turn.id,
+                list(state["conversation"]),
+            )
+            state["tool_calls_log"] = self.loop.executions.logs_for_turn(db, turn.id)
+        if persist and db is not None and turn is not None:
+            async def checkpoint_sink(phase: str, checkpoint_state: dict[str, Any]) -> None:
+                self.turns.checkpoint(
+                    db,
+                    turn,
+                    phase=phase,
+                    state=_checkpoint_state(checkpoint_state),
+                )
+
+            state["checkpoint_sink"] = checkpoint_sink
         logger.info(
             "assistant.runtime.started request_id=%s mode=chat scope=%s workspace_id=%s case_id=%s provider=%s model=%s persist=%s",
             diagnostic_request_id,
@@ -215,7 +295,18 @@ class AssistantRuntime:
             persist,
         )
         started_at = time.monotonic()
-        final_state = await self.loop.run(state)
+        try:
+            final_state = await self.loop.run(state)
+        except asyncio.CancelledError:
+            if db is not None:
+                db.rollback()
+                self.turns.finish(db, turn, status="canceled")
+            raise
+        except Exception as exc:
+            if db is not None:
+                db.rollback()
+                self.turns.finish(db, turn, status="failed", error=str(exc))
+            raise
         logger.info(
             "assistant.runtime.finished request_id=%s elapsed_ms=%s status=%s error=%s tool_call_count=%s",
             diagnostic_request_id,
@@ -230,19 +321,22 @@ class AssistantRuntime:
                 if "without finishing" in str(final_state["error"])
                 else final_state["error"]
             )
-            self.conversations.log_failed_turn(
-                context,
-                thread,
-                incoming_messages=latest_messages,
-                final_state=final_state,
-                error=str(detail),
-                diagnostic_request_id=diagnostic_request_id,
-            )
+            if persist and db is not None and context is not None and thread is not None:
+                self.history.persist_success(
+                    db,
+                    context,
+                    thread,
+                    incoming_messages=latest_messages,
+                    final_state=final_state,
+                    final_text=f"Assistant turn failed: {detail}",
+                )
+            if db is not None:
+                self.turns.finish(db, turn, status="failed", error=str(detail))
             raise HTTPException(status_code=502, detail=detail)
 
         final_text = final_state.get("final_response") or ""
         if persist and db is not None and context is not None and thread is not None:
-            self.conversations.persist_success(
+            self.history.persist_success(
                 db,
                 context,
                 thread,
@@ -250,6 +344,39 @@ class AssistantRuntime:
                 final_state=final_state,
                 final_text=final_text,
             )
-        return done_payload(final_text, final_state.get("tool_calls_log", []))
+            self.turns.finish(
+                db,
+                turn,
+                status=str(final_state.get("status") or "completed"),
+                result={
+                    "tool_call_count": len(final_state.get("tool_calls_log", []) or []),
+                    "approval_execution_id": (
+                        (final_state.get("approval_request") or {}).get("execution_id")
+                    ),
+                },
+            )
+        return _done_payload(
+            final_text,
+            final_state.get("tool_calls_log", []),
+            approval_request=final_state.get("approval_request"),
+            turn_id=turn.id if turn is not None else None,
+        )
 
-assistant_runtime = AssistantRuntime(runtime_service)
+def _done_payload(
+    content: str,
+    tool_calls: list[dict[str, Any]],
+    *,
+    approval_request: dict[str, Any] | None,
+    turn_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"message": {"role": "assistant", "content": content}}
+    if turn_id:
+        payload["turn_id"] = turn_id
+    if tool_calls:
+        payload["tool_calls_log"] = tool_calls
+    if approval_request:
+        payload["approval_request"] = approval_request
+    return payload
+
+
+assistant_runtime = AssistantRuntime(gui_runtime)

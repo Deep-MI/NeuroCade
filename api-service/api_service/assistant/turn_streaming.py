@@ -51,8 +51,8 @@ def record_assistant_turn_event(
 
 
 async def stream_assistant_events(
-    task: asyncio.Task[dict],
-    queue: asyncio.Queue[str],
+    task: asyncio.Task[None],
+    queue: asyncio.Queue[str | None],
     *,
     request_id: str,
     context: AuthContext | None,
@@ -67,8 +67,6 @@ async def stream_assistant_events(
     event_counts: dict[str, int] = {}
 
     while True:
-        if task.done() and queue.empty():
-            break
         remaining_seconds = deadline - time.monotonic()
         if remaining_seconds <= 0:
             task.cancel()
@@ -92,14 +90,33 @@ async def stream_assistant_events(
             )
             return
         try:
-            chunk = await asyncio.wait_for(queue.get(), timeout=min(0.25, remaining_seconds))
-            _count_sse_event(request_id, started_at, event_counts, chunk)
-            yield chunk
+            chunk = await asyncio.wait_for(queue.get(), timeout=remaining_seconds)
         except TimeoutError:
             continue
+        if chunk is None:
+            await task
+            return
+        _count_sse_event(request_id, started_at, event_counts, chunk)
+        yield chunk
+
+
+async def _produce_events(
+    queue: asyncio.Queue[str | None],
+    *,
+    runtime: AssistantRuntime,
+    payload: AssistantTurnRequest,
+    context: AuthContext,
+    request_id: str,
+    method: str,
+    path: str,
+    started_at: float,
+    details: dict,
+) -> None:
+    async def emit(event: str, data: dict) -> None:
+        await queue.put(f"event: {event}\ndata: {json.dumps(data)}\n\n")
 
     try:
-        result = await task
+        result = await _run_chat(runtime=runtime, payload=payload, context=context, emit=emit, request_id=request_id)
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info("assistant.turn.completed request_id=%s elapsed_ms=%s", request_id, elapsed_ms)
         record_assistant_turn_event(
@@ -109,13 +126,9 @@ async def stream_assistant_events(
             method=method,
             path=path,
             status_code=200,
-            details={
-                **details,
-                "elapsed_ms": elapsed_ms,
-                "tool_call_count": len(result.get("tool_calls_log", []) or []),
-            },
+            details={**details, "elapsed_ms": elapsed_ms, "tool_call_count": len(result.get("tool_calls_log", []) or [])},
         )
-        yield f"event: done\ndata: {json.dumps(result)}\n\n"
+        await emit("done", result)
     except HTTPException as exc:
         message = exc.detail if isinstance(exc.detail, str) else "API request failed"
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
@@ -130,7 +143,7 @@ async def stream_assistant_events(
             status_code=exc.status_code,
             details={**details, "elapsed_ms": elapsed_ms, "error_code": exc.status_code},
         )
-        yield f"event: error\ndata: {json.dumps({'error': {'message': message, 'code': exc.status_code}})}\n\n"
+        await emit("error", {"error": {"message": message, "code": exc.status_code}})
     except Exception as exc:  # pragma: no cover - defensive streaming fallback
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.exception("Assistant turn stream failed")
@@ -144,7 +157,9 @@ async def stream_assistant_events(
             status_code=500,
             details={**details, "elapsed_ms": elapsed_ms, "error_type": type(exc).__name__},
         )
-        yield f"event: error\ndata: {json.dumps({'error': {'message': str(exc), 'code': 'assistant_runtime_error'}})}\n\n"
+        await emit("error", {"error": {"message": str(exc), "code": "assistant_runtime_error"}})
+    finally:
+        await queue.put(None)
 
 
 def _count_sse_event(
@@ -177,26 +192,27 @@ def stream_assistant_turn(
     runtime: AssistantRuntime,
     request_id: str,
     rate_key: str,
+    thread_key: str,
     started_at: float,
     request_details: dict[str, Any],
     context: AuthContext,
 ) -> StreamingResponse:
     async def event_stream():
-        task: asyncio.Task[dict] | None = None
+        task: asyncio.Task[None] | None = None
         completed = False
         try:
-            queue: asyncio.Queue[str] = asyncio.Queue()
-
-            async def emit(event: str, data: dict) -> None:
-                await queue.put(f"event: {event}\ndata: {json.dumps(data)}\n\n")
-
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
             task = asyncio.create_task(
-                _run_chat(
+                _produce_events(
+                    queue,
                     runtime=runtime,
                     payload=payload,
                     context=context,
-                    emit=emit,
                     request_id=request_id,
+                    method=request.method,
+                    path=request.url.path,
+                    started_at=started_at,
+                    details=request_details,
                 )
             )
             async for chunk in stream_assistant_events(
@@ -228,7 +244,7 @@ def stream_assistant_turn(
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-            await chat_request_guard.release(rate_key)
+            await chat_request_guard.release(rate_key, thread_key=thread_key)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -245,11 +261,12 @@ async def _run_chat(
         return await runtime.run_chat(
             db=db,
             context=context,
-            messages=payload.messages,
+            messages=[message.model_dump() for message in payload.messages],
             workspace_id=payload.workspace_id,
             case_id=payload.case_id,
             gui_session_id=payload.gui_session_id,
             gui_state_override=payload.gui_state_override,
+            tool_approvals=[approval.model_dump() for approval in payload.tool_approvals],
             scope=payload.scope,
             provider=payload.provider,
             model=payload.model,

@@ -13,9 +13,8 @@ settings = get_settings()
 
 def bootstrap_database(engine) -> None:
     """Create transient SQLite tables or apply Alembic migrations."""
-    dialect_name = engine.dialect.name
     database_name = getattr(engine.url, "database", None)
-    if dialect_name == "sqlite" and database_name in {None, "", ":memory:"}:
+    if database_name in {None, "", ":memory:"}:
         Base.metadata.create_all(bind=engine)
         return
 
@@ -39,6 +38,6 @@ def seed_demo_state(db: Session) -> None:
     user.email = settings.local_auth_email
     user.full_name = settings.local_auth_name
     db.flush()
-    ensure_personal_workspace(db, user)
+    ensure_personal_workspace(db, settings, user)
 
     db.commit()

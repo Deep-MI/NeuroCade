@@ -10,22 +10,21 @@ from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from api_service.artifacts.service import (
-    filter_existing_artifacts,
     resolve_artifact_file_for_user,
     serialize_artifact,
 )
 from api_service.deps import get_context, get_db
 from api_service.helpers import (
-    ensure_case_storage_synced,
     get_case_for_user,
     get_workspace_for_user,
     log_event,
 )
 from api_service.policies import require_case_read, require_workspace_read
 from api_service.runtime import settings
+from api_service.runtime_tools.workflow_outputs import index_latest_case_workflow_outputs
 from api_service.schemas import ArtifactSummary
+from backend_common.artifact_reconciliation import reconcile_artifacts
 from backend_common.auth import AuthContext
-from backend_common.case_storage import case_storage_dir
 from backend_common.db import Artifact
 
 router = APIRouter(prefix="/api/app", tags=["artifacts"])
@@ -56,12 +55,13 @@ def list_case_artifacts(
     context: AuthContext = Depends(get_context),
 ) -> list[ArtifactSummary]:
     """Return existing artifacts for a readable case."""
-    case, role = get_case_for_user(db, case_id, context.user.id)
+    case, _workspace, role, _case_dir = get_case_for_user(db, case_id, context.user.id)
     require_case_read(role)
-    ensure_case_storage_synced(db, case)
+    index_latest_case_workflow_outputs(db, settings, case)
+    db.commit()
     artifacts = db.query(Artifact).filter(Artifact.case_id == case_id).order_by(Artifact.created_at.desc()).all()
-    existing_artifacts = filter_existing_artifacts(artifacts)
-    log_event(db, context, "artifact.listed", case_id=case_id)
+    existing_artifacts = reconcile_artifacts(db, artifacts)
+    db.commit()
     return [serialize_artifact(artifact) for artifact in existing_artifacts]
 
 
@@ -80,8 +80,9 @@ def list_workspace_artifacts(
         .order_by(Artifact.created_at.desc())
         .all()
     )
-    log_event(db, context, "workspace.artifact_listed", details={"workspace_id": workspace_id})
-    return [serialize_artifact(artifact) for artifact in filter_existing_artifacts(artifacts)]
+    existing_artifacts = reconcile_artifacts(db, artifacts)
+    db.commit()
+    return [serialize_artifact(artifact) for artifact in existing_artifacts]
 
 
 @router.get("/artifacts/{artifact_id}/download")
@@ -92,6 +93,9 @@ def download_artifact(
 ) -> FileResponse:
     """Stream an artifact file after verifying the requesting user can read it."""
     artifact, path = resolve_artifact_file_for_user(db, context, artifact_id)
+    # End the authorization read snapshot before the audit write. Concurrent
+    # artifact downloads otherwise try to upgrade stale SQLite snapshots.
+    db.commit()
     log_event(db, context, "artifact.downloaded", case_id=artifact.case_id, artifact_id=artifact.id)
     return FileResponse(path, media_type=artifact.mime_type, filename=artifact.name)
 
@@ -103,10 +107,11 @@ def download_case_archive(
     context: AuthContext = Depends(get_context),
 ) -> FileResponse:
     """Build and stream a temporary zip archive for a readable case."""
-    case, role = get_case_for_user(db, case_id, context.user.id)
+    case, _workspace, role, case_dir = get_case_for_user(db, case_id, context.user.id)
     require_case_read(role)
-    workspace = ensure_case_storage_synced(db, case)
-    case_dir = case_storage_dir(settings, workspace.id, case.id)
+    # Archive creation can be slow and must not retain a database snapshot;
+    # the subsequent audit insert starts in a fresh transaction.
+    db.commit()
 
     with tempfile.NamedTemporaryFile(prefix=f"case-{case.id}-", suffix=".zip", delete=False) as archive_file:
         archive_path = Path(archive_file.name)

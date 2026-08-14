@@ -10,6 +10,7 @@ from api_service.monitoring.security import is_monitoring_admin
 from api_service.runtime import settings
 from api_service.schemas import FrontendConfig, SessionBootstrap, UserSummary
 from backend_common.auth import AuthContext
+from backend_common.case_storage import resolve_workspace_storage
 from backend_common.db import Case, Workspace, WorkspaceMembership
 from backend_common.deployment_policy import get_deployment_policy
 
@@ -38,10 +39,18 @@ def session_bootstrap(
     memberships = (
         db.query(WorkspaceMembership, Workspace)
         .join(Workspace, Workspace.id == WorkspaceMembership.workspace_id)
-        .filter(WorkspaceMembership.user_id == context.user.id, Workspace.status == "active")
+        .filter(WorkspaceMembership.user_id == context.user.id)
         .order_by(Workspace.is_default.desc(), Workspace.created_at.asc())
         .all()
     )
+    available_memberships = []
+    for membership, workspace in memberships:
+        try:
+            resolve_workspace_storage(settings, workspace)
+        except FileNotFoundError:
+            continue
+        available_memberships.append((membership, workspace))
+    memberships = available_memberships
     workspace_ids = [workspace.id for _, workspace in memberships]
     case_count_rows = (
         db.query(Case.workspace_id, func.count(Case.id))
@@ -60,7 +69,6 @@ def session_bootstrap(
             "role": membership.role.value,
             "kind": workspace.kind,
             "is_default": workspace.is_default,
-            "status": workspace.status,
             "case_count": case_counts.get(workspace.id, 0),
         }
         for membership, workspace in memberships

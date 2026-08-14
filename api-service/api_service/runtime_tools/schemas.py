@@ -26,17 +26,38 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
     return [
         RuntimeToolSpec(
             name="case_file_tree",
-            description="List the active case files under /case to discover exact runtime paths.",
-            input_schema={"type": "object", "properties": {}},
+            description=(
+                "List a bounded active-case file tree to discover exact runtime paths. "
+                "Set path to a directory such as mri, surf, or scripts/runs."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "default": "."},
+                    "max_entries": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500},
+                },
+            },
         ),
         RuntimeToolSpec(
             name="gui_list_layers",
             description=(
                 "Return the current typed viewer layers with IDs, filenames, types, roles, "
-                "hemispheres, visibility, opacity, and display configuration. Use this before "
-                "targeted layer changes when the exact layer ID is uncertain."
+                "hemispheres, visibility, opacity, display configuration, and zero-based order "
+                "within each layer type. Use this before targeted layer changes."
             ),
             input_schema={"type": "object", "properties": {}},
+        ),
+        RuntimeToolSpec(
+            name="gui_command_status",
+            description=(
+                "Check whether a GUI command is still pending or has been acknowledged by the browser. "
+                "A queued command must not be described as applied until this reports acknowledged."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"command_id": {"type": "string"}},
+                "required": ["command_id"],
+            },
         ),
         RuntimeToolSpec(
             name="gui_load_layer",
@@ -124,6 +145,34 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
             },
         ),
         RuntimeToolSpec(
+            name="gui_reorder_layer",
+            description=(
+                "Move one loaded layer before or after another layer of the same type. "
+                "Cross-type reordering is rejected. Use gui_list_layers first to obtain IDs."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "layer_type": {
+                        "type": "string",
+                        "enum": ["intensity", "segmentation", "surface"],
+                    },
+                    "layer_id": {"type": "string"},
+                    "target_layer_id": {"type": "string"},
+                    "position": {
+                        "type": "string",
+                        "enum": ["before", "after"],
+                    },
+                },
+                "required": [
+                    "layer_type",
+                    "layer_id",
+                    "target_layer_id",
+                    "position",
+                ],
+            },
+        ),
+        RuntimeToolSpec(
             name="gui_apply_view_preset",
             description=(
                 "Apply a semantic, atomic viewer configuration. Prefer this for common review "
@@ -177,27 +226,12 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
         ),
         RuntimeToolSpec(
             name="read_stats",
-            description="Read FastSurfer volumetric statistics for the active or specified case.",
+            description="Read FastSurfer volumetric statistics for the active case.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "label_query": {"type": "string"},
                     "stats_file": {"type": "string"},
-                    "case_id": {"type": "string"},
-                },
-            },
-        ),
-        RuntimeToolSpec(
-            name="gui_run_fastsurfer",
-            description=(
-                "Request FastSurfer for the active case. Surface reconstruction is enabled by "
-                "setting seg_only=false."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "case_name": {"type": "string"},
-                    "seg_only": {"type": "boolean", "default": True},
                 },
             },
         ),

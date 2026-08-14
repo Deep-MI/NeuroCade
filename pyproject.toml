@@ -1,6 +1,6 @@
 [project]
 name = "neurocade"
-version = "0.1.0"
+version = "0.0.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi==0.139.2",
@@ -14,9 +14,9 @@ dependencies = [
   "langchain-anthropic>=1.2,<2",
   "langchain-google-genai>=4.0,<5",
   "langchain-ollama>=1.1,<2",
-  "langgraph==1.0.10",
   "python-multipart==0.0.32",
   "python-dotenv==1.2.2",
+  "PyYAML==6.0.3",
   "nibabel==5.2.1",
   "numpy==1.26.4",
   "neurocade-runtime-tools",

@@ -1,0 +1,372 @@
+version: 1
+
+tools:
+  - id: mri_info
+    image: freesurfer_8.1.0:20260311
+    description: Inspect the geometry and header metadata of a neuroimaging volume.
+    details: |
+      Use this read-only workflow to inspect dimensions, voxel sizes, orientation,
+      transforms, and other header metadata. It does not modify the input file and
+      reports its result on stdout.
+    inputs:
+      - name: volume
+        description: Neuroimaging volume to inspect.
+    outputs: []
+    execution:
+      gpu: false
+    script: |
+      mri_info "${INPUTS[0]}"
+
+  - id: mri_info_resolution
+    image: freesurfer_8.1.0:20260311
+    description: Report the voxel resolution of a neuroimaging volume.
+    details: |
+      Use this fixed workflow when only voxel spacing is needed. It invokes
+      mri_info with --res and reports the result on stdout.
+    inputs:
+      - name: volume
+        description: Neuroimaging volume whose resolution should be reported.
+    outputs: []
+    execution:
+      gpu: false
+    return:
+      include: [return_code, stdout, stderr]
+      max_stream_chars: 4096
+    script: |
+      mri_info --res "${INPUTS[0]}"
+
+  - id: fsqc
+    image: fsqc_2.1.4:20251126
+    description: Compute FSQC metrics for a fully processed FastSurfer subject.
+    details: |
+      Use after the complete FastSurfer pipeline, including cortical surface
+      reconstruction. Segmentation-only outputs and raw images are insufficient.
+      Pass the subject's mri/orig.mgz file; the workflow derives the subject root,
+      runs FSQC in FastSurfer mode, and returns both the main metrics table and an
+      archive containing all FSQC outputs.
+    inputs:
+      - name: processed_orig
+        description: The mri/orig.mgz file inside a fully processed FastSurfer subject directory.
+    outputs:
+      - name: metrics
+        type: other
+        path: qc/fsqc-metrics-{run_id}.csv
+        description: Main FSQC metrics table for the processed subject.
+      - name: results_archive
+        type: other
+        path: qc/fsqc-results-{run_id}.tar.gz
+        description: Compressed archive containing all files produced by FSQC.
+    execution:
+      gpu: false
+    return:
+      include: [return_code, stdout, stderr, outputs]
+      max_stream_chars: 16384
+    script: |
+      subject_root="$(dirname "$(dirname "${INPUTS[0]}")")"
+      scratch="$(mktemp -d /tmp/neurocade-fsqc.XXXXXX)"
+      trap 'rm -rf "${scratch}"' EXIT
+      mkdir -p "${scratch}/subjects" "${RUN_DIR}/fsqc" "$(dirname "${OUTPUTS[0]}")"
+      ln -s "${subject_root}" "${scratch}/subjects/subject"
+      run_fsqc \
+        --subjects_dir "${scratch}/subjects" \
+        --output_dir "${RUN_DIR}/fsqc" \
+        --subjects subject \
+        --fastsurfer \
+        --exit-on-error
+      metrics_file="$(find "${RUN_DIR}/fsqc" -maxdepth 1 -type f -name '*.csv' -print -quit)"
+      if [[ -z "${metrics_file}" ]]; then
+        echo "FSQC did not produce a top-level metrics CSV." >&2
+        exit 1
+      fi
+      install "${metrics_file}" "${OUTPUTS[0]}"
+      tar -C "${RUN_DIR}/fsqc" -czf "${OUTPUTS[1]}" .
+
+  - id: fastsurfer_full
+    image: deepmi/fastsurfer:cu128-v2.5.4
+    description: Run complete FastSurfer segmentation and surface reconstruction.
+    details: |
+      Use for a complete FastSurfer analysis including whole-brain segmentation,
+      statistics, and cortical surfaces. The complete generated subject directory
+      is written directly into the case. Partial outputs and FastSurfer logs remain
+      available if the run fails or is canceled. This is a long-running background job.
+    inputs:
+      - name: t1
+        description: T1-weighted input volume.
+    outputs:
+      - name: whole_brain_segmentation
+        type: segmentation_volume
+        path: mri/aparc.DKTatlas+aseg.deep.mgz
+        description: FastSurfer whole-brain segmentation.
+        metadata: {lut: freesurfer, visible: true}
+      - name: aseg_statistics
+        type: other
+        path: stats/aseg+DKT.VINN.stats
+        description: Whole-brain segmentation statistics.
+      - name: left_white_surface
+        type: surface
+        path: surf/lh.white
+        description: Left-hemisphere white-matter surface.
+        metadata: {surface_format: freesurfer-surf, hemisphere: lh, surface_name: white, visible: false}
+      - name: right_white_surface
+        type: surface
+        path: surf/rh.white
+        description: Right-hemisphere white-matter surface.
+        metadata: {surface_format: freesurfer-surf, hemisphere: rh, surface_name: white, visible: false}
+      - name: conformed_input
+        type: intensity_volume
+        path: mri/orig.mgz
+        description: Conformed T1-weighted input volume.
+        required: false
+        metadata: {visible: false}
+      - name: bias_corrected_input
+        type: intensity_volume
+        path: mri/orig_nu.mgz
+        description: Bias-field-corrected T1-weighted volume.
+        required: false
+        metadata: {visible: false}
+      - name: brain_mask
+        type: segmentation_volume
+        path: mri/mask.mgz
+        description: Brain mask generated by FastSurfer.
+        required: false
+        metadata: {lut: binary, visible: false}
+      - name: subcortical_segmentation
+        type: segmentation_volume
+        path: mri/aseg.auto_noCCseg.mgz
+        description: Subcortical segmentation before corpus-callosum labels are added.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: cerebellum_segmentation
+        type: segmentation_volume
+        path: mri/cerebellum.CerebNet.nii.gz
+        description: Cerebellar sub-segmentation.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: hypothalamus_segmentation
+        type: segmentation_volume
+        path: mri/hypothalamus.HypVINN.nii.gz
+        description: Hypothalamic sub-segmentation.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: hypothalamus_mask
+        type: segmentation_volume
+        path: mri/hypothalamus_mask.HypVINN.nii.gz
+        description: Hypothalamus mask.
+        required: false
+        metadata: {lut: binary, visible: false}
+      - name: whole_brain_segmentation_with_cc
+        type: segmentation_volume
+        path: mri/aparc.DKTatlas+aseg.deep.withCC.mgz
+        description: Whole-brain segmentation after corpus-callosum labels are added.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: callosum_original_segmentation
+        type: segmentation_volume
+        path: mri/callosum.CC.orig.mgz
+        description: Corpus-callosum segmentation in the original image geometry.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: callosum_upright_segmentation
+        type: segmentation_volume
+        path: mri/callosum.CC.upright.mgz
+        description: Corpus-callosum segmentation in the upright working geometry.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: white_matter_parcellation
+        type: segmentation_volume
+        path: mri/wmparc.DKTatlas.mapped.mgz
+        description: White-matter parcellation.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: left_pial_surface
+        type: surface
+        path: surf/lh.pial
+        description: Left-hemisphere pial surface.
+        required: false
+        metadata: {surface_format: freesurfer-surf, hemisphere: lh, surface_name: pial, visible: true}
+      - name: right_pial_surface
+        type: surface
+        path: surf/rh.pial
+        description: Right-hemisphere pial surface.
+        required: false
+        metadata: {surface_format: freesurfer-surf, hemisphere: rh, surface_name: pial, visible: true}
+      - name: callosum_surface
+        type: surface
+        path: surf/callosum.surf
+        description: Corpus-callosum surface mesh.
+        required: false
+        metadata: {surface_format: freesurfer-surf, surface_name: callosum, visible: false}
+      - name: left_curvature
+        type: other
+        path: surf/lh.curv
+        description: Left-hemisphere surface curvature companion.
+        required: false
+        metadata: {layer_role: surface-curvature, surface_format: freesurfer-curv, hemisphere: lh}
+      - name: right_curvature
+        type: other
+        path: surf/rh.curv
+        description: Right-hemisphere surface curvature companion.
+        required: false
+        metadata: {layer_role: surface-curvature, surface_format: freesurfer-curv, hemisphere: rh}
+      - name: left_annotation
+        type: other
+        path: label/lh.aparc.DKTatlas.mapped.annot
+        description: Left-hemisphere parcellation annotation companion.
+        required: false
+        metadata: {layer_role: surface-annotation, surface_format: freesurfer-annot, hemisphere: lh}
+      - name: right_annotation
+        type: other
+        path: label/rh.aparc.DKTatlas.mapped.annot
+        description: Right-hemisphere parcellation annotation companion.
+        required: false
+        metadata: {layer_role: surface-annotation, surface_format: freesurfer-annot, hemisphere: rh}
+    execution:
+      mode: background
+      queue: fastsurfer
+    ui:
+      label: FastSurfer — Full
+    script: |
+      subjects_dir="$(dirname "${CASE_ROOT}")"
+      subject_id="$(basename "${CASE_ROOT}")"
+      /fastsurfer/run_fastsurfer.sh \
+        --t1 "${INPUTS[0]}" \
+        --sd "${subjects_dir}" \
+        --sid "${subject_id}" \
+        --allow_root \
+        --device "${DEVICE}" \
+        --viewagg_device "${DEVICE}"
+
+  - id: fastsurfer_segmentation
+    image: deepmi/fastsurfer:cu128-v2.5.4
+    description: Run FastSurfer segmentation without cortical surface reconstruction.
+    details: |
+      Use when whole-brain segmentation and statistics are required but cortical
+      surface reconstruction is not. The complete generated subject directory is
+      written directly into the case, including partial outputs from failed or
+      canceled runs.
+    inputs:
+      - name: t1
+        description: T1-weighted input volume.
+    outputs:
+      - name: whole_brain_segmentation
+        type: segmentation_volume
+        path: mri/aparc.DKTatlas+aseg.deep.mgz
+        description: FastSurfer whole-brain segmentation.
+        metadata: {lut: freesurfer, visible: true}
+      - name: aseg_statistics
+        type: other
+        path: stats/aseg+DKT.VINN.stats
+        description: Whole-brain segmentation statistics.
+      - name: conformed_input
+        type: intensity_volume
+        path: mri/orig.mgz
+        description: Conformed T1-weighted input volume.
+        required: false
+        metadata: {visible: false}
+      - name: bias_corrected_input
+        type: intensity_volume
+        path: mri/orig_nu.mgz
+        description: Bias-field-corrected T1-weighted volume.
+        required: false
+        metadata: {visible: false}
+      - name: brain_mask
+        type: segmentation_volume
+        path: mri/mask.mgz
+        description: Brain mask generated by FastSurfer.
+        required: false
+        metadata: {lut: binary, visible: false}
+      - name: subcortical_segmentation
+        type: segmentation_volume
+        path: mri/aseg.auto_noCCseg.mgz
+        description: Subcortical segmentation.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: cerebellum_segmentation
+        type: segmentation_volume
+        path: mri/cerebellum.CerebNet.nii.gz
+        description: Cerebellar sub-segmentation.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: hypothalamus_segmentation
+        type: segmentation_volume
+        path: mri/hypothalamus.HypVINN.nii.gz
+        description: Hypothalamic sub-segmentation.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+      - name: hypothalamus_mask
+        type: segmentation_volume
+        path: mri/hypothalamus_mask.HypVINN.nii.gz
+        description: Hypothalamus mask.
+        required: false
+        metadata: {lut: binary, visible: false}
+    execution:
+      mode: background
+      queue: fastsurfer
+    ui:
+      label: FastSurfer — Segmentation
+    script: |
+      subjects_dir="$(dirname "${CASE_ROOT}")"
+      subject_id="$(basename "${CASE_ROOT}")"
+      /fastsurfer/run_fastsurfer.sh \
+        --t1 "${INPUTS[0]}" \
+        --sd "${subjects_dir}" \
+        --sid "${subject_id}" \
+        --seg_only \
+        --allow_root \
+        --device "${DEVICE}" \
+        --viewagg_device "${DEVICE}"
+
+  - id: fastsurfer_fast
+    image: deepmi/fastsurfer:cu128-v2.5.4
+    description: Run the minimal FastSurfer whole-brain segmentation workflow.
+    details: |
+      Use when the primary whole-brain segmentation is needed quickly. This skips
+      bias-field correction, cerebellum and hypothalamus segmentation, statistics,
+      and cortical surface reconstruction. Outputs are written directly into the
+      case, including partial outputs from failed or canceled runs.
+    inputs:
+      - name: t1
+        description: T1-weighted input volume.
+    outputs:
+      - name: whole_brain_segmentation
+        type: segmentation_volume
+        path: mri/aparc.DKTatlas+aseg.deep.mgz
+        description: FastSurfer whole-brain segmentation.
+        metadata: {lut: freesurfer, visible: true}
+      - name: conformed_input
+        type: intensity_volume
+        path: mri/orig.mgz
+        description: Conformed T1-weighted input volume.
+        required: false
+        metadata: {visible: false}
+      - name: brain_mask
+        type: segmentation_volume
+        path: mri/mask.mgz
+        description: Brain mask generated by FastSurfer.
+        required: false
+        metadata: {lut: binary, visible: false}
+      - name: subcortical_segmentation
+        type: segmentation_volume
+        path: mri/aseg.auto_noCCseg.mgz
+        description: Subcortical segmentation.
+        required: false
+        metadata: {lut: freesurfer, visible: false}
+    execution:
+      mode: background
+      queue: fastsurfer
+    ui:
+      label: FastSurfer — Fast
+    script: |
+      subjects_dir="$(dirname "${CASE_ROOT}")"
+      subject_id="$(basename "${CASE_ROOT}")"
+      /fastsurfer/run_fastsurfer.sh \
+        --t1 "${INPUTS[0]}" \
+        --sd "${subjects_dir}" \
+        --sid "${subject_id}" \
+        --seg_only \
+        --no_biasfield \
+        --no_cereb \
+        --no_hypothal \
+        --allow_root \
+        --device "${DEVICE}" \
+        --viewagg_device "${DEVICE}"

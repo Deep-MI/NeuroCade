@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from fastapi.requests import Request
 from fastapi.responses import StreamingResponse
 
+from api_service.assistant.conversation_store import thread_key
 from api_service.assistant.runtime import assistant_runtime
 from api_service.assistant.turn_streaming import record_assistant_turn_event, stream_assistant_turn
 from api_service.chat_limits import chat_request_guard
@@ -23,10 +24,18 @@ router = APIRouter(tags=["assistant-turns"])
 @router.post("/api/app/assistant/turns")
 async def create_assistant_turn(
     request: Request,
+    payload: AssistantTurnRequest,
     context: AuthContext = Depends(get_context),
 ) -> StreamingResponse:
-    payload = AssistantTurnRequest.model_validate(await request.json())
-    rate_key = await chat_request_guard.acquire(f"user:{context.user.id}")
+    private_thread_key = thread_key(
+        user_id=context.user.id,
+        scope=payload.scope,
+        workspace_id=payload.workspace_id,
+        case_id=payload.case_id,
+    )
+    rate_key = await chat_request_guard.acquire(
+        f"user:{context.user.id}", thread_key=private_thread_key
+    )
     request_id = uuid4().hex
     started_at = time.monotonic()
     request_details = _request_details(payload, request_id=request_id, persist=True)
@@ -51,6 +60,7 @@ async def create_assistant_turn(
         runtime=assistant_runtime,
         request_id=request_id,
         rate_key=rate_key,
+        thread_key=private_thread_key,
         started_at=started_at,
         request_details=request_details,
         context=context,
@@ -66,5 +76,6 @@ def _request_details(payload: AssistantTurnRequest, *, request_id: str, persist:
         "message_count": len(payload.messages),
         "provider": payload.provider,
         "model": payload.model,
+        "tool_approval_count": len(payload.tool_approvals),
         "persist": persist,
     }

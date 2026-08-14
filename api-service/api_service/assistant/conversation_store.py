@@ -1,34 +1,50 @@
-"""Assistant conversation persistence and diagnostic logging.
-
-This module keeps assistant chat history in the application database and writes
-append-only JSONL diagnostics for successful and failed turns. It is responsible
-for thread identity, message sequencing, history hydration, persistence of tool
-and reasoning metadata, and response payload shaping for the chat API.
-"""
+"""Private assistant thread and message history persistence."""
 
 from __future__ import annotations
 
+import hashlib
 import json
-import logging
-import os
 import threading
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from api_service.assistant.compaction import (
+    build_domain_summary,
+    estimate_messages_tokens,
+    select_recent_messages,
+)
 from api_service.schemas import ChatMessageSummary, ChatToolCallEntry, ReasoningEntry
 from backend_common.auth import AuthContext
-from backend_common.concurrency import lock_assistant_thread_for_update
-from backend_common.db import AssistantCheckpoint, AssistantMessage, AssistantScope, AssistantThread, run_with_sqlite_lock_retry
+from backend_common.db import AssistantMessage, AssistantScope, AssistantThread, AssistantTurn, run_with_sqlite_lock_retry
 from backend_common.providers import ModelConfig
-from backend_common.settings import ROOT_DIR
+from backend_common.settings import get_settings
 
-logger = logging.getLogger(__name__)
-_conversation_log_lock = threading.Lock()
-_DEFAULT_CONVERSATION_LOG = ROOT_DIR / ".runtime" / "logs" / "assistant-conversations.jsonl"
+settings = get_settings()
+_history_write_lock = threading.Lock()
+HISTORY_OMISSION_NOTICE = (
+    "[History context notice: older private-thread messages were omitted and/or "
+    "the oldest retained message was compacted to fit the configured history "
+    "budget. The newest history was prioritized.]"
+)
+CONTEXT_SUMMARY_ROLE = "context-summary"
+
+
+def _context_message_size(message: dict[str, Any]) -> int:
+    return len(json.dumps(message, default=str, ensure_ascii=False))
+
+
+def _compact_history_text(content: str, limit: int) -> str:
+    if len(content) <= limit:
+        return content
+    marker = f" [... omitted {len(content) - limit} characters ...] "
+    if limit <= len(marker) + 2:
+        return content[:limit]
+    available = limit - len(marker)
+    head = available // 2
+    return content[:head] + marker + content[-(available - head):]
 
 
 def serialize_content(content: Any) -> dict[str, Any]:
@@ -36,49 +52,28 @@ def serialize_content(content: Any) -> dict[str, Any]:
     return {"value": content}
 
 
-def _conversation_log_path() -> str:
-    """Return the configured assistant conversation JSONL log path."""
-    return os.environ.get("NEUROCADE_ASSISTANT_CONVERSATION_LOG") or str(_DEFAULT_CONVERSATION_LOG)
-
-
-def _json_default(value: Any) -> str:
-    """Serialize diagnostic log values that the default JSON encoder rejects."""
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
-
-
-def append_conversation_log(record: dict[str, Any]) -> None:
-    """Append one diagnostic record to the assistant conversation JSONL log.
-
-    Logging failures are intentionally swallowed after a warning so diagnostic
-    I/O cannot break database persistence or assistant responses.
-    """
-    path = _conversation_log_path()
-    try:
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        line = json.dumps(record, default=_json_default, ensure_ascii=False, sort_keys=True)
-        with _conversation_log_lock, open(path, "a", encoding="utf-8") as file:
-            file.write(f"{line}\n")
-    except Exception as exc:  # pragma: no cover - diagnostics must not break chat persistence
-        logger.warning("Failed to append assistant conversation log %s: %s", path, exc)
-
-
-def thread_key(*, scope: str, workspace_id: str, case_id: str | None) -> str:
-    """Build the stable assistant thread key for a workspace or case scope."""
-    if scope == AssistantScope.workspace.value:
-        return f"workspace:{workspace_id}"
-    if not case_id:
+def thread_key(*, user_id: str, scope: str, workspace_id: str, case_id: str | None) -> str:
+    """Build the stable private assistant thread key for one user and scope."""
+    if scope == AssistantScope.case.value and not case_id:
         raise HTTPException(status_code=400, detail="Case scope requires case_id")
-    return f"case:{case_id}"
+    if scope not in {AssistantScope.workspace.value, AssistantScope.case.value}:
+        raise HTTPException(status_code=400, detail=f"Unsupported assistant scope: {scope}")
+    identity = json.dumps(
+        {"user_id": user_id, "scope": scope, "workspace_id": workspace_id, "case_id": case_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"private:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
 
 
-def find_thread(db: Session, *, scope: str, workspace_id: str, case_id: str | None) -> AssistantThread | None:
+def find_thread(db: Session, *, user_id: str, scope: str, workspace_id: str, case_id: str | None) -> AssistantThread | None:
     """Return the existing assistant thread for the requested scope, if any."""
-    key = thread_key(scope=scope, workspace_id=workspace_id, case_id=case_id)
-    return db.query(AssistantThread).filter(AssistantThread.thread_key == key).one_or_none()
+    key = thread_key(user_id=user_id, scope=scope, workspace_id=workspace_id, case_id=case_id)
+    return (
+        db.query(AssistantThread)
+        .filter(AssistantThread.thread_key == key, AssistantThread.created_by_user_id == user_id)
+        .one_or_none()
+    )
 
 
 def get_or_create_thread(
@@ -97,8 +92,12 @@ def get_or_create_thread(
     duplicate insert race is handled by rolling back, loading the winning row,
     and updating its provider metadata.
     """
-    key = thread_key(scope=scope, workspace_id=workspace_id, case_id=case_id)
-    thread = db.query(AssistantThread).filter(AssistantThread.thread_key == key).one_or_none()
+    key = thread_key(user_id=context.user.id, scope=scope, workspace_id=workspace_id, case_id=case_id)
+    thread = (
+        db.query(AssistantThread)
+        .filter(AssistantThread.thread_key == key, AssistantThread.created_by_user_id == context.user.id)
+        .one_or_none()
+    )
     if thread is None:
         thread = AssistantThread(
             thread_key=key,
@@ -114,7 +113,11 @@ def get_or_create_thread(
             db.flush()
         except IntegrityError:
             db.rollback()
-            thread = db.query(AssistantThread).filter(AssistantThread.thread_key == key).one()
+            thread = (
+                db.query(AssistantThread)
+                .filter(AssistantThread.thread_key == key, AssistantThread.created_by_user_id == context.user.id)
+                .one()
+            )
             thread.provider_name = provider_name
             thread.model_name = model_name
             db.flush()
@@ -126,19 +129,188 @@ def get_or_create_thread(
     return thread
 
 
-def load_thread_history(db: Session, thread_id: str) -> list[dict[str, Any]]:
-    """Load prior user and assistant messages for a persisted thread."""
+def _history_row_message(row: AssistantMessage) -> dict[str, Any] | None:
+    """Convert one durable row into provider-neutral conversation data."""
+    if row.role == "tool-calls":
+        evidence = []
+        for entry in row.metadata_json.get("toolCalls", []):
+            evidence.append(
+                {
+                    "role": "tool",
+                    "name": entry.get("name", "tool"),
+                    "call_id": entry.get("call_id"),
+                    "content": entry.get("result", ""),
+                }
+            )
+        if not evidence:
+            return None
+        return {
+            "role": "tool",
+            "content": "\n\n".join(
+                f"{entry['name']}({json.dumps(call.get('arguments', {}), sort_keys=True, default=str)}): {entry['content']}"
+                for entry, call in zip(evidence, row.metadata_json.get("toolCalls", []), strict=False)
+            ),
+        }
+    return {"role": row.role, "content": row.content_json.get("value", "")}
+
+
+def compact_thread_history(db: Session, thread: AssistantThread) -> None:
+    """Persist a token-aware summary covering old complete conversation turns."""
+    latest_summary = (
+        db.query(AssistantMessage)
+        .filter(AssistantMessage.thread_id == thread.id, AssistantMessage.role == CONTEXT_SUMMARY_ROLE)
+        .order_by(AssistantMessage.sequence.desc())
+        .first()
+    )
+    covered_sequence = int((latest_summary.metadata_json if latest_summary else {}).get("through_sequence", 0))
     rows = (
         db.query(AssistantMessage)
-        .filter(AssistantMessage.thread_id == thread_id)
-        .order_by(AssistantMessage.sequence.asc(), AssistantMessage.created_at.asc())
+        .filter(
+            AssistantMessage.thread_id == thread.id,
+            AssistantMessage.role != CONTEXT_SUMMARY_ROLE,
+            AssistantMessage.sequence > covered_sequence,
+        )
+        .order_by(AssistantMessage.sequence)
         .all()
     )
+    messages_with_rows = [
+        (message, row)
+        for row in rows
+        if (message := _history_row_message(row)) is not None
+    ]
+    messages = [message for message, _row in messages_with_rows]
+    previous_summary_tokens = estimate_messages_tokens(
+        [{"role": "context", "content": latest_summary.content_json.get("value", "")}]
+    ) if latest_summary is not None else 0
+    if (
+        len(messages) <= settings.assistant_history_max_messages
+        and estimate_messages_tokens(messages) + previous_summary_tokens <= settings.assistant_history_max_tokens
+    ):
+        return
+
+    compacted, _recent = select_recent_messages(
+        messages,
+        token_budget=min(
+            settings.assistant_history_keep_recent_tokens,
+            max(settings.assistant_history_max_tokens // 2, 128),
+        ),
+    )
+    if not compacted:
+        return
+    compacted_count = len(compacted)
+    through_sequence = messages_with_rows[compacted_count - 1][1].sequence
+    previous_summary = (
+        str(latest_summary.content_json.get("value", "")) if latest_summary is not None else None
+    )
+    summary = build_domain_summary(
+        compacted,
+        previous_summary=previous_summary,
+        max_tokens=max(settings.assistant_history_max_tokens // 4, 256),
+    )
+    next_sequence = (
+        db.query(AssistantMessage.sequence)
+        .filter(AssistantMessage.thread_id == thread.id)
+        .order_by(AssistantMessage.sequence.desc())
+        .limit(1)
+        .scalar()
+    )
+    db.add(
+        AssistantMessage(
+            thread_id=thread.id,
+            workspace_id=thread.workspace_id,
+            case_id=thread.case_id,
+            created_by_user_id=thread.created_by_user_id,
+            role=CONTEXT_SUMMARY_ROLE,
+            sequence=(next_sequence or 0) + 1,
+            content_json=serialize_content(summary),
+            metadata_json={"through_sequence": through_sequence},
+        )
+    )
+    db.flush()
+
+
+def load_thread_history(db: Session, thread_id: str) -> list[dict[str, Any]]:
+    """Load compacted private history within token and hard character bounds."""
+    message_limit = max(settings.assistant_history_max_messages, 1)
+    latest_summary = (
+        db.query(AssistantMessage)
+        .filter(AssistantMessage.thread_id == thread_id, AssistantMessage.role == CONTEXT_SUMMARY_ROLE)
+        .order_by(AssistantMessage.sequence.desc())
+        .first()
+    )
+    covered_sequence = int((latest_summary.metadata_json if latest_summary else {}).get("through_sequence", 0))
+    rows = (
+        db.query(AssistantMessage)
+        .filter(
+            AssistantMessage.thread_id == thread_id,
+            AssistantMessage.role.in_(("user", "assistant", "tool-calls")),
+            AssistantMessage.sequence > covered_sequence,
+        )
+        .order_by(AssistantMessage.sequence.desc(), AssistantMessage.created_at.desc())
+        .limit(message_limit + 1)
+        .all()
+    )
+    limited_by_count = len(rows) > message_limit
+    rows = rows[:message_limit][::-1]
+    candidates = [message for row in rows if (message := _history_row_message(row)) is not None]
+    summary_message = (
+        {"role": "context", "content": latest_summary.content_json.get("value", "")}
+        if latest_summary is not None
+        else None
+    )
+    token_limit = max(settings.assistant_history_max_tokens, 1)
+    summary_tokens = estimate_messages_tokens([summary_message]) if summary_message else 0
+    if estimate_messages_tokens(candidates) + summary_tokens > token_limit:
+        _compacted, candidates = select_recent_messages(
+            candidates,
+            token_budget=max(token_limit - summary_tokens, 1),
+        )
+        limited_by_count = True
+    if summary_message is not None:
+        candidates.insert(0, summary_message)
+    character_limit = max(settings.assistant_history_max_characters, 1)
+    candidate_size = sum(_context_message_size(message) for message in candidates)
+    needs_notice = limited_by_count or candidate_size > character_limit
+    notice = {"role": "context", "content": HISTORY_OMISSION_NOTICE}
+    remaining_characters = max(
+        character_limit - (_context_message_size(notice) if needs_notice else 0),
+        0,
+    )
     history: list[dict[str, Any]] = []
-    for row in rows:
-        if row.role in {"user", "assistant"}:
-            history.append({"role": row.role, "content": row.content_json.get("value", "")})
+    for message in reversed(candidates):
+        message_size = _context_message_size(message)
+        if message_size > remaining_characters:
+            content = message.get("content")
+            empty_message = {**message, "content": ""}
+            content_limit = remaining_characters - _context_message_size(empty_message)
+            if not history and isinstance(content, str) and content_limit > 0:
+                history.append({**message, "content": _compact_history_text(content, content_limit)})
+            needs_notice = True
+            break
+        history.append(message)
+        remaining_characters -= message_size
+    history.reverse()
+    if needs_notice:
+        history.insert(0, notice)
     return history
+
+
+def _content_for_persistence(content: Any) -> Any:
+    """Keep text while replacing large inline image data with a stable marker."""
+    if not isinstance(content, list):
+        return content
+    sanitized: list[Any] = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            sanitized.append(
+                {
+                    "type": "text",
+                    "text": "[MRI snapshot was available for this turn but is not retained.]",
+                }
+            )
+        else:
+            sanitized.append(part)
+    return sanitized
 
 
 def persist_turn(
@@ -170,7 +342,10 @@ def persist_turn(
             assistant_content=assistant_content,
         )
 
-    run_with_sqlite_lock_retry(db, operation)
+    # NeuroCade is a single-process monolith. Serialize the short sequence
+    # allocation transaction so concurrent turns cannot choose the same value.
+    with _history_write_lock:
+        run_with_sqlite_lock_retry(db, operation)
 
 
 def _persist_turn_once(
@@ -188,12 +363,10 @@ def _persist_turn_once(
 
     The turn is written as incoming user messages, optional interim assistant
     messages, an optional tool/reasoning summary row, and the final assistant
-    message. Message sequence assignment is protected by a row lock, and a
-    single retry handles concurrent sequence conflicts.
+    message. A single retry handles concurrent message-sequence conflicts.
     """
     for attempt in range(2):
         try:
-            thread = lock_assistant_thread_for_update(db, thread)
             next_sequence = (
                 db.query(AssistantMessage.sequence)
                 .filter(AssistantMessage.thread_id == thread.id)
@@ -202,11 +375,9 @@ def _persist_turn_once(
                 .scalar()
             )
             sequence = (next_sequence or 0) + 1
-            log_messages: list[dict[str, Any]] = []
-
             for message in incoming_messages:
                 role = message.get("role", "user")
-                content_json = serialize_content(message.get("content"))
+                content_json = serialize_content(_content_for_persistence(message.get("content")))
                 db.add(
                     AssistantMessage(
                         thread_id=thread.id,
@@ -218,14 +389,6 @@ def _persist_turn_once(
                         content_json=content_json,
                         metadata_json={},
                     )
-                )
-                log_messages.append(
-                    {
-                        "sequence": sequence,
-                        "role": role,
-                        "content_json": content_json,
-                        "metadata_json": {},
-                    }
                 )
                 sequence += 1
 
@@ -246,14 +409,6 @@ def _persist_turn_once(
                         metadata_json={"interim": True},
                     )
                 )
-                log_messages.append(
-                    {
-                        "sequence": sequence,
-                        "role": "assistant",
-                        "content_json": content_json,
-                        "metadata_json": {"interim": True},
-                    }
-                )
                 sequence += 1
 
             if tool_calls_log or reasoning_entries:
@@ -271,14 +426,6 @@ def _persist_turn_once(
                         metadata_json=metadata_json,
                     )
                 )
-                log_messages.append(
-                    {
-                        "sequence": sequence,
-                        "role": "tool-calls",
-                        "content_json": content_json,
-                        "metadata_json": metadata_json,
-                    }
-                )
                 sequence += 1
 
             content_json = serialize_content(assistant_content)
@@ -294,30 +441,7 @@ def _persist_turn_once(
                     metadata_json={},
                 )
             )
-            log_messages.append(
-                {
-                    "sequence": sequence,
-                    "role": "assistant",
-                    "content_json": content_json,
-                    "metadata_json": {},
-                }
-            )
             db.commit()
-            append_conversation_log(
-                {
-                    "event": "assistant.turn.persisted",
-                    "logged_at": datetime.now(UTC).isoformat(),
-                    "thread_id": thread.id,
-                    "thread_key": thread.thread_key,
-                    "scope_type": thread.scope_type.value if isinstance(thread.scope_type, AssistantScope) else str(thread.scope_type),
-                    "workspace_id": thread.workspace_id,
-                    "case_id": thread.case_id,
-                    "created_by_user_id": context.user.id,
-                    "provider_name": thread.provider_name,
-                    "model_name": thread.model_name,
-                    "messages": log_messages,
-                }
-            )
             return
         except IntegrityError:
             db.rollback()
@@ -339,35 +463,35 @@ def serialize_history_row(row: AssistantMessage) -> ChatMessageSummary:
     )
 
 
-class AssistantConversationStore:
-    """Facade for assistant history, persistence, and diagnostic turn logging."""
+class AssistantHistoryStore:
+    """Persist private assistant threads and displayable message history."""
 
-    def list_history(self, db: Session, *, scope: str, workspace_id: str, case_id: str | None = None) -> list[ChatMessageSummary]:
+    def list_history(self, db: Session, *, user_id: str, scope: str, workspace_id: str, case_id: str | None = None) -> list[ChatMessageSummary]:
         """Return all stored messages for the requested assistant thread."""
-        thread = find_thread(db, scope=scope, workspace_id=workspace_id, case_id=case_id)
+        thread = find_thread(db, user_id=user_id, scope=scope, workspace_id=workspace_id, case_id=case_id)
         if thread is None:
             return []
         rows = (
             db.query(AssistantMessage)
-            .filter(AssistantMessage.thread_id == thread.id)
-            .order_by(AssistantMessage.sequence.asc(), AssistantMessage.created_at.asc())
-            .all()
+            .filter(AssistantMessage.thread_id == thread.id, AssistantMessage.role != CONTEXT_SUMMARY_ROLE)
+            .order_by(AssistantMessage.sequence.desc(), AssistantMessage.created_at.desc())
+            .limit(max(settings.assistant_history_display_limit, 1))
+            .all()[::-1]
         )
         return [serialize_history_row(row) for row in rows]
 
-    def clear_history(self, db: Session, *, scope: str, workspace_id: str, case_id: str | None = None) -> None:
-        """Delete stored messages and checkpoints for a thread, if it exists."""
-        thread = find_thread(db, scope=scope, workspace_id=workspace_id, case_id=case_id)
+    def clear_history(self, db: Session, *, user_id: str, scope: str, workspace_id: str, case_id: str | None = None) -> None:
+        """Delete stored messages for a thread, if it exists."""
+        thread = find_thread(db, user_id=user_id, scope=scope, workspace_id=workspace_id, case_id=case_id)
         if thread is None:
             return
-        thread = lock_assistant_thread_for_update(db, thread)
         db.query(AssistantMessage).filter(AssistantMessage.thread_id == thread.id).delete(synchronize_session=False)
-        db.query(AssistantCheckpoint).filter(AssistantCheckpoint.thread_id == thread.id).delete(synchronize_session=False)
+        db.query(AssistantTurn).filter(AssistantTurn.thread_id == thread.id).delete(synchronize_session=False)
         db.commit()
 
-    def thread_key(self, db: Session, *, scope: str, workspace_id: str, case_id: str | None = None) -> str | None:
+    def thread_key(self, db: Session, *, user_id: str, scope: str, workspace_id: str, case_id: str | None = None) -> str | None:
         """Return the persisted thread key for a scope, or ``None`` if absent."""
-        thread = find_thread(db, scope=scope, workspace_id=workspace_id, case_id=case_id)
+        thread = find_thread(db, user_id=user_id, scope=scope, workspace_id=workspace_id, case_id=case_id)
         return thread.thread_key if thread is not None else None
 
     def prepare_chat(
@@ -385,10 +509,9 @@ class AssistantConversationStore:
         """Prepare persistence state and conversation context for a chat turn.
 
         When persistence is enabled and a database context is available, the
-        target thread is created or loaded and prior history is prepended for
-        single-message requests. Multi-message requests are treated as complete
-        caller-provided context. The returned ``latest_messages`` are the new
-        incoming messages to persist with the assistant response.
+        target thread is created or loaded and its bounded prior history is
+        prepended to the new caller turn. The returned ``latest_messages`` are
+        the new incoming messages to persist with the assistant response.
         """
         thread: AssistantThread | None = None
         history: list[dict[str, Any]] = []
@@ -402,8 +525,9 @@ class AssistantConversationStore:
                 provider_name=provider_config.provider,
                 model_name=provider_config.model,
             )
+            compact_thread_history(db, thread)
             history = load_thread_history(db, thread.id)
-        conversation = messages if len(messages) > 1 else history + messages
+        conversation = history + messages if thread is not None else messages
         latest_messages = messages[-1:] if messages else []
         return thread, conversation, latest_messages
 
@@ -428,58 +552,3 @@ class AssistantConversationStore:
             reasoning_entries=final_state.get("reasoning_entries", []),
             assistant_content=final_text,
         )
-
-    def log_failed_turn(
-        self,
-        context: AuthContext | None,
-        thread: AssistantThread | None,
-        *,
-        incoming_messages: list[dict[str, Any]],
-        final_state: dict[str, Any],
-        error: str,
-        diagnostic_request_id: str | None,
-    ) -> None:
-        """Write a failed-turn diagnostic log entry when thread context exists."""
-        if context is None or thread is None:
-            return
-        append_conversation_log(
-            {
-                "event": "assistant.turn.failed",
-                "logged_at": datetime.now(UTC).isoformat(),
-                "assistant_request_id": diagnostic_request_id,
-                "thread_id": thread.id,
-                "thread_key": thread.thread_key,
-                "scope_type": thread.scope_type.value if isinstance(thread.scope_type, AssistantScope) else str(thread.scope_type),
-                "workspace_id": thread.workspace_id,
-                "case_id": thread.case_id,
-                "created_by_user_id": context.user.id,
-                "provider_name": thread.provider_name,
-                "model_name": thread.model_name,
-                "error": error,
-                "status": final_state.get("status"),
-                "incoming_messages": [
-                    {
-                        "role": message.get("role", "user"),
-                        "content_json": serialize_content(message.get("content")),
-                    }
-                    for message in incoming_messages
-                ],
-                "pending_tool_calls": final_state.get("pending_tool_calls", []),
-                "tool_calls_log": final_state.get("tool_calls_log", []),
-                "reasoning_entries": final_state.get("reasoning_entries", []),
-                "result": final_state.get("result", {}),
-            }
-        )
-
-
-def done_payload(content: str, tool_calls_log: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build the final assistant turn response payload."""
-    payload: dict[str, Any] = {
-        "message": {
-            "role": "assistant",
-            "content": content,
-        }
-    }
-    if tool_calls_log:
-        payload["tool_calls_log"] = tool_calls_log
-    return payload

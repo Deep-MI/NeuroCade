@@ -18,8 +18,7 @@ from backend_common.settings import ROOT_DIR
 logger = logging.getLogger(__name__)
 
 # Default path for the FreeSurfer LUT.
-_CONFIG_ROOT = os.environ.get("NEUROCADE_CONFIG_DIR") or str(ROOT_DIR / "config")
-_DEFAULT_LUT_PATH = os.path.join(_CONFIG_ROOT, "FreeSurferColorLUT.txt")
+_DEFAULT_LUT_PATH = ROOT_DIR / "config" / "FreeSurferColorLUT.txt"
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -251,14 +250,6 @@ def search_lut(
         for score, _, record in scored[:limit]
     ]
     return matches, len(scored)
-
-
-def search_by_name(
-    query: str, *, limit: int = 50, lut_path: str | None = None
-) -> tuple[list[tuple[int, str]], int]:
-    """Ranked name/comment search. Returns ``([(id, name), ...], total)``."""
-    matches, total = search_lut(query, limit=limit, lut_path=lut_path)
-    return [(match.label_id, match.name) for match in matches], total
 
 
 def resolve_label(label_query: str, lut_path: str | None = None) -> tuple[int | None, str | None]:

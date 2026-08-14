@@ -1,8 +1,8 @@
-"""In-process periodic update check (replaces the update-checker service).
+"""In-process periodic update checking for NeuroCade.
 
-Runs the existing ``scripts/update_checker.py`` logic on a daemon thread inside
-the app process instead of a separate Compose service. Failures are swallowed —
-a missing network or endpoint must never affect the app.
+Runs the ``scripts/update_checker.py`` logic on a daemon thread inside the app
+process. Failures are swallowed—a missing network or endpoint must never affect
+the app.
 """
 
 from __future__ import annotations

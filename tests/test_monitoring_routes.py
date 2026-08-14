@@ -1,6 +1,5 @@
 """Test monitoring routes behavior for NeuroCade."""
 
-import asyncio
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +20,6 @@ from api_service.routers.monitoring import ingest_client_error, monitoring_healt
 from api_service.schemas import MonitoringClientErrorRequest  # noqa: E402
 
 from backend_common.auth import AuthContext  # noqa: E402
-from backend_common.case_storage import build_case_id  # noqa: E402
 from backend_common.db import (  # noqa: E402
     AppEvent,
     Artifact,
@@ -59,10 +57,9 @@ def seeded_monitoring_context(db_session):
         name="Monitoring Workspace",
         kind="shared",
         is_default=True,
-        status="active",
     )
     case = Case(
-        id=build_case_id(workspace.id, "case-1"),
+        id="case-1-id",
         workspace_id=workspace.id,
         owner_user_id=admin.id,
         title="case-1",
@@ -70,7 +67,7 @@ def seeded_monitoring_context(db_session):
     db_session.add_all([admin, member, workspace, case])
     db_session.flush()
     db_session.add(WorkspaceMembership(workspace_id=workspace.id, user_id=admin.id, role=RoleEnum.owner, granted_by_user_id=admin.id))
-    db_session.add(Artifact(case_id=case.id, kind=ArtifactKind.volume, name="orig.mgz", relative_path="output/workspaces/workspace-1/cases/case-1/orig.mgz"))
+    db_session.add(Artifact(case_id=case.id, kind=ArtifactKind.volume, name="orig.mgz", relative_path="orig.mgz"))
     db_session.commit()
     return db_session, AuthContext(user=admin, role=RoleEnum.owner, auth_mode="local"), member
 
@@ -88,7 +85,7 @@ def _patch_monitoring_checks(monkeypatch):
         ),
     )
 
-    async def fake_fastsurfer_queue():
+    def fake_fastsurfer_queue():
         return (
             monitoring_module._service_status("NeuroCade FastSurfer queue", "ok", details={"active": 1, "queued": 2, "total": 3}),
             {"status": "ok", "active": 1, "queued": 2, "total": 3},
@@ -110,7 +107,7 @@ def test_monitoring_summary_counts_recent_session_bootstraps(seeded_monitoring_c
     )
     db_session.commit()
 
-    summary = asyncio.run(monitoring_summary(db=db_session, context=context))
+    summary = monitoring_summary(db=db_session, context=context)
 
     assert summary.status == "ok"
     assert summary.totals["users"] == 2
@@ -128,7 +125,7 @@ def test_monitoring_summary_requires_configured_admin(seeded_monitoring_context,
     context = AuthContext(user=member, role=RoleEnum.user, auth_mode="local")
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(monitoring_summary(db=db_session, context=context))
+        monitoring_summary(db=db_session, context=context)
 
     assert exc_info.value.status_code == 403
 
@@ -137,7 +134,7 @@ def test_monitoring_health_returns_service_status_without_summary_counts(seeded_
     db_session, context, _member = seeded_monitoring_context
     _patch_monitoring_checks(monkeypatch)
 
-    health = asyncio.run(monitoring_health(db=db_session, context=context))
+    health = monitoring_health(db=db_session, context=context)
 
     assert health.status == "ok"
     assert [service.name for service in health.services] == [

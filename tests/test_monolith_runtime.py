@@ -1,6 +1,6 @@
 """In-process tests for the monolith runtime: backends, JobWorker, execution.
 
-These exercise the components that replaced the runtime-runner sidecar, Celery,
+These exercise the in-process runtime components used by the monolith,
 and Redis. They run fully in-process (no Docker/Apptainer/stack required).
 """
 
@@ -34,7 +34,7 @@ from neurocade_runtime_tools.execution import (
 
 def _sample_request() -> RuntimeContainerRunRequest:
     return RuntimeContainerRunRequest(
-        image="docker://vnmd/fastsurfer_2.4.2:20260115",
+        image="vnmd/fastsurfer_2.4.2:20260115",
         command=["/fastsurfer/run_fastsurfer.sh", "--t1", "/data/in.nii"],
         binds=[RuntimeBind("/host/data", "/data", "ro"), RuntimeBind("/host/out", "/output", "rw")],
         env={"TOOL_ENV": "enabled"},
@@ -55,17 +55,87 @@ def test_docker_backend_builds_expected_argv():
     assert argv[image_idx + 1] == "/fastsurfer/run_fastsurfer.sh"
 
 
-def test_apptainer_backend_builds_expected_argv():
+def test_docker_backend_isolates_probe_container():
+    request = RuntimeContainerRunRequest(
+        image="antsx/ants:v2.6.5",
+        command=["bash", "-lc", "DenoiseImage --help"],
+        isolated=True,
+    )
+
+    argv = rb.DockerBackend().build_argv(request)
+
+    assert argv[argv.index("--network") + 1] == "none"
+    assert argv[argv.index("--pull") + 1] == "never"
+    assert "--read-only" in argv
+    assert argv[argv.index("--user") + 1] == "65534:65534"
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+    assert argv[argv.index("--pids-limit") + 1] == "64"
+    assert argv[argv.index("--memory") + 1] == "512m"
+    assert argv[argv.index("--cpus") + 1] == "1"
+    assert argv[argv.index("--tmpfs") + 1].startswith("/tmp:rw,")
+    assert "HOME=/tmp" in argv
+    assert "--mount" not in argv
+
+
+def test_apptainer_backend_builds_expected_argv(monkeypatch, tmp_path):
+    sif = tmp_path / "fastsurfer.sif"
+    sif.write_bytes(b"sif")
+    monkeypatch.setattr(rb, "resolve_apptainer_image", lambda _image: str(sif))
     argv = rb.ApptainerBackend().build_argv(_sample_request())
-    assert argv[:2] == ["apptainer", "exec"]
+    assert argv[:3] == ["apptainer", "--quiet", "exec"]
     assert "--net" in argv
     assert argv[argv.index("--network") + 1] == "none"
     assert "--nv" in argv  # gpu
     assert "--bind" in argv and "/host/data:/data:ro" in argv
     assert "/host/out:/output" in argv
     assert "--env" in argv and "TOOL_ENV=enabled" in argv
-    # image (docker:// fallback) precedes the command
-    assert "docker://vnmd/fastsurfer_2.4.2:20260115" in argv
+    assert str(sif) in argv
+
+
+def test_apptainer_backend_disables_implicit_host_mounts_for_probe(monkeypatch, tmp_path):
+    sif = tmp_path / "ants.sif"
+    sif.write_bytes(b"sif")
+    monkeypatch.setattr(rb, "resolve_apptainer_image", lambda _image: str(sif))
+    request = RuntimeContainerRunRequest(
+        image="antsx/ants:v2.6.5",
+        command=["bash", "-lc", "DenoiseImage --help"],
+        isolated=True,
+    )
+
+    argv = rb.ApptainerBackend().build_argv(request)
+
+    assert "--contain" in argv
+    assert argv[argv.index("--no-mount") + 1] == "hostfs,cwd,proc,sys"
+    assert "--bind" not in argv
+
+
+def test_isolated_container_rejects_binds_and_gpu():
+    with pytest.raises(ValueError, match="cannot use bind mounts"):
+        rb.DockerBackend().build_argv(
+            RuntimeContainerRunRequest(
+                image="antsx/ants:v2.6.5",
+                command=["true"],
+                binds=[RuntimeBind("/host/data", "/data", "ro")],
+                isolated=True,
+            )
+        )
+    with pytest.raises(ValueError, match="cannot request a GPU"):
+        rb.DockerBackend().build_argv(
+            RuntimeContainerRunRequest(
+                image="antsx/ants:v2.6.5",
+                command=["true"],
+                gpu_enabled=True,
+                isolated=True,
+            )
+        )
+
+
+def test_apptainer_backend_rejects_unprepared_image_without_network(monkeypatch):
+    monkeypatch.setattr(rb, "resolve_apptainer_image", lambda image: f"docker://{image}")
+
+    with pytest.raises(RuntimeError, match="prepare-tools"):
+        rb.ApptainerBackend().build_argv(_sample_request())
 
 
 def test_apptainer_backend_allows_requested_network():
@@ -78,12 +148,82 @@ def test_apptainer_backend_allows_requested_network():
     assert "--network" not in argv
 
 
+def test_gpu_mode_auto_falls_back_to_cpu(monkeypatch):
+    monkeypatch.setenv(rb.GPU_MODE_ENV, "auto")
+    monkeypatch.setattr(rb, "nvidia_capability", lambda: rb.NvidiaCapability(False, "driver unavailable"))
+
+    assert rb.resolve_gpu_enabled(True) is False
+
+
+def test_gpu_mode_cuda_fails_with_actionable_error(monkeypatch):
+    monkeypatch.setenv(rb.GPU_MODE_ENV, "cuda")
+    monkeypatch.setattr(rb, "nvidia_capability", lambda: rb.NvidiaCapability(False, "driver unavailable"))
+
+    with pytest.raises(rb.RuntimeGpuUnavailableError, match="NEUROCADE_GPU_MODE=cpu"):
+        rb.resolve_gpu_enabled(True)
+
+
+def test_gpu_mode_cpu_does_not_probe_nvidia(monkeypatch):
+    monkeypatch.setenv(rb.GPU_MODE_ENV, "cpu")
+    monkeypatch.setattr(rb, "nvidia_capability", lambda: pytest.fail("GPU probe should not run"))
+
+    assert rb.resolve_gpu_enabled(True) is False
+
+
+def test_gpu_mode_auto_falls_back_when_prepared_image_is_cpu_only(monkeypatch):
+    monkeypatch.setenv(rb.GPU_MODE_ENV, "auto")
+    monkeypatch.setattr(rb, "nvidia_capability", lambda: rb.NvidiaCapability(True, "GPU available"))
+    monkeypatch.setattr(
+        rb,
+        "apptainer_image_cuda_capability",
+        lambda _image: rb.NvidiaCapability(False, "PyTorch is CPU-only"),
+    )
+
+    assert rb.resolve_gpu_enabled(True, image="vnmd/fastsurfer:tag") is False
+
+
+def test_gpu_mode_cuda_rejects_cpu_only_prepared_image(monkeypatch):
+    monkeypatch.setenv(rb.GPU_MODE_ENV, "cuda")
+    monkeypatch.setattr(rb, "nvidia_capability", lambda: rb.NvidiaCapability(True, "GPU available"))
+    monkeypatch.setattr(
+        rb,
+        "apptainer_image_cuda_capability",
+        lambda _image: rb.NvidiaCapability(False, "PyTorch is CPU-only"),
+    )
+
+    with pytest.raises(rb.RuntimeGpuUnavailableError, match="CUDA-enabled tool image"):
+        rb.resolve_gpu_enabled(True, image="vnmd/fastsurfer:tag")
+
+
+def test_prepared_image_cuda_probe_is_cached_until_sif_changes(monkeypatch, tmp_path):
+    sif = tmp_path / "fastsurfer.sif"
+    sif.write_bytes(b"first")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    rb._cached_apptainer_image_cuda_capability.cache_clear()
+    monkeypatch.setattr(rb, "resolve_apptainer_image", lambda _image: str(sif))
+    monkeypatch.setattr(rb.subprocess, "run", fake_run)
+
+    assert rb.apptainer_image_cuda_capability("deepmi/fastsurfer:tag").available is True
+    assert rb.apptainer_image_cuda_capability("deepmi/fastsurfer:tag").available is True
+    assert len(calls) == 1
+
+    sif.write_bytes(b"replacement")
+    assert rb.apptainer_image_cuda_capability("deepmi/fastsurfer:tag").available is True
+    assert len(calls) == 2
+    rb._cached_apptainer_image_cuda_capability.cache_clear()
+
+
 def test_apptainer_resolves_prebuilt_sif_for_host_arch(tmp_path, monkeypatch):
     monkeypatch.setenv(rb.SIF_DIR_ENV, str(tmp_path))
     arch = rb._normalise_arch()
     stem = "vnmd_fastsurfer_2.4.2_20260115"
     (tmp_path / f"{stem}-{arch}.sif").write_text("x")
-    resolved = rb.resolve_apptainer_image("docker://vnmd/fastsurfer_2.4.2:20260115")
+    resolved = rb.resolve_apptainer_image("vnmd/fastsurfer_2.4.2:20260115")
     assert resolved.endswith(f"{stem}-{arch}.sif")
 
 
@@ -93,7 +233,7 @@ def test_apptainer_falls_back_to_docker_uri_without_prebuilt(tmp_path, monkeypat
     assert resolved == "docker://vnmd/fastsurfer_2.4.2:20260115"
 
 
-def test_apptainer_resolves_python_bash_image_sif_name(tmp_path, monkeypatch):
+def test_apptainer_resolves_generic_prebuilt_sif_name(tmp_path, monkeypatch):
     monkeypatch.setenv(rb.SIF_DIR_ENV, str(tmp_path))
     arch = rb._normalise_arch()
     sif = tmp_path / f"python_3.12-bookworm-{arch}.sif"
@@ -333,10 +473,10 @@ def test_cancel_queued_job_marks_handle_canceled():
     jm.shutdown(wait=True)
 
 
-def test_job_preserves_supplied_task_id():
+def test_job_preserves_supplied_job_id():
     jm = _manager()
     jm.register("noop", lambda: None)
-    tid = jm.submit("noop", {}, queue="api", task_id="fixed-123")
+    tid = jm.submit("noop", {}, queue="api", job_id="fixed-123")
     assert tid == "fixed-123"
     _await_ready(jm, tid)
     jm.shutdown(wait=True)

@@ -1,141 +1,173 @@
-"""Provide shared backend case storage utilities for NeuroCade."""
+"""Manifest-backed workspace and case storage."""
 
 from __future__ import annotations
 
+import json
 import re
+from contextlib import suppress
 from pathlib import Path
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
-from backend_common.db import Artifact, Case, Workspace
+from backend_common.db import Case, Workspace
 
 UPLOAD_SUFFIXES = (".nii.gz", ".nii", ".mgz")
 SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$")
-CASE_ID_SEPARATOR = "__"
+WORKSPACE_MANIFEST = ".neurocade-workspace.json"
+CASE_MANIFEST = ".neurocade-case.json"
 
 
 def slugify_storage_name(value: str) -> str:
-    """Return a best-effort slug storage name from free text."""
     candidate = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower())
-    candidate = candidate.strip("-")[:64].rstrip("-")
-    return candidate
+    return candidate.strip("-")[:64].rstrip("-")
 
 
 def _validate_storage_name(value: str, label: str) -> str:
-    """Return a slug-safe storage name or raise a labeled validation error."""
     candidate = (value or "").strip()
     if not candidate:
         raise ValueError(f"{label} cannot be empty")
     if not SLUG_PATTERN.fullmatch(candidate):
-        raise ValueError(
-            f"{label} must be a lowercase slug, 2-64 characters, using only a-z, 0-9, and hyphen"
-        )
+        raise ValueError(f"{label} must be a lowercase slug, 2-64 characters, using only a-z, 0-9, and hyphen")
     return candidate
 
 
 def validate_workspace_name(name: str) -> str:
-    """Validate and normalize a workspace name for storage."""
     return _validate_storage_name(name, "Workspace name")
 
 
 def validate_case_title(title: str) -> str:
-    """Validate and normalize a case title for storage."""
     return _validate_storage_name(title, "Case name")
 
 
 def upload_extension(filename: str) -> str:
-    """Return the upload extension, preserving compound NIfTI suffixes."""
-    lower = filename.lower()
-    if lower.endswith(".nii.gz"):
-        return ".nii.gz"
-    return Path(filename).suffix
+    return ".nii.gz" if filename.lower().endswith(".nii.gz") else Path(filename).suffix
 
 
 def case_title_from_filename(filename: str) -> str:
-    """Return the default case title derived from an upload filename."""
-    lower = filename.lower()
-    if lower.endswith(".nii.gz"):
-        return slugify_storage_name(filename[:-7])
-    return slugify_storage_name(Path(filename).stem)
+    stem = filename[:-7] if filename.lower().endswith(".nii.gz") else Path(filename).stem
+    return slugify_storage_name(stem)
 
 
-def build_case_id(workspace_id: str, case_slug: str) -> str:
-    """Return the global DB case id for a workspace-local case slug."""
-    return f"{_validate_storage_name(workspace_id, 'Workspace name')}{CASE_ID_SEPARATOR}{_validate_storage_name(case_slug, 'Case name')}"
+def _read_manifest(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    identifier = payload.get("id") if isinstance(payload, dict) else None
+    return identifier if isinstance(identifier, str) and identifier else None
 
 
-def case_slug_from_id(workspace_id: str, case_id: str) -> str:
-    """Return the workspace-local case slug from a global case id."""
-    workspace_slug = _validate_storage_id(workspace_id, "Workspace id")
-    case_storage_id = _validate_storage_id(case_id, "Case id")
-    prefix = f"{workspace_slug}{CASE_ID_SEPARATOR}"
-    if not case_storage_id.startswith(prefix):
-        raise ValueError(f"Case id must use the canonical '<workspace>{CASE_ID_SEPARATOR}<case>' format")
-    return _validate_storage_name(case_storage_id[len(prefix) :], "Case slug")
+def _write_manifest(path: Path, identifier: str) -> None:
+    path.write_text(json.dumps({"id": identifier}, indent=2) + "\n", encoding="utf-8")
 
 
-def _validate_storage_id(value: str, label: str) -> str:
-    """Return a path-safe immutable ID or raise a labeled validation error."""
-    candidate = str(value or "").strip()
-    if not candidate:
-        raise ValueError(f"{label} cannot be empty")
-    if candidate in {".", ".."}:
-        raise ValueError(f"{label} is invalid")
-    if "/" in candidate or "\\" in candidate:
-        raise ValueError(f"{label} must not contain path separators")
-    return candidate
+def workspace_id_from_storage_dir(path: Path) -> str | None:
+    return _read_manifest(path / WORKSPACE_MANIFEST)
 
 
-def workspace_storage_relative_prefix(workspace_id: str) -> str:
-    """Return the artifact prefix for workspace-scoped output."""
-    return f"output/workspaces/{_validate_storage_id(workspace_id, 'Workspace id')}"
+def case_id_from_storage_dir(path: Path) -> str | None:
+    return _read_manifest(path / CASE_MANIFEST)
+
+
+def _find_manifest_dir(parent: Path, manifest_name: str, identifier: str) -> Path:
+    matches = [
+        entry
+        for entry in parent.iterdir()
+        if entry.is_dir() and not entry.is_symlink() and _read_manifest(entry / manifest_name) == identifier
+    ] if parent.is_dir() else []
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise RuntimeError(f"Duplicate storage manifests for {identifier}")
+    raise FileNotFoundError(f"Storage manifest not found for {identifier}")
+
+
+def workspace_storage_dir_from_root(output_root: Path, workspace_id: str) -> Path:
+    return _find_manifest_dir(output_root / "workspaces", WORKSPACE_MANIFEST, workspace_id)
 
 
 def workspace_storage_dir(settings, workspace_id: str) -> Path:
-    """Return the absolute storage directory for a workspace."""
-    return settings.outputs_dir / "workspaces" / _validate_storage_id(workspace_id, "Workspace id")
+    """Resolve a workspace directory by its immutable manifest ID."""
+    return workspace_storage_dir_from_root(settings.outputs_dir, workspace_id)
 
 
-def case_relative_prefix(workspace_id: str, case_id: str) -> str:
-    """Return the artifact prefix for case-scoped output."""
-    return f"{workspace_storage_relative_prefix(workspace_id)}/cases/{case_slug_from_id(workspace_id, case_id)}"
+def case_storage_dir_from_root(output_root: Path, workspace_id: str, case_id: str) -> Path:
+    workspace_dir = workspace_storage_dir_from_root(output_root, workspace_id)
+    return _find_manifest_dir(workspace_dir / "cases", CASE_MANIFEST, case_id)
 
 
 def case_storage_dir(settings, workspace_id: str, case_id: str) -> Path:
-    """Return the absolute storage directory for a case."""
-    return workspace_storage_dir(settings, workspace_id) / "cases" / case_slug_from_id(workspace_id, case_id)
+    """Resolve a case directory by its immutable manifest ID."""
+    return case_storage_dir_from_root(settings.outputs_dir, workspace_id, case_id)
 
 
-def workspace_analysis_relative_prefix(workspace_id: str, analysis_id: str) -> str:
-    """Return the artifact prefix for a workspace analysis."""
-    return f"{workspace_storage_relative_prefix(workspace_id)}/workspace-analyses/{_validate_storage_id(analysis_id, 'Analysis id')}"
+def resolve_workspace_storage(settings, workspace: Workspace) -> Path:
+    """Resolve workspace storage and project its authoritative directory name."""
+    directory = workspace_storage_dir(settings, workspace.id)
+    set_committed_value(workspace, "name", directory.name)
+    return directory
 
 
-def workspace_analysis_dir(settings, workspace_id: str, analysis_id: str) -> Path:
-    """Return the absolute storage directory for a workspace analysis."""
-    return workspace_storage_dir(settings, workspace_id) / "workspace-analyses" / _validate_storage_id(analysis_id, "Analysis id")
+def resolve_case_storage(settings, case: Case, workspace: Workspace) -> Path:
+    """Resolve case storage and project authoritative filesystem names."""
+    resolve_workspace_storage(settings, workspace)
+    directory = case_storage_dir(settings, workspace.id, case.id)
+    set_committed_value(case, "title", directory.name)
+    return directory
 
 
-def list_case_upload_files(settings, workspace: Workspace, case: Case) -> list[Path]:
-    """Return sorted uploaded image files stored for a case."""
-    case_dir = case_storage_dir(settings, workspace.id, case.id)
-    if not case_dir.exists():
-        return []
-    uploads: list[Path] = []
-    for entry in case_dir.iterdir():
-        if entry.is_symlink() or not entry.is_file():
-            continue
-        if upload_extension(entry.name) not in UPLOAD_SUFFIXES:
-            continue
-        uploads.append(entry)
-    return sorted(uploads)
+def ensure_workspace_storage_layout(settings, workspace: Workspace) -> Path:
+    """Create or resolve a workspace directory and identity manifest."""
+    try:
+        path = workspace_storage_dir(settings, workspace.id)
+    except FileNotFoundError:
+        path = settings.outputs_dir / "workspaces" / validate_workspace_name(workspace.name)
+        if path.exists():
+            raise FileExistsError(f"Workspace storage already exists: {path}") from None
+        path.mkdir(parents=True)
+        _write_manifest(path / WORKSPACE_MANIFEST, workspace.id)
+    (path / "cases").mkdir(exist_ok=True)
+    return path
+
+
+def ensure_case_storage_layout(settings, case: Case, workspace: Workspace) -> Path:
+    """Create or resolve a case directory and identity manifest."""
+    workspace_dir = ensure_workspace_storage_layout(settings, workspace)
+    try:
+        path = case_storage_dir(settings, workspace.id, case.id)
+    except FileNotFoundError:
+        path = workspace_dir / "cases" / validate_case_title(case.title)
+        if path.exists():
+            raise FileExistsError(f"Case storage already exists: {path}") from None
+        path.mkdir(parents=True)
+        _write_manifest(path / CASE_MANIFEST, case.id)
+
+    return path
+
+
+def rename_case_storage(settings, workspace_id: str, case_id: str, new_title: str) -> Path:
+    source = case_storage_dir(settings, workspace_id, case_id)
+    target = source.with_name(validate_case_title(new_title))
+    if target != source:
+        if target.exists():
+            raise FileExistsError(f"Case storage already exists: {target}")
+        source.replace(target)
+    return target
+
+
+def rename_workspace_storage(settings, workspace_id: str, new_name: str) -> Path:
+    source = workspace_storage_dir(settings, workspace_id)
+    target = source.with_name(validate_workspace_name(new_name))
+    if target != source:
+        if target.exists():
+            raise FileExistsError(f"Workspace storage already exists: {target}")
+        source.replace(target)
+    return target
 
 
 def unique_upload_name(case_dir: Path, source_name: str) -> str:
-    """Return a non-conflicting upload filename for a case directory."""
     base = Path(source_name).name
-    stem = case_title_from_filename(base)
-    ext = upload_extension(base)
+    stem, ext = case_title_from_filename(base), upload_extension(base)
     candidate = f"{stem}{ext}"
     index = 2
     while (case_dir / candidate).exists():
@@ -144,19 +176,11 @@ def unique_upload_name(case_dir: Path, source_name: str) -> str:
     return candidate
 
 
-def canonical_upload_name(case_title: str, source_name: str) -> str:
-    """Return the canonical upload filename for a case title."""
+def case_named_upload(case_title: str, source_name: str) -> str:
     return f"{case_title}{upload_extension(source_name)}"
 
 
-def case_resource_relative_path(workspace: Workspace, case: Case, resource_suffix: str) -> str:
-    """Return a case artifact path with the resource suffix appended."""
-    clean_suffix = resource_suffix.lstrip("/")
-    return f"{case_relative_prefix(workspace.id, case.id)}/{clean_suffix}"
-
-
 def _remove_path(path: Path) -> None:
-    """Remove a file or directory tree if it exists."""
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok=True)
     elif path.exists():
@@ -165,65 +189,6 @@ def _remove_path(path: Path) -> None:
         path.rmdir()
 
 
-def _prune_empty_workspace_dirs(settings, workspace_id: str) -> None:
-    """Remove the workspace storage directory when it is empty."""
-    workspace_dir = workspace_storage_dir(settings, workspace_id)
-    if workspace_dir.exists() and workspace_dir.is_dir() and not any(workspace_dir.iterdir()):
-        workspace_dir.rmdir()
-
-
-def ensure_case_storage_layout(
-    db: Session,
-    settings,
-    case: Case,
-    workspace: Workspace,
-    *,
-    preferred_upload_name: str | None = None,
-) -> Path:
-    """Create the canonical case storage layout."""
-    validate_workspace_name(workspace.name)
-    validate_case_title(case.title)
-
-    new_case_dir = case_storage_dir(settings, workspace.id, case.id)
-    new_case_dir.mkdir(parents=True, exist_ok=True)
-
-    _prune_empty_workspace_dirs(settings, workspace.id)
-
-    artifacts = (
-        db.query(Artifact)
-        .filter(Artifact.case_id == case.id)
-        .order_by(Artifact.created_at.asc(), Artifact.id.asc())
-        .all()
-    )
-    for artifact in artifacts:
-        artifact.workspace_id = workspace.id
-        disk_path = settings.fs_data_root / artifact.relative_path
-        if disk_path.exists():
-            artifact.size_bytes = disk_path.stat().st_size
-
-    return new_case_dir
-
-
-def ensure_workspace_analysis_storage_layout(settings, workspace_id: str, analysis_id: str) -> Path:
-    """Create and return the storage directory for a workspace analysis."""
-    normalized_analysis_id = (analysis_id or "").strip()
-    if not normalized_analysis_id:
-        raise ValueError("Analysis id cannot be empty")
-
-    new_analysis_dir = workspace_analysis_dir(settings, workspace_id, normalized_analysis_id)
-    new_analysis_dir.mkdir(parents=True, exist_ok=True)
-
-    _prune_empty_workspace_dirs(settings, workspace_id)
-
-    return new_analysis_dir
-
-
 def delete_case_storage(settings, case: Case, workspace: Workspace) -> None:
-    """Delete canonical case storage."""
-    _remove_path(case_storage_dir(settings, workspace.id, case.id))
-    _prune_empty_workspace_dirs(settings, workspace.id)
-
-
-def delete_workspace_storage(settings, workspace: Workspace) -> None:
-    """Delete canonical workspace storage."""
-    _remove_path(workspace_storage_dir(settings, workspace.id))
+    with suppress(FileNotFoundError):
+        _remove_path(case_storage_dir(settings, workspace.id, case.id))

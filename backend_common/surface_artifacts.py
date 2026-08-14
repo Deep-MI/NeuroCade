@@ -22,22 +22,6 @@ ANNOTATION_FILES = (
     "rh.aparc.annot",
 )
 
-ANNOTATION_FILES_BY_HEMISPHERE = {
-    "lh": tuple(filename for filename in ANNOTATION_FILES if filename.startswith("lh.")),
-    "rh": tuple(filename for filename in ANNOTATION_FILES if filename.startswith("rh.")),
-}
-
-
-def curvature_filename_for_hemisphere(hemi: str | None) -> str | None:
-    """Return the FreeSurfer curvature filename for a recognized hemisphere."""
-    return f"{hemi}.curv" if hemi in {"lh", "rh"} else None
-
-
-def annotation_filenames_for_hemisphere(hemi: str | None) -> tuple[str, ...]:
-    """Return known annotation filenames for a recognized hemisphere."""
-    return ANNOTATION_FILES_BY_HEMISPHERE.get(hemi or "", ())
-
-
 def hemisphere_for_filename(filename: str) -> str | None:
     """Extract the left or right hemisphere prefix from a surface filename."""
     hemi = filename.split(".", 1)[0] if "." in filename else None

@@ -67,6 +67,27 @@ def _dummy_context() -> AuthContext:
     return AuthContext(user=user, role=RoleEnum.owner, auth_mode="local")
 
 
+def test_assistant_turn_rejects_malformed_or_caller_supplied_history(test_client):
+    main_module.app.dependency_overrides[get_context] = _dummy_context
+    malformed = test_client.post(
+        "/api/app/assistant/turns",
+        content="{",
+        headers={"Content-Type": "application/json"},
+    )
+    history = test_client.post(
+        "/api/app/assistant/turns",
+        json={
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "caller-supplied answer"},
+            ]
+        },
+    )
+
+    assert malformed.status_code == 422
+    assert history.status_code == 422
+
+
 def test_app_create_assistant_turn_streams_done_event(monkeypatch, test_client):
     async def fake_run_chat(**_kwargs):
         return {"message": {"role": "assistant", "content": "ready"}}
@@ -77,9 +98,10 @@ def test_app_create_assistant_turn_streams_done_event(monkeypatch, test_client):
     response = test_client.post(
         "/api/app/assistant/turns",
         json={
-            "messages": [{"role": "user", "content": "Reply with the single word ready."}],
-            "workspace_id": "workspace-1",
-            "scope": "workspace",
+                "messages": [{"role": "user", "content": "Reply with the single word ready."}],
+                "workspace_id": "workspace-1",
+                "gui_session_id": "gui-test",
+                "scope": "workspace",
         },
     )
 
@@ -102,9 +124,10 @@ def test_app_create_assistant_turn_streams_interim_assistant_message(monkeypatch
     response = test_client.post(
         "/api/app/assistant/turns",
         json={
-            "messages": [{"role": "user", "content": "Try a fallback."}],
-            "workspace_id": "workspace-1",
-            "scope": "workspace",
+                "messages": [{"role": "user", "content": "Try a fallback."}],
+                "workspace_id": "workspace-1",
+                "gui_session_id": "gui-test",
+                "scope": "workspace",
         },
     )
 
@@ -127,9 +150,10 @@ def test_app_create_assistant_turn_streams_timeout_event(monkeypatch, test_clien
     response = test_client.post(
         "/api/app/assistant/turns",
         json={
-            "messages": [{"role": "user", "content": "Hang forever"}],
-            "workspace_id": "workspace-1",
-            "scope": "workspace",
+                "messages": [{"role": "user", "content": "Hang forever"}],
+                "workspace_id": "workspace-1",
+                "gui_session_id": "gui-test",
+                "scope": "workspace",
         },
     )
 
@@ -141,10 +165,10 @@ def test_app_create_assistant_turn_streams_timeout_event(monkeypatch, test_clien
 
 def test_case_share_routes_are_not_registered(test_client):
     create_response = test_client.post(
-        "/api/app/cases/workspace-1__case-1/shares",
+        "/api/app/cases/case-1-id/shares",
         json={"granted_to_user_id": "user-2", "permission_scope": "user"},
     )
-    revoke_response = test_client.delete("/api/app/cases/workspace-1__case-1/shares/share-1")
+    revoke_response = test_client.delete("/api/app/cases/case-1-id/shares/share-1")
 
     assert create_response.status_code == 404
     assert revoke_response.status_code == 404
@@ -176,17 +200,19 @@ def test_app_create_assistant_turn_returns_429_when_rate_limited(monkeypatch, te
     first_response = test_client.post(
         "/api/app/assistant/turns",
         json={
-            "messages": [{"role": "user", "content": "Reply with ready."}],
-            "workspace_id": "workspace-1",
-            "scope": "workspace",
+                "messages": [{"role": "user", "content": "Reply with ready."}],
+                "workspace_id": "workspace-1",
+                "gui_session_id": "gui-test",
+                "scope": "workspace",
         },
     )
     second_response = test_client.post(
         "/api/app/assistant/turns",
         json={
-            "messages": [{"role": "user", "content": "Reply with ready."}],
-            "workspace_id": "workspace-1",
-            "scope": "workspace",
+                "messages": [{"role": "user", "content": "Reply with ready."}],
+                "workspace_id": "workspace-1",
+                "gui_session_id": "gui-test",
+                "scope": "workspace",
         },
     )
 
@@ -219,10 +245,10 @@ def test_clear_assistant_history_delete_route(monkeypatch, test_client):
         params={
             "workspace_id": "workspace-1",
             "scope": "case",
-            "case_id": "workspace-1__case-1",
+            "case_id": "case-1-id",
         },
     )
 
     assert response.status_code == 200
     assert response.json() == {"status": "cleared"}
-    assert calls == [{"scope": "case", "workspace_id": "workspace-1", "case_id": "workspace-1__case-1"}]
+    assert calls == [{"scope": "case", "workspace_id": "workspace-1", "case_id": "case-1-id"}]

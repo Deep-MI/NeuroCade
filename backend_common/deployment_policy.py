@@ -9,26 +9,6 @@ from backend_common.settings import Settings, get_settings
 
 DeploymentProfile = Literal["local", "internal", "demo"]
 VALID_DEPLOYMENT_PROFILES: set[str] = {"local", "internal", "demo"}
-_INSECURE_CREDENTIAL_VALUES = frozenset(
-    {
-        "",
-        "CHANGE_ME",
-        "CHANGE_ME_LONG_RANDOM",
-        "NOTSET",
-        "fastsurfer",
-    }
-)
-
-
-def _configured_secret(value: str | None) -> str:
-    return (value or "").strip()
-
-
-def _url_contains_insecure_credential(url: str | None) -> bool:
-    value = _configured_secret(url)
-    if not value:
-        return False
-    return any(f":{credential}@" in value for credential in _INSECURE_CREDENTIAL_VALUES if credential)
 
 
 @dataclass(frozen=True)
@@ -39,7 +19,6 @@ class DeploymentPolicy:
     uploads_enabled: bool
     destructive_actions_enabled: bool
     monitoring_visible: bool
-    production_checks_required: bool
     sample_data_enabled: bool
     sample_data_scope: Literal["per_user", "global"]
     runtime_network_disabled: bool = True
@@ -92,17 +71,6 @@ class DeploymentPolicy:
             raise RuntimeError("CLERK_ISSUER must be configured for internal and demo deployments.")
         if not settings.clerk_audience:
             raise RuntimeError("CLERK_AUDIENCE must be configured for internal and demo deployments.")
-        self.validate_production_credentials(settings)
-
-    def validate_production_credentials(self, settings: Settings) -> None:
-        """Reject development database credentials in shared deployment profiles."""
-        if not self.production_checks_required:
-            return
-
-        # SQLite is a local file with no credentials; only an externally
-        # configured DATABASE_URL could carry insecure embedded credentials.
-        if _url_contains_insecure_credential(settings.database_url):
-            raise RuntimeError("DATABASE_URL must not contain default database credentials for internal and demo deployments.")
 
 
 def deployment_profile(settings: Settings | None = None) -> DeploymentProfile:
@@ -127,7 +95,6 @@ def get_deployment_policy(settings: Settings | None = None) -> DeploymentPolicy:
             uploads_enabled=True,
             destructive_actions_enabled=True,
             monitoring_visible=True,
-            production_checks_required=False,
             sample_data_enabled=True,
             sample_data_scope="per_user",
         )
@@ -139,7 +106,6 @@ def get_deployment_policy(settings: Settings | None = None) -> DeploymentPolicy:
             uploads_enabled=True,
             destructive_actions_enabled=True,
             monitoring_visible=True,
-            production_checks_required=True,
             sample_data_enabled=True,
             sample_data_scope="per_user",
         )
@@ -150,7 +116,6 @@ def get_deployment_policy(settings: Settings | None = None) -> DeploymentPolicy:
         uploads_enabled=False,
         destructive_actions_enabled=False,
         monitoring_visible=False,
-        production_checks_required=True,
         sample_data_enabled=True,
         sample_data_scope="global",
     )

@@ -2,45 +2,20 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from .container_specs import CORE_SPECS
 from .execution import RuntimeBind, RuntimeContainerRunRequest
 
-_GPU_REQUEST_ENV = "NEUROCADE_DOCKER_GPU"
-_TRUTHY = {"1", "true", "yes", "on"}
+DCM2NIIX_IMAGE = "vnmd/dcm2niix_v1.0.20240202:20260512"
 
 
 def container_image_name(value: str) -> str:
     """Normalize a container image reference from existing NeuroCade specs."""
-    image = str(value or "").strip().removeprefix("docker://")
-    if not image or image.startswith("-") or any(ch.isspace() for ch in image):
+    image = str(value or "").strip()
+    if not image or image.startswith("-") or "://" in image or any(ch.isspace() for ch in image):
         raise ValueError("Invalid container image reference")
     return image
-
-
-def core_container_image(name: str) -> str:
-    """Resolve the pinned image for a core runtime container.
-
-    Honors a ``NEUROCADE_<NAME>_IMAGE`` override, then the core spec's
-    ``docker_uri``, stripping any ``docker://`` prefix.
-    """
-    override = os.environ.get(f"NEUROCADE_{name.upper()}_IMAGE")
-    if override:
-        return override.removeprefix("docker://")
-    if name == "bash_image":
-        return os.environ.get("NEUROCADE_BASH_IMAGE", "python:3.12-bookworm").removeprefix("docker://")
-    spec = CORE_SPECS[name]
-    if not spec.docker_uri:
-        raise ValueError(f"Core container {name} does not define an image")
-    return spec.docker_uri.removeprefix("docker://")
-
-
-def container_gpu_enabled() -> bool:
-    """Return whether container runtime requests should ask for NVIDIA GPUs."""
-    return os.environ.get(_GPU_REQUEST_ENV, "").strip().lower() in _TRUTHY
 
 
 def _validate_container_path(value: str, *, label: str) -> str:

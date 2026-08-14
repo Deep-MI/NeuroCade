@@ -105,7 +105,7 @@ def _upsert_local_user(db: Session) -> AuthContext:
         user.email = settings.local_auth_email
         user.full_name = settings.local_auth_name
         db.flush()
-        ensure_personal_workspace(db, user)
+        ensure_personal_workspace(db, settings, user)
         if policy.sample_data_scope == "per_user":
             ensure_sample_case(db, user)
         elif policy.sample_data_scope == "global":
@@ -174,7 +174,7 @@ def get_auth_context(
                 )
                 db.add(user)
                 db.flush()
-                ensure_personal_workspace(db, user, readable_user_slug=True)
+                ensure_personal_workspace(db, settings, user)
                 if policy.sample_data_scope == "per_user":
                     ensure_sample_case(db, user)
                 elif policy.sample_data_scope == "global":
@@ -186,7 +186,7 @@ def get_auth_context(
                 user.email = email
             if full_name and user.full_name != full_name:
                 user.full_name = full_name
-            ensure_personal_workspace(db, user, readable_user_slug=True)
+            ensure_personal_workspace(db, settings, user)
             if policy.sample_data_scope == "per_user":
                 ensure_sample_case(db, user)
             elif policy.sample_data_scope == "global":

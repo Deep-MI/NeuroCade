@@ -15,13 +15,15 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service import main as main_module  # noqa: E402
+from api_service.cases import operations as cases_module  # noqa: E402
 from api_service.deps import get_context, get_db  # noqa: E402
 from api_service.routers import app_runtime as app_runtime_module  # noqa: E402
 
+from backend_common.case_storage import ensure_case_storage_layout  # noqa: E402
 from backend_common.db import Artifact, ArtifactKind, Base  # noqa: E402
 from tests.factories import seed_workspace_context  # noqa: E402
 
-CASE_ID = "workspace-1__case-1"
+CASE_ID = "case-1-id"
 
 
 @pytest.fixture()
@@ -42,13 +44,15 @@ def db_session():
 
 
 @pytest.fixture()
-def seeded_context(db_session):
+def seeded_context(db_session, monkeypatch, tmp_path):
     """Seed a personal workspace, case, and owner auth context."""
-    context, _workspace, _cases = seed_workspace_context(
+    context, workspace, cases = seed_workspace_context(
         db_session,
         workspace_id="workspace-1",
-        case_specs=(("case-1", "case-1"),),
+        case_specs=((CASE_ID, "case-1"),),
     )
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", tmp_path / "neurocade-data")
+    ensure_case_storage_layout(cases_module.settings, cases[0], workspace)
     return db_session, context
 
 
@@ -77,20 +81,21 @@ def test_client(seeded_context):
         main_module.app.dependency_overrides.clear()
 
 
-def test_gui_state_sync_resolves_case_scope_from_current_case_id(monkeypatch, test_client):
+def test_gui_state_sync_resolves_case_scope(monkeypatch, test_client):
     calls: list[dict] = []
 
-    async def fake_sync_gui_state(payload: dict, *, gui_state_key: str | None = None) -> dict:
-        """Capture GUI sync calls and echo the current case id."""
+    def fake_sync_gui_state(payload: dict, *, gui_state_key: str | None = None) -> dict:
+        """Capture GUI sync calls and echo the case id."""
         calls.append({"payload": payload, "gui_state_key": gui_state_key})
-        return {"status": "success", "current_state": {"current_case_id": payload.get("current_case_id")}}
+        return {"status": "success", "current_state": {"case_id": payload.get("case_id")}}
 
-    monkeypatch.setattr(app_runtime_module.runtime_service, "sync_gui_state", fake_sync_gui_state)
+    monkeypatch.setattr(app_runtime_module.gui_runtime, "sync_gui_state", fake_sync_gui_state)
 
     response = test_client.post(
         "/api/app/gui/state",
         json={
-            "current_case_id": CASE_ID,
+            "workspace_id": "workspace-1",
+            "case_id": CASE_ID,
             "gui_session_id": "gui-session-1",
             "is_job_running": False,
             "layers": [
@@ -112,8 +117,8 @@ def test_gui_state_sync_resolves_case_scope_from_current_case_id(monkeypatch, te
     assert calls == [
         {
             "payload": {
-                "current_case_id": CASE_ID,
-                "current_workspace_id": "workspace-1",
+                "case_id": CASE_ID,
+                "workspace_id": "workspace-1",
                 "is_job_running": False,
                 "layers": [
                     {
@@ -134,9 +139,21 @@ def test_gui_state_sync_resolves_case_scope_from_current_case_id(monkeypatch, te
     ]
     assert response.json() == {
         "status": "success",
-        "current_state": {"current_case_id": CASE_ID},
+        "current_state": {"case_id": CASE_ID},
         "commands": [],
     }
+
+
+def test_wildcard_bind_address_redirects_to_localhost(test_client):
+    response = test_client.get(
+        "http://0.0.0.0:8000/workspaces/personal-workspace/cases?view=cards",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == (
+        "http://localhost:8000/workspaces/personal-workspace/cases?view=cards"
+    )
 
 
 def test_runtime_resource_serves_lut_from_local_file(monkeypatch, tmp_path, test_client):
@@ -157,7 +174,7 @@ def test_gui_state_sync_resolves_output_resource_descriptor_to_artifact_path(mon
         workspace_id="workspace-1",
         kind=ArtifactKind.volume,
         name="orig.mgz",
-        relative_path="output/workspaces/workspace-1/cases/case-1/mri/orig.mgz",
+        relative_path="mri/orig.mgz",
         mime_type="application/octet-stream",
         size_bytes=6,
         metadata_json={},
@@ -165,7 +182,7 @@ def test_gui_state_sync_resolves_output_resource_descriptor_to_artifact_path(mon
     db_session.add(artifact)
     db_session.commit()
 
-    async def fake_sync_gui_state(payload: dict, *, gui_state_key: str | None = None) -> dict:
+    def fake_sync_gui_state(payload: dict, *, gui_state_key: str | None = None) -> dict:
         return {
             "commands": [
                 {
@@ -173,7 +190,7 @@ def test_gui_state_sync_resolves_output_resource_descriptor_to_artifact_path(mon
                     "type": "load_layer",
                     "created_at": "2026-07-28T00:00:00Z",
                     "payload": {
-                        "resource": {"kind": "output", "path": "outputs/workspaces/workspace-1/cases/case-1/mri/orig.mgz"},
+                        "resource": {"kind": "output", "path": "outputs/workspaces/personal-workspace/cases/case-1/mri/orig.mgz"},
                         "filename": "orig.mgz",
                         "name": "orig",
                         "type": "intensity",
@@ -182,11 +199,11 @@ def test_gui_state_sync_resolves_output_resource_descriptor_to_artifact_path(mon
             ]
         }
 
-    monkeypatch.setattr(app_runtime_module.runtime_service, "sync_gui_state", fake_sync_gui_state)
+    monkeypatch.setattr(app_runtime_module.gui_runtime, "sync_gui_state", fake_sync_gui_state)
 
     response = test_client.post(
         "/api/app/gui/state",
-        json={"current_case_id": CASE_ID, "gui_session_id": "gui-session-1"},
+        json={"workspace_id": "workspace-1", "case_id": CASE_ID, "gui_session_id": "gui-session-1"},
     )
 
     assert response.status_code == 200

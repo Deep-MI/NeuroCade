@@ -24,7 +24,7 @@ import requests
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8000")
+APP_URL = os.environ.get("APP_URL", "http://localhost:8000")
 API_TOKEN = os.environ.get("API_TOKEN", "static-token-12345")
 DEFAULT_STORAGE_STATE_PATH = Path(
     os.environ.get(
@@ -36,7 +36,7 @@ DEFAULT_GUI_SESSION_ID = os.environ.get("TEST_GUI_SESSION_ID", "pytest-default-s
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
-from backend_common.case_storage import UPLOAD_SUFFIXES, case_slug_from_id, upload_extension  # noqa: E402
+from backend_common.case_storage import UPLOAD_SUFFIXES, case_storage_dir_from_root, upload_extension  # noqa: E402
 
 _host_data_dir = os.environ.get("HOST_DATA_DIR")
 if not _host_data_dir or _host_data_dir == "/data":
@@ -204,7 +204,7 @@ DEMO_CASE_ID, DEMO_UPLOAD_FILENAME = _safe_demo_case_pair(_find_processed_demo_c
 # The standard GUI state when the demo case is fully loaded
 ADNI2_GUI_STATE = {
     "is_job_running": False,
-    "current_case_id": DEMO_CASE_ID,
+    "case_id": DEMO_CASE_ID,
     "layers": (
         _gui_layers_for_volumes(_loaded_volumes_for_case(_resolve_case_dir(DEMO_CASE_ID)))
         if DEMO_CASE_ID
@@ -233,9 +233,9 @@ def _reset_job_manager():
 
 
 @pytest.fixture(scope="session")
-def gateway_url():
+def app_url():
     """Base URL of the local app."""
-    return GATEWAY_URL
+    return APP_URL
 
 
 @pytest.fixture(scope="session")
@@ -283,14 +283,14 @@ def demo_run_upload_filename():
 
 
 @pytest.fixture(scope="session")
-def services_up(gateway_url):
+def services_up(app_url):
     """Verify the local app is reachable (session-scoped, runs once)."""
     try:
-        r = requests.get(f"{gateway_url}/api/app/healthz", timeout=5)
+        r = requests.get(f"{app_url}/api/app/healthz", timeout=5)
         r.raise_for_status()
     except Exception as exc:
         pytest.skip(
-            f"NeuroCade app not reachable at {gateway_url}: {exc}"
+            f"NeuroCade app not reachable at {app_url}: {exc}"
         )
 
 
@@ -360,7 +360,7 @@ def _skip_if_auth_failed(response: requests.Response, *, route: str) -> None:
 
 def _case_storage_dir(workspace_id: str, case_id: str) -> Path:
     """Return the filesystem output directory for an app case."""
-    return OUTPUTS_DIR / "workspaces" / workspace_id / "cases" / case_slug_from_id(workspace_id, case_id)
+    return case_storage_dir_from_root(OUTPUTS_DIR, workspace_id, case_id)
 
 
 def _unique_test_name(prefix: str, source_name: str | None = None) -> str:
@@ -376,14 +376,14 @@ def _unique_test_name(prefix: str, source_name: str | None = None) -> str:
 
 def create_workspace_via_api(
     *,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     name_prefix: str = "pytest-e2e-workspace",
 ) -> dict:
     """Create a uniquely named workspace through the authenticated app API."""
     workspace_name = _unique_test_name(name_prefix)
     response = requests.post(
-        f"{gateway_url}/api/app/workspaces",
-        headers=require_app_auth_headers(),
+        f"{app_url}/api/app/workspaces",
+        headers=get_app_auth_headers(),
         json={"name": workspace_name},
         timeout=20,
     )
@@ -396,7 +396,7 @@ def upload_case_via_api(
     workspace_id: str,
     upload_filename: str,
     *,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     case_name_prefix: str = "pytest-e2e-case",
 ) -> dict:
     """Upload a fixture file as a uniquely named case in a workspace."""
@@ -407,8 +407,8 @@ def upload_case_via_api(
     case_name = _unique_test_name(case_name_prefix, _case_id_from_upload(upload_path))
     with upload_path.open("rb") as handle:
         response = requests.post(
-            f"{gateway_url}/api/app/cases",
-            headers=require_app_auth_headers(),
+            f"{app_url}/api/app/cases",
+            headers=get_app_auth_headers(),
             data={"workspace_id": workspace_id, "title": case_name},
             files={"file": (upload_filename, handle, "application/octet-stream")},
             timeout=60,
@@ -418,10 +418,60 @@ def upload_case_via_api(
     return response.json()
 
 
-def get_case_detail(case_id: str, gateway_url: str = GATEWAY_URL) -> dict:
+def upload_path_as_case_via_api(
+    workspace_id: str,
+    upload_path: Path,
+    *,
+    title: str,
+    upload_filename: str | None = None,
+    content_type: str = "application/octet-stream",
+    app_url: str = APP_URL,
+) -> dict:
+    """Upload an arbitrary local file as a case for live QA."""
+    with upload_path.open("rb") as handle:
+        response = requests.post(
+            f"{app_url}/api/app/cases",
+            headers=get_app_auth_headers(),
+            data={"workspace_id": workspace_id, "title": title},
+            files={"file": (upload_filename or upload_path.name, handle, content_type)},
+            timeout=60,
+        )
+    _skip_if_auth_failed(response, route="/api/app/cases")
+    response.raise_for_status()
+    return response.json()
+
+
+def delete_workspace_via_api(workspace_id: str, *, app_url: str = APP_URL) -> None:
+    """Delete a disposable workspace once any finishing run releases it."""
+    deadline = time.monotonic() + 30
+    while True:
+        response = requests.delete(
+            f"{app_url}/api/app/workspaces/{workspace_id}",
+            headers=get_app_auth_headers(),
+            json={"confirm_non_empty_delete": True},
+            timeout=30,
+        )
+        _skip_if_auth_failed(response, route=f"/api/app/workspaces/{workspace_id}")
+        if response.status_code != 409 or time.monotonic() >= deadline:
+            response.raise_for_status()
+            return
+        time.sleep(0.5)
+
+
+@pytest.fixture(scope="module")
+def disposable_workspace(services_up):
+    """Provide one isolated workspace per live-QA module and always remove it."""
+    workspace = create_workspace_via_api(name_prefix="pytest-live")
+    try:
+        yield workspace
+    finally:
+        delete_workspace_via_api(workspace["id"])
+
+
+def get_case_detail(case_id: str, app_url: str = APP_URL) -> dict:
     """Fetch case details from the authenticated app API."""
     response = requests.get(
-        f"{gateway_url}/api/app/cases/{case_id}",
+        f"{app_url}/api/app/cases/{case_id}",
         headers=require_app_auth_headers(),
         timeout=20,
     )
@@ -431,11 +481,9 @@ def get_case_detail(case_id: str, gateway_url: str = GATEWAY_URL) -> dict:
 
 
 def _copy_tree_contents(src: Path, dst: Path) -> None:
-    """Copy processed case outputs while excluding source markers and uploads."""
+    """Copy processed case outputs while excluding root uploads."""
     dst.mkdir(parents=True, exist_ok=True)
     for child in src.iterdir():
-        if child.name == "subject.txt":
-            continue
         if child.is_file() and child.parent == src and child.name.endswith(UPLOAD_SUFFIXES):
             continue
 
@@ -446,22 +494,6 @@ def _copy_tree_contents(src: Path, dst: Path) -> None:
         else:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target_path)
-
-
-def _write_processed_case_markers(case_dir: Path, case_id: str, case_title: str) -> None:
-    """Write minimal files that mark a copied case as finished."""
-    (case_dir / "subject.txt").write_text(case_title, encoding="utf-8")
-    (case_dir / "status.json").write_text(
-        json.dumps(
-            {
-                "status": "finished",
-                "job_id": case_id,
-                "subject_name": case_title,
-            }
-        ),
-        encoding="utf-8",
-    )
-
 
 def _build_case_context(workspace: dict, upload_result: dict) -> dict:
     """Assemble case metadata and GUI state expected by tests."""
@@ -480,7 +512,6 @@ def _build_case_context(workspace: dict, upload_result: dict) -> dict:
             "workspace_id": workspace["id"],
             "case_id": upload_result["case_id"],
             "is_job_running": False,
-            "current_case_id": upload_result["case_id"],
             "layers": _gui_layers_for_volumes(loaded_volumes),
             "current_intensity_volume": upload_result["filename"],
             "current_intensity_artifact_id": None,
@@ -491,19 +522,19 @@ def _build_case_context(workspace: dict, upload_result: dict) -> dict:
 def build_fresh_uploaded_case(
     *,
     upload_filename: str,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     workspace_prefix: str = "pytest-e2e-workspace",
     case_prefix: str = "pytest-e2e-case",
 ) -> dict:
     """Create a workspace, upload a fixture, and return its test context."""
-    workspace = create_workspace_via_api(gateway_url=gateway_url, name_prefix=workspace_prefix)
+    workspace = create_workspace_via_api(app_url=app_url, name_prefix=workspace_prefix)
     upload_result = upload_case_via_api(
         workspace["id"],
         upload_filename,
-        gateway_url=gateway_url,
+        app_url=app_url,
         case_name_prefix=case_prefix,
     )
-    case_detail = get_case_detail(upload_result["case_id"], gateway_url)
+    case_detail = get_case_detail(upload_result["case_id"], app_url)
     context = _build_case_context(workspace, upload_result)
     context["source_upload_filename"] = upload_filename
     context["artifacts"] = case_detail.get("artifacts", [])
@@ -526,7 +557,7 @@ def build_fresh_processed_case(
     *,
     source_case_key: str,
     upload_filename: str,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     workspace_prefix: str = "pytest-processed-workspace",
     case_prefix: str = "pytest-processed-case",
 ) -> dict:
@@ -537,14 +568,13 @@ def build_fresh_processed_case(
 
     context = build_fresh_uploaded_case(
         upload_filename=upload_filename,
-        gateway_url=gateway_url,
+        app_url=app_url,
         workspace_prefix=workspace_prefix,
         case_prefix=case_prefix,
     )
     context["source_case_key"] = source_case_key
     _copy_tree_contents(source_case_dir, context["case_dir"])
-    _write_processed_case_markers(context["case_dir"], context["case_id"], context["title"])
-    case_detail = get_case_detail(context["case_id"], gateway_url)
+    case_detail = get_case_detail(context["case_id"], app_url)
     context.update(_build_case_context({"id": context["workspace_id"], "name": context["workspace_name"]}, {
         "case_id": context["case_id"],
         "title": context["title"],
@@ -555,9 +585,9 @@ def build_fresh_processed_case(
     return context
 
 
-def fresh_processed_case_data(gateway_url: str = GATEWAY_URL) -> dict:
-    """Return cached GUI-ready processed case data for a gateway."""
-    cache_key = gateway_url
+def fresh_processed_case_data(app_url: str = APP_URL) -> dict:
+    """Return cached GUI-ready processed case data for an application URL."""
+    cache_key = app_url
     cached = _GUI_PROCESSED_CASE_CACHE.get(cache_key)
     if cached is not None:
         return dict(cached)
@@ -566,7 +596,7 @@ def fresh_processed_case_data(gateway_url: str = GATEWAY_URL) -> dict:
     processed_case = build_fresh_processed_case(
         source_case_key=DEMO_CASE_ID,
         upload_filename=DEMO_UPLOAD_FILENAME,
-        gateway_url=gateway_url,
+        app_url=app_url,
         workspace_prefix="pytest-gui-workspace",
         case_prefix="pytest-gui-case",
     )
@@ -599,11 +629,11 @@ def fresh_processed_case(services_up):
     )
 
 
-def list_cases(gateway_url: str = GATEWAY_URL, workspace_id: str | None = None) -> list[dict]:
+def list_cases(app_url: str = APP_URL, workspace_id: str | None = None) -> list[dict]:
     """Fetch accessible cases from the authenticated app API."""
     params = {"workspace_id": workspace_id} if workspace_id else None
     response = requests.get(
-        f"{gateway_url}/api/app/cases",
+        f"{app_url}/api/app/cases",
         headers=require_app_auth_headers(),
         params=params,
         timeout=10,
@@ -613,11 +643,11 @@ def list_cases(gateway_url: str = GATEWAY_URL, workspace_id: str | None = None) 
     return response.json()
 
 
-def get_case_summary_by_case_id(case_id: str, gateway_url: str = GATEWAY_URL) -> dict:
+def get_case_summary_by_case_id(case_id: str, app_url: str = APP_URL) -> dict:
     """Resolve an app case summary from the canonical case id."""
     normalized_case_id = str(case_id).strip()
     match = next(
-        (item for item in list_cases(gateway_url) if item.get("id") == normalized_case_id),
+        (item for item in list_cases(app_url) if item.get("id") == normalized_case_id),
         None,
     )
     if match is None:
@@ -625,10 +655,10 @@ def get_case_summary_by_case_id(case_id: str, gateway_url: str = GATEWAY_URL) ->
     return match
 
 
-def get_case_runs(case_id: str, gateway_url: str = GATEWAY_URL) -> list[dict]:
+def get_case_runs(case_id: str, app_url: str = APP_URL) -> list[dict]:
     """Fetch runs for one case from the authenticated app API."""
     response = requests.get(
-        f"{gateway_url}/api/app/cases/{case_id}/runs",
+        f"{app_url}/api/app/cases/{case_id}/runs",
         headers=get_app_auth_headers(),
         timeout=10,
     )
@@ -637,12 +667,12 @@ def get_case_runs(case_id: str, gateway_url: str = GATEWAY_URL) -> list[dict]:
     return response.json()
 
 
-def _resolve_case_context(current_case_id: str | None, gateway_url: str = GATEWAY_URL) -> tuple[str | None, str | None]:
+def _resolve_case_context(case_id: str | None, app_url: str = APP_URL) -> tuple[str | None, str | None]:
     """Resolve workspace and case ids for an existing app case."""
-    normalized_case_id = str(current_case_id or "").strip()
+    normalized_case_id = str(case_id or "").strip()
     if not normalized_case_id:
         return None, None
-    match = next((item for item in list_cases(gateway_url) if item.get("id") == normalized_case_id), None)
+    match = next((item for item in list_cases(app_url) if item.get("id") == normalized_case_id), None)
     if match is None:
         return None, None
     return match.get("workspace_id"), match.get("id")
@@ -650,7 +680,7 @@ def _resolve_case_context(current_case_id: str | None, gateway_url: str = GATEWA
 
 def seed_gui_state(
     state: dict,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     *,
     gui_session_id: str = DEFAULT_GUI_SESSION_ID,
 ) -> dict:
@@ -660,7 +690,7 @@ def seed_gui_state(
     workspace_id = payload.get("workspace_id")
     case_id = payload.get("case_id")
     if not workspace_id or not case_id:
-        resolved_workspace_id, resolved_case_id = _resolve_case_context(payload.get("current_case_id"), gateway_url)
+        resolved_workspace_id, resolved_case_id = _resolve_case_context(case_id, app_url)
         workspace_id = workspace_id or resolved_workspace_id
         case_id = case_id or resolved_case_id
     if workspace_id:
@@ -668,7 +698,7 @@ def seed_gui_state(
     if case_id:
         payload["case_id"] = case_id
 
-    url = f"{gateway_url}/api/app/gui/state"
+    url = f"{app_url}/api/app/gui/state"
     r = requests.post(url, json=payload, headers=require_app_auth_headers(), timeout=10)
     _skip_if_auth_failed(r, route="/api/app/gui/state")
     r.raise_for_status()
@@ -684,7 +714,7 @@ def seed_gui_state(
 
 def chat_send(
     messages: list[dict],
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     token: str = API_TOKEN,
     timeout: int = 300,
     workspace_id: str | None = None,
@@ -695,8 +725,8 @@ def chat_send(
     resolved_workspace_id = workspace_id or _LAST_GUI_SCOPE.get("workspace_id")
     resolved_case_id = case_id or _LAST_GUI_SCOPE.get("case_id")
     resolved_gui_session_id = gui_session_id or _LAST_GUI_SCOPE.get("gui_session_id") or DEFAULT_GUI_SESSION_ID
-    url = f"{gateway_url}/api/app/assistant/turns"
-    headers = {"Content-Type": "application/json", **require_app_auth_headers()}
+    url = f"{app_url}/api/app/assistant/turns"
+    headers = {"Content-Type": "application/json", **get_app_auth_headers()}
     payload = {
         "messages": messages,
         "workspace_id": resolved_workspace_id,

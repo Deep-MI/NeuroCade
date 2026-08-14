@@ -53,45 +53,7 @@ class RuntimeContainerRunRequest:
     network_disabled: bool = True
     gpu_enabled: bool = False
     remove: bool = True
-
-
-@dataclass(slots=True)
-class RuntimeArtifactIndexTarget:
-    """Describe case storage that should be indexed after runtime execution."""
-
-    user_id: str
-    workspace_id: str
-    case_id: str
-    case_title: str | None = None
-    preferred_upload_name: str | None = None
-
-
-@dataclass(slots=True)
-class RuntimeCaseLogArtifactTarget:
-    """Describe a per-case log artifact produced by runtime execution."""
-
-    workspace_id: str
-    case_id: str
-    run_id: str
-    log_path: Path | str
-    run_type: str
-
-
-@dataclass(slots=True)
-class RuntimeWorkspaceArtifactSyncTarget:
-    """Describe workspace analysis storage to sync after runtime execution."""
-
-    run_id: str
-    analysis_dir: Path | str
-
-
-@dataclass(slots=True)
-class RuntimeCompletionHooks:
-    """Describe artifact hooks that should run after runtime work completes."""
-
-    artifact_index_targets: Sequence[RuntimeArtifactIndexTarget] = field(default_factory=tuple)
-    case_log_artifact_targets: Sequence[RuntimeCaseLogArtifactTarget] = field(default_factory=tuple)
-    workspace_artifact_sync_targets: Sequence[RuntimeWorkspaceArtifactSyncTarget] = field(default_factory=tuple)
+    isolated: bool = False
 
 
 @dataclass(slots=True)
@@ -103,12 +65,6 @@ class RuntimeExecutionRequest:
     env: Mapping[str, str] | None = None
     timeout_s: float | None = DEFAULT_TIMEOUT_SECONDS
     execution_mode: str = "local-subprocess"
-    synchronous: bool = True
-    queue_name: str | None = None
-    task_id: str | None = None
-    user_id: str | None = None
-    workspace_id: str | None = None
-    case_id: str | None = None
     output_root: Path | str | None = None
     workdir_root: Path | str | None = None
     stdout_path: Path | str | None = None
@@ -118,9 +74,6 @@ class RuntimeExecutionRequest:
     stdin_devnull: bool = True
     runtime_policy: RuntimeExecutionPolicy | None = None
     log_lines: list[str] = field(default_factory=list)
-    artifact_index_targets: Sequence[RuntimeArtifactIndexTarget] = field(default_factory=tuple)
-    case_log_artifact_targets: Sequence[RuntimeCaseLogArtifactTarget] = field(default_factory=tuple)
-    workspace_artifact_sync_targets: Sequence[RuntimeWorkspaceArtifactSyncTarget] = field(default_factory=tuple)
     container_run: RuntimeContainerRunRequest | None = None
 
     @property
@@ -149,6 +102,7 @@ def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) ->
         "network_disabled": request.network_disabled,
         "gpu_enabled": request.gpu_enabled,
         "remove": request.remove,
+        "isolated": request.isolated,
     }
 
 
@@ -162,18 +116,6 @@ class RuntimeExecutionResult:
     stderr: str = ""
     logs: list[str] = field(default_factory=list)
     execution_backend: str = "local-subprocess"
-    submitted_task_id: str | None = None
-
-    def as_dict(self) -> dict[str, object]:
-        """Return a serializable response dictionary."""
-        return {
-            "returncode": self.returncode,
-            "stdout": self.stdout,
-            "stderr": self.stderr,
-            "logs": list(self.logs),
-            "execution_backend": self.execution_backend,
-            "submitted_task_id": self.submitted_task_id,
-        }
 
 
 def _resolved_path(value: Path | str | None) -> Path | None:
@@ -206,17 +148,10 @@ def _assert_request_containment(request: RuntimeExecutionRequest) -> None:
 
 def _log_request(request: RuntimeExecutionRequest) -> None:
     logger.info(
-        "runtime_execution.run mode=%s sync=%s queue=%s task_id=%s cwd=%s timeout_s=%s "
-        "user_id=%s workspace_id=%s case_id=%s runtime_policy=%s command=%s",
+        "runtime_execution.run mode=%s cwd=%s timeout_s=%s runtime_policy=%s command=%s",
         request.execution_mode,
-        request.synchronous,
-        request.queue_name,
-        request.task_id,
         request.cwd,
         request.timeout_s,
-        request.user_id,
-        request.workspace_id,
-        request.case_id,
         request.runtime_policy,
         request.command if request.container_run is None else runtime_container_run_payload(request.container_run),
     )

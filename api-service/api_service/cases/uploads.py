@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -10,20 +11,18 @@ import zipfile
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
-from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request, core_container_image
-from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest
+from neurocade_runtime_tools.container_request import DCM2NIIX_IMAGE, RuntimeBind, build_container_request
+from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest, execute_runtime_request
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
-from api_service.runtime.execution import execute_runtime_request
 from backend_common.case_storage import (
-    canonical_upload_name,
-    case_relative_prefix,
+    case_named_upload,
     ensure_case_storage_layout,
     unique_upload_name,
 )
 from backend_common.db import Artifact, ArtifactKind, Case, Workspace
-from backend_common.scan import classify_volume_metadata
+from backend_common.storage import resolve_artifact_path
 
 DIRECT_VOLUME_SUFFIXES = (".nii.gz", ".nii", ".mgz")
 DICOM_UPLOAD_SUFFIXES = (".dcm", ".dicom", ".ima")
@@ -58,36 +57,21 @@ NON_STRUCTURAL_SERIES_HINTS = (
     "fa",
 )
 
-def _artifact_disk_path(relative_path: str) -> Path:
-    return settings.fs_data_root / relative_path
-
-
-def _relative_data_path(path: Path) -> str:
-    return str(path.resolve().relative_to(settings.fs_data_root.resolve()))
-
-
-def _require_input_volume_artifact(db: Session, case: Case, artifact_id: str | None) -> Artifact:
-    """Return the selected FastSurfer input volume or raise an API error."""
+def _require_run_analysis_input_artifact(db: Session, case: Case, artifact_id: str | None) -> Artifact:
+    """Return a selected intensity-volume input or raise an API error."""
     if not artifact_id:
-        raise HTTPException(status_code=400, detail="FastSurfer input_artifact_id is required")
+        raise HTTPException(status_code=400, detail="Workflow input artifact id is required")
     artifact = db.get(Artifact, artifact_id)
     if artifact is None:
-        raise HTTPException(status_code=404, detail="FastSurfer input artifact not found")
+        raise HTTPException(status_code=404, detail="Workflow input artifact not found")
     if artifact.case_id != case.id:
-        raise HTTPException(status_code=400, detail="FastSurfer input artifact does not belong to this case")
-    if artifact.kind != ArtifactKind.volume:
-        raise HTTPException(status_code=400, detail="FastSurfer input artifact must be a volume")
-    if (artifact.metadata_json or {}).get("volume_role") == "segmentation":
-        raise HTTPException(status_code=400, detail="FastSurfer input artifact must be an intensity volume")
-    artifact_path = _artifact_disk_path(artifact.relative_path)
-    if not artifact_path.exists():
-        raise HTTPException(status_code=404, detail="FastSurfer input artifact is missing on disk")
+        raise HTTPException(status_code=400, detail="Workflow input artifact does not belong to this case")
+    if artifact.kind != ArtifactKind.volume or (artifact.metadata_json or {}).get("volume_role", "intensity") != "intensity":
+        raise HTTPException(status_code=400, detail="Run Analysis inputs must be intensity-volume artifacts")
+    artifact_path = resolve_artifact_path(artifact)
+    if not artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="Workflow input artifact is missing on disk")
     return artifact
-
-
-def _container_path(path: Path) -> str:
-    relative = Path(_relative_data_path(path))
-    return f"/data/{relative.as_posix()}"
 
 
 def _unique_upload_name_for_case(db: Session, case: Case, workspace: Workspace, case_dir: Path, source_name: str) -> str:
@@ -97,7 +81,6 @@ def _unique_upload_name_for_case(db: Session, case: Case, workspace: Workspace, 
     if candidate.lower().endswith(".nii.gz"):
         stem = candidate[:-7]
     ext = "".join(Path(candidate).suffixes) if candidate.lower().endswith(".nii.gz") else Path(candidate).suffix
-    prefix = case_relative_prefix(workspace.id, case.id)
     artifact_paths = {
         relative_path
         for (relative_path,) in db.query(Artifact.relative_path)
@@ -105,7 +88,7 @@ def _unique_upload_name_for_case(db: Session, case: Case, workspace: Workspace, 
         .all()
     }
     index = 2
-    while (case_dir / candidate).exists() or f"{prefix}/{candidate}" in artifact_paths:
+    while (case_dir / candidate).exists() or candidate in artifact_paths:
         candidate = f"{stem}-{index}{ext}"
         index += 1
     return candidate
@@ -313,12 +296,8 @@ def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
         RuntimeBind(input_dir, "/input", "ro"),
         RuntimeBind(output_dir, "/output", "rw"),
     ]
-    try:
-        image = core_container_image("dcm2niix")
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail="dcm2niix container image is not configured") from exc
     cmd = build_container_request(
-        image=image,
+        image=os.environ.get("NEUROCADE_DCM2NIIX_IMAGE", DCM2NIIX_IMAGE),
         binds=binds,
         disable_network=True,
         command=command,
@@ -384,7 +363,7 @@ def _store_raw_dicom_archive(
         workspace_id=workspace.id,
         kind=ArtifactKind.derived,
         name=archive_path.name,
-        relative_path=_relative_data_path(archive_path),
+        relative_path=str(archive_path.relative_to(case_dir)),
         mime_type="application/zip",
         size_bytes=archive_path.stat().st_size,
         metadata_json={"source": "dicom-upload", "dicom_raw": True},
@@ -399,9 +378,9 @@ def _create_volume_artifact(
     case: Case,
     workspace: Workspace,
     target_path: Path,
+    case_dir: Path,
     *,
     metadata: dict,
-    source_name: str | None = None,
     mime_type: str | None = None,
 ) -> Artifact:
     """Create a volume artifact for a stored path."""
@@ -410,12 +389,12 @@ def _create_volume_artifact(
         workspace_id=workspace.id,
         kind=ArtifactKind.volume,
         name=target_path.name,
-        relative_path=_relative_data_path(target_path),
+        relative_path=str(target_path.relative_to(case_dir)),
         mime_type=mime_type
         or ("application/gzip" if target_path.name.lower().endswith(".gz") else "application/octet-stream"),
         size_bytes=target_path.stat().st_size,
         metadata_json={
-            **classify_volume_metadata(source_name or target_path.name),
+            "volume_role": "intensity",
             **metadata,
         },
     )
@@ -430,12 +409,12 @@ async def _store_case_upload(
     workspace: Workspace,
     file: UploadFile,
     *,
-    use_canonical_name: bool,
+    name_primary_after_case: bool,
 ) -> Artifact:
     """Store a direct MRI volume upload and register it as a case artifact."""
-    case_dir = ensure_case_storage_layout(db, settings, case, workspace)
+    case_dir = ensure_case_storage_layout(settings, case, workspace)
     source_name = file.filename or "upload.nii.gz"
-    stored_name = canonical_upload_name(case.title, source_name) if use_canonical_name else _unique_upload_name_for_case(db, case, workspace, case_dir, source_name)
+    stored_name = case_named_upload(case.title, source_name) if name_primary_after_case else _unique_upload_name_for_case(db, case, workspace, case_dir, source_name)
     target_path = case_dir / stored_name
     _size_bytes, mime_type = await _write_upload_file(file, target_path)
     try:
@@ -448,8 +427,8 @@ async def _store_case_upload(
         case,
         workspace,
         target_path,
+        case_dir,
         metadata={"source": "upload"},
-        source_name=source_name,
         mime_type=mime_type,
     )
 
@@ -460,10 +439,10 @@ async def _store_case_dicom_uploads(
     workspace: Workspace,
     upload_files: list[UploadFile],
     *,
-    use_canonical_name: bool,
+    name_primary_after_case: bool,
 ) -> Artifact:
     """Convert DICOM uploads to NIfTI files and register the resulting artifacts."""
-    case_dir = ensure_case_storage_layout(db, settings, case, workspace)
+    case_dir = ensure_case_storage_layout(settings, case, workspace)
     with tempfile.TemporaryDirectory(prefix="dicom-upload-") as temp_root_name:
         temp_root = Path(temp_root_name)
         input_dir = temp_root / "input"
@@ -494,8 +473,8 @@ async def _store_case_dicom_uploads(
 
         for index, converted_path in enumerate(converted_paths, start=1):
             is_selected = converted_path == selected_input
-            if is_selected and use_canonical_name:
-                stored_name = canonical_upload_name(case.title, converted_path.name)
+            if is_selected and name_primary_after_case:
+                stored_name = case_named_upload(case.title, converted_path.name)
             else:
                 stored_name = unique_upload_name(
                     case_dir,
@@ -509,6 +488,7 @@ async def _store_case_dicom_uploads(
                 case,
                 workspace,
                 target_path,
+                case_dir,
                 metadata={
                     "source": "dicom-upload",
                     "dicom_converted": True,
@@ -534,7 +514,7 @@ async def _store_uploaded_inputs(
     workspace: Workspace,
     upload_files: list[UploadFile],
     *,
-    use_canonical_name: bool,
+    name_primary_after_case: bool,
 ) -> Artifact:
     """Route validated uploads to the direct-volume or DICOM conversion storage path."""
     direct_uploads = [upload for upload in upload_files if _is_direct_volume_upload(upload)]
@@ -552,28 +532,17 @@ async def _store_uploaded_inputs(
     if direct_uploads and (dicom_uploads or len(upload_files) > 1):
         raise HTTPException(status_code=400, detail="Upload either one MRI volume or a DICOM series, not both")
     if direct_uploads:
-        return await _store_case_upload(db, case, workspace, direct_uploads[0], use_canonical_name=use_canonical_name)
-    return await _store_case_dicom_uploads(db, case, workspace, dicom_uploads, use_canonical_name=use_canonical_name)
-
-
-def _copy_input_artifact_to_case(
-    db: Session,
-    source_artifact: Artifact,
-    target_case: Case,
-    workspace: Workspace,
-) -> Artifact:
-    """Copy a selected input volume artifact into another case."""
-    source_path = _artifact_disk_path(source_artifact.relative_path)
-    target_dir = ensure_case_storage_layout(db, settings, target_case, workspace)
-    target_name = canonical_upload_name(target_case.title, source_artifact.name)
-    target_path = target_dir / target_name
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, target_path)
-    return _create_volume_artifact(
+        return await _store_case_upload(
+            db,
+            case,
+            workspace,
+            direct_uploads[0],
+            name_primary_after_case=name_primary_after_case,
+        )
+    return await _store_case_dicom_uploads(
         db,
-        target_case,
+        case,
         workspace,
-        target_path,
-        metadata=source_artifact.metadata_json or {},
-        mime_type=source_artifact.mime_type,
+        dicom_uploads,
+        name_primary_after_case=name_primary_after_case,
     )

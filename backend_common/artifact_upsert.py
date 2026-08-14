@@ -32,22 +32,12 @@ def insert_artifact_if_missing(db: Session, values: dict, *, case_scoped: bool) 
             Artifact.relative_path == artifact_values.get("relative_path"),
         )
 
-    if db.get_bind().dialect.name == "sqlite":
-        statement = (
-            sqlite_insert(Artifact)
-            .values(**artifact_values)
-            .on_conflict_do_nothing(index_elements=conflict_columns, index_where=conflict_where)
-        )
-        result = db.execute(statement)
-        if result.rowcount:
-            return db.get(Artifact, artifact_values["id"])
-        return db.query(Artifact).filter(*lookup_filters).order_by(Artifact.created_at.desc()).first()
-
-    # Fallback for any non-SQLite engine (e.g. tests with a different dialect).
-    artifact = db.query(Artifact).filter(*lookup_filters).order_by(Artifact.created_at.desc()).first()
-    if artifact is not None:
-        return artifact
-    artifact = Artifact(**artifact_values)
-    db.add(artifact)
-    db.flush()
-    return artifact
+    statement = (
+        sqlite_insert(Artifact)
+        .values(**artifact_values)
+        .on_conflict_do_nothing(index_elements=conflict_columns, index_where=conflict_where)
+    )
+    result = db.execute(statement)
+    if result.rowcount:
+        return db.get(Artifact, artifact_values["id"])
+    return db.query(Artifact).filter(*lookup_filters).order_by(Artifact.created_at.desc()).first()

@@ -1,18 +1,17 @@
-"""A small in-process job manager that replaces Celery for the monolith.
+"""In-process background job management for the NeuroCade monolith.
 
 Jobs run on per-queue thread pools so the HTTP API stays responsive during the
-hour-long FastSurfer / workspace-batch runs. Concurrency is bounded per queue
+hour-long neuroimaging runs. Concurrency is bounded per queue
 (the GPU-bound ``fastsurfer`` queue defaults to a single worker to avoid GPU
 contention). Cancellation cooperates with the runtime execution layer: when a
 job launches a tool subprocess it registers the live process via
 ``neurocade_runtime_tools.execution.process_observer`` so the manager can
 terminate the whole process group.
 
-The manager keeps an in-memory registry of job handles keyed by ``task_id`` (a
-UUID string, matching the previous Celery task ids). Durable run state lives in
-the database ``runs`` table and on-disk ``status.json`` files, which the task
-bodies own; :func:`reconcile_interrupted_runs` repairs rows left ``running`` by a
-crash on startup.
+The manager keeps live process handles in memory and optionally persists job
+submissions in SQLite. Queued durable jobs are restored on startup. Work that
+was already running is recorded as interrupted because arbitrary container
+processes cannot be resumed safely after process death.
 """
 
 from __future__ import annotations
@@ -31,11 +30,12 @@ from typing import Any
 
 from neurocade_runtime_tools.execution import _terminate_process_group, process_observer
 
+from api_service.jobs.store import DurableJobStore
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_QUEUE = "api"
 FASTSURFER_QUEUE = "fastsurfer"
-WORKSPACE_BATCH_QUEUE = "workspace_batch"
 
 
 class JobState(str, Enum):
@@ -63,6 +63,7 @@ class JobHandle:
     future: Future | None = None
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
+    shutdown_requested: threading.Event = field(default_factory=threading.Event)
     _process: subprocess.Popen | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -74,7 +75,7 @@ def _int_env(name: str, default: int) -> int:
 def _default_concurrency() -> dict[str, int]:
     api = _int_env("API_WORKER_CONCURRENCY", 2)
     fastsurfer = _int_env("FASTSURFER_CONCURRENCY", 1)
-    return {DEFAULT_QUEUE: api, WORKSPACE_BATCH_QUEUE: api, FASTSURFER_QUEUE: fastsurfer}
+    return {DEFAULT_QUEUE: api, FASTSURFER_QUEUE: fastsurfer}
 
 
 class JobManager:
@@ -85,6 +86,7 @@ class JobManager:
         concurrency: dict[str, int] | None = None,
         *,
         result_ttl_s: int | None = None,
+        durable_store: DurableJobStore | None = None,
     ) -> None:
         self._tasks: dict[str, Callable[..., Any]] = {}
         self._handles: dict[str, JobHandle] = {}
@@ -92,6 +94,7 @@ class JobManager:
         self._lock = threading.Lock()
         self._concurrency = concurrency or _default_concurrency()
         self._default_concurrency = _int_env("API_WORKER_CONCURRENCY", 2)
+        self._durable_store = durable_store
         # Terminal handles are kept only long enough for clients to poll the
         # result; durable run state lives in the ``runs`` table. Set to 0 to
         # disable eviction.
@@ -104,14 +107,10 @@ class JobManager:
         """Register a callable under a job name."""
         self._tasks[name] = func
 
-    def task(self, name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Decorator form of :meth:`register` that returns the function unchanged."""
-
-        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            self.register(name, func)
-            return func
-
-        return decorator
+    def configure_persistence(self, durable_store: DurableJobStore | None) -> None:
+        """Attach or detach durable storage after database migrations complete."""
+        with self._lock:
+            self._durable_store = durable_store
 
     # -- submission --------------------------------------------------------
     def _executor_for(self, queue: str) -> ThreadPoolExecutor:
@@ -144,26 +143,49 @@ class JobManager:
         kwargs: dict[str, Any] | None = None,
         *,
         queue: str = DEFAULT_QUEUE,
-        task_id: str | None = None,
+        job_id: str | None = None,
     ) -> str:
         """Enqueue a registered task and return its job id."""
         func = self._tasks.get(name)
         if func is None:
             raise KeyError(f"Unknown job task: {name!r}")
-        job_id = task_id or str(uuid.uuid4())
+        job_id = job_id or str(uuid.uuid4())
         handle = JobHandle(id=job_id, queue=queue)
+        durable_store = self._durable_store
+        if durable_store is not None:
+            durable_store.create(
+                job_id=job_id,
+                task_name=name,
+                queue_name=queue,
+                kwargs=dict(kwargs or {}),
+            )
         with self._lock:
             self._prune_terminal_locked()
             self._handles[job_id] = handle
         logger.info("job.submit id=%s task=%s queue=%s", job_id, name, queue)
-        handle.future = self._executor_for(queue).submit(self._run, handle, name, func, dict(kwargs or {}))
+        self._schedule(handle, name, func, dict(kwargs or {}))
         return job_id
+
+    def _schedule(self, handle: JobHandle, name: str, func: Callable[..., Any], kwargs: dict[str, Any]) -> None:
+        try:
+            handle.future = self._executor_for(handle.queue).submit(self._run, handle, name, func, kwargs)
+        except Exception as exc:
+            durable_store = self._durable_store
+            if durable_store is not None:
+                durable_store.mark_terminal(handle.id, state=JobState.failed.value, error=str(exc))
+            raise
 
     def _run(self, handle: JobHandle, name: str, func: Callable[..., Any], kwargs: dict[str, Any]) -> None:
         if handle.cancel_requested.is_set():
             handle.state = JobState.canceled
             handle.finished_at = time.monotonic()
             logger.info("job.canceled_before_start id=%s task=%s", handle.id, name)
+            return
+        durable_store = self._durable_store
+        if durable_store is not None and not durable_store.mark_running(handle.id):
+            handle.state = JobState.canceled
+            handle.finished_at = time.monotonic()
+            logger.info("job.skipped_nonqueued id=%s task=%s", handle.id, name)
             return
         handle.state = JobState.running
 
@@ -187,46 +209,71 @@ class JobManager:
             process_observer.reset(token)
             with handle._lock:
                 handle._process = None
+            if durable_store is not None and not handle.shutdown_requested.is_set():
+                durable_store.mark_terminal(
+                    handle.id,
+                    state=handle.state.value,
+                    result=handle.result,
+                    error=handle.error,
+                )
 
     # -- introspection -----------------------------------------------------
-    def status(self, task_id: str) -> dict[str, Any]:
-        """Return the readiness and result of a job, mirroring the old shape."""
-        handle = self._handles.get(task_id)
+    def status(self, job_id: str) -> dict[str, Any]:
+        """Return the readiness and result of a job."""
+        handle = self._handles.get(job_id)
         if handle is None:
-            return {"task_id": task_id, "status": "unknown", "ready": False, "result": None}
+            durable_store = self._durable_store
+            if durable_store is not None:
+                persisted = durable_store.status(job_id)
+                if persisted is not None:
+                    return persisted
+            return {"job_id": job_id, "status": "unknown", "ready": False, "result": None}
         ready = handle.state in _TERMINAL
         return {
-            "task_id": task_id,
+            "job_id": job_id,
             "status": handle.state.value,
             "ready": ready,
             "result": handle.result if ready else None,
             "error": handle.error,
         }
 
-    def queue_status(self) -> dict[str, int]:
-        """Return counts of active (running) and queued jobs."""
+    def queue_status(self, queue_names: set[str] | None = None) -> dict[str, int]:
+        """Return active and queued counts, optionally filtered by queue name."""
+        durable_store = self._durable_store
+        if durable_store is not None:
+            return durable_store.queue_status(queue_names)
         with self._lock:
             handles = list(self._handles.values())
         active = queued = 0
         for handle in handles:
+            if queue_names is not None and handle.queue not in queue_names:
+                continue
             if handle.state is JobState.running:
                 active += 1
             elif handle.state is JobState.queued:
                 queued += 1
         return {"active": active, "queued": queued, "total": active + queued}
 
-    def cancel(self, task_id: str) -> bool:
+    def cancel(self, job_id: str) -> bool:
         """Request cancellation of a job; terminate its tool process if running."""
-        handle = self._handles.get(task_id)
+        handle = self._handles.get(job_id)
         if handle is None:
+            durable_store = self._durable_store
+            if durable_store is not None:
+                return durable_store.cancel(job_id)
             return False
         self._request_cancel(handle)
-        logger.info("job.cancel id=%s", task_id)
+        durable_store = self._durable_store
+        if durable_store is not None:
+            durable_store.cancel(job_id)
+        logger.info("job.cancel id=%s", job_id)
         return True
 
-    def _request_cancel(self, handle: JobHandle, *, mark_terminal: bool = False) -> None:
+    def _request_cancel(self, handle: JobHandle, *, mark_terminal: bool = False, shutdown: bool = False) -> None:
         """Request cancellation and terminate any registered runtime subprocess."""
         handle.cancel_requested.set()
+        if shutdown:
+            handle.shutdown_requested.set()
         canceled_before_start = False
         if handle.future is not None:
             canceled_before_start = handle.future.cancel()  # false if already started
@@ -240,6 +287,41 @@ class JobManager:
             handle.state = JobState.canceled
             handle.finished_at = time.monotonic()
 
+    def recover_pending(self, *, retention_days: int = 30) -> set[str]:
+        """Restore queued jobs and fail jobs interrupted while already running."""
+        durable_store = self._durable_store
+        if durable_store is None:
+            return set()
+        recovered_ids: set[str] = set()
+        for stored_job in durable_store.active_jobs():
+            if stored_job.state == JobState.running.value:
+                durable_store.mark_terminal(
+                    stored_job.id,
+                    state=JobState.failed.value,
+                    error="Interrupted by an application restart.",
+                )
+                logger.warning("job.interrupted id=%s task=%s", stored_job.id, stored_job.task_name)
+                continue
+            func = self._tasks.get(stored_job.task_name)
+            if func is None:
+                durable_store.mark_terminal(
+                    stored_job.id,
+                    state=JobState.failed.value,
+                    error=f"Registered task is unavailable: {stored_job.task_name}",
+                )
+                logger.error("job.recovery_unknown_task id=%s task=%s", stored_job.id, stored_job.task_name)
+                continue
+            handle = JobHandle(id=stored_job.id, queue=stored_job.queue_name)
+            with self._lock:
+                self._handles[handle.id] = handle
+            self._schedule(handle, stored_job.task_name, func, stored_job.kwargs)
+            recovered_ids.add(handle.id)
+            logger.info("job.recovered id=%s task=%s queue=%s", handle.id, stored_job.task_name, handle.queue)
+        pruned = durable_store.prune_terminal(retention_days=retention_days)
+        if pruned:
+            logger.info("job.history_pruned count=%d", pruned)
+        return recovered_ids
+
     def shutdown(self, *, wait: bool = False) -> None:
         """Stop all worker pools (used on application shutdown)."""
         with self._lock:
@@ -248,7 +330,7 @@ class JobManager:
             self._executors.clear()
         for handle in handles:
             if handle.state not in _TERMINAL:
-                self._request_cancel(handle, mark_terminal=True)
+                self._request_cancel(handle, mark_terminal=True, shutdown=True)
         for executor in executors:
             executor.shutdown(wait=wait, cancel_futures=True)
 
