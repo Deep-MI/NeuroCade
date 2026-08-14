@@ -35,7 +35,7 @@ from uuid import uuid4
 import pytest
 from conftest import DEMO_RUN_UPLOAD_FILENAME, UPLOAD_FIXTURES_DIR
 from gui_helpers import (
-    GATEWAY_URL,
+    APP_URL,
     get_auth_headers,
     infer_case_name,
     load_processed_case,
@@ -203,7 +203,7 @@ class TestGuiUploadAndRun:
         workspace = create_workspace(page, f"empty-workspace-{uuid4().hex[:8]}")
         workspace_id = workspace["id"]
 
-        page.goto(f"{GATEWAY_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
+        page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_url(f"**/workspaces/{workspace_id}/cases", timeout=15_000)
 
         empty_message = page.locator("text=This workspace is empty. Upload an MRI file to create the first case.")
@@ -233,24 +233,23 @@ class TestGuiUploadAndRun:
         workspace = create_workspace(page, f"workspace-actions-{uuid4().hex[:8]}")
         workspace_id = workspace["id"]
 
-        page.goto(f"{GATEWAY_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
+        page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_url(f"**/workspaces/{workspace_id}/cases", timeout=15_000)
 
         initial_name = f"workspace-action-case-{uuid4().hex[:6]}"
         upload_mri(page, str(upload_file), case_name=initial_name, trigger_selector="button:has-text('Upload Case')")
         case_id = routed_case_id(page)
-        case_slug = case_id.split("__", 1)[1]
 
-        page.goto(f"{GATEWAY_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
+        page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_url(f"**/workspaces/{workspace_id}/cases", timeout=15_000)
         page.locator(f"text={initial_name}").wait_for(state="visible", timeout=15_000)
 
         page.click(f"[data-testid='workspace-case-rename-{case_id}']")
         rename_input = page.locator(f"[data-testid='workspace-case-rename-input-{case_id}']")
         rename_input.wait_for(state="visible", timeout=10_000)
-        rename_input.fill(case_slug)
+        rename_input.fill(initial_name)
         page.click(f"[data-testid='workspace-case-rename-confirm-{case_id}']")
-        page.locator(f"[data-testid='workspace-case-title-{case_id}']", has_text=case_slug).wait_for(
+        page.locator(f"[data-testid='workspace-case-title-{case_id}']", has_text=initial_name).wait_for(
             state="visible",
             timeout=15_000,
         )
@@ -264,11 +263,10 @@ class TestGuiUploadAndRun:
         page.locator(f"text={renamed_name}").wait_for(state="visible", timeout=15_000)
         take_screenshot(page, "06b_workspace_case_renamed", screenshot_dir)
 
-        renamed_case_id = f"{workspace_id}__{renamed_name}"
-        page.click(f"[data-testid='workspace-case-delete-{renamed_case_id}']")
-        page.locator(f"[data-testid='workspace-case-delete-confirm-{renamed_case_id}']").wait_for(state="visible", timeout=10_000)
-        page.click(f"[data-testid='workspace-case-delete-confirm-{renamed_case_id}']")
-        page.locator(f"[data-testid='workspace-case-delete-{renamed_case_id}']").wait_for(state="hidden", timeout=15_000)
+        page.click(f"[data-testid='workspace-case-delete-{case_id}']")
+        page.locator(f"[data-testid='workspace-case-delete-confirm-{case_id}']").wait_for(state="visible", timeout=10_000)
+        page.click(f"[data-testid='workspace-case-delete-confirm-{case_id}']")
+        page.locator(f"[data-testid='workspace-case-delete-{case_id}']").wait_for(state="hidden", timeout=15_000)
         page.locator("text=This workspace is empty. Upload an MRI file to create the first case.").wait_for(
             state="visible",
             timeout=15_000,
@@ -276,18 +274,17 @@ class TestGuiUploadAndRun:
 
         take_screenshot(page, "06c_workspace_case_deleted", screenshot_dir)
 
-    def test_manage_cases_card_can_rename_to_case_id(self, page, screenshot_dir, upload_file):
-        """The in-workspace case manager should rename a case even when the new title equals the case id."""
+    def test_manage_cases_card_can_rename_case(self, page, screenshot_dir, upload_file):
+        """The in-workspace case manager should rename a case without changing its ID."""
         workspace = create_workspace(page, f"manage-actions-{uuid4().hex[:8]}")
         workspace_id = workspace["id"]
 
-        page.goto(f"{GATEWAY_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
+        page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_url(f"**/workspaces/{workspace_id}/cases", timeout=15_000)
 
         initial_name = f"manage-action-case-{uuid4().hex[:6]}"
         upload_mri(page, str(upload_file), case_name=initial_name, trigger_selector="button:has-text('Upload Case')")
         case_id = routed_case_id(page)
-        case_slug = case_id.split("__", 1)[1]
 
         page.click("button:has-text('Manage Cases')")
         page.get_by_role("heading", name="Manage Cases").wait_for(state="visible", timeout=10_000)
@@ -299,9 +296,10 @@ class TestGuiUploadAndRun:
         page.click(f"[data-testid='manage-case-rename-{case_id}']")
         rename_input = page.locator(f"[data-testid='manage-case-rename-input-{case_id}']")
         rename_input.wait_for(state="visible", timeout=10_000)
-        rename_input.fill(case_slug)
+        renamed_name = f"renamed-manage-case-{uuid4().hex[:6]}"
+        rename_input.fill(renamed_name)
         page.click(f"[data-testid='manage-case-rename-confirm-{case_id}']")
-        page.locator(f"[data-testid='manage-case-title-{case_id}']", has_text=case_slug).wait_for(
+        page.locator(f"[data-testid='manage-case-title-{case_id}']", has_text=renamed_name).wait_for(
             state="visible",
             timeout=15_000,
         )
@@ -321,8 +319,7 @@ class TestGuiUploadAndRun:
                 return { ok: false, status: response.status, detail: await response.text() };
               }
               const cases = await response.json();
-              const sampleId = `${workspaceId}__sample-case`;
-              return { ok: true, case: cases.find((entry) => entry.id === sampleId || entry.title === 'sample-case') || null };
+              return { ok: true, case: cases.find((entry) => entry.title === 'sample-case') || null };
             }""",
             workspace_id,
         )
@@ -334,11 +331,10 @@ class TestGuiUploadAndRun:
         case_id = case_item["id"]
         original_name = case_item["title"]
         renamed_name = f"sample-card-rename-{uuid4().hex[:6]}"
-        renamed_case_id = f"{workspace_id}__{renamed_name}"
         current_case_id = case_id
 
         try:
-            page.goto(f"{GATEWAY_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
+            page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
             page.wait_for_url(f"**/workspaces/{workspace_id}/cases", timeout=15_000)
             page.click(f"[data-testid='workspace-case-rename-{case_id}']")
             rename_input = page.locator(f"[data-testid='workspace-case-rename-input-{case_id}']")
@@ -351,14 +347,14 @@ class TestGuiUploadAndRun:
                 page.click(f"[data-testid='workspace-case-rename-confirm-{case_id}']")
             response = patch_response.value
             assert response.ok, f"Sample case rename failed with {response.status}: {response.text()}"
-            current_case_id = response.json()["new_id"]
+            current_case_id = response.json()["id"]
             page.locator(f"[data-testid='workspace-case-title-{current_case_id}']", has_text=renamed_name).wait_for(
                 state="visible",
                 timeout=15_000,
             )
 
             page.reload(wait_until="domcontentloaded", timeout=30_000)
-            page.locator(f"[data-testid='workspace-case-title-{renamed_case_id}']", has_text=renamed_name).wait_for(
+            page.locator(f"[data-testid='workspace-case-title-{current_case_id}']", has_text=renamed_name).wait_for(
                 state="visible",
                 timeout=15_000,
             )

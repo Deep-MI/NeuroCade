@@ -15,7 +15,7 @@ export type NiivueMeshInterop = NVMesh & {
   __surfaceDisplayKey?: string;
 };
 
-export type NiivueInterop = Omit<Niivue, 'volumes' | 'meshes'> & {
+type NiivueInterop = Omit<Niivue, 'volumes' | 'meshes'> & {
   readonly volumes: NiivueVolumeInterop[];
   readonly meshes: NiivueMeshInterop[];
 };

@@ -2,12 +2,11 @@ import type { GuiLayerState, GuiStateSyncResponse } from '../../types';
 
 import { appJson, jsonRequest } from './core';
 
-export interface GuiStatePush {
+interface GuiStatePush {
   workspace_id: string | null;
   case_id: string | null;
   gui_session_id: string;
   is_job_running: boolean;
-  current_case_id: string | null;
   layers: GuiLayerState[];
   acknowledged_command_ids: string[];
   current_intensity_artifact_id: string | null;

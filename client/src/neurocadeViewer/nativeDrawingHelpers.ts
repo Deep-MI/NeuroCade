@@ -1,6 +1,6 @@
 import type { SegmentationVolumeLayer, Volume } from '../types.js';
 
-export type DrawingTool = 'navigate' | 'paint' | 'erase';
+type DrawingTool = 'navigate' | 'paint' | 'erase';
 export type DrawingLut = 'binary' | 'freesurfer';
 
 export interface DrawingOptions {
@@ -14,7 +14,7 @@ export interface DrawingOptions {
   filename: string;
 }
 
-export interface DrawingSource {
+interface DrawingSource {
   layerId?: string;
   artifactId?: string;
   name: string;

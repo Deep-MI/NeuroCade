@@ -5,11 +5,11 @@ import type { NavigateFunction } from 'react-router';
 import { isRunActive, isRunTerminal } from '../constants';
 import { useCasePolling } from './useCasePolling';
 import { useCaseUploadModal } from './useCaseUploadModal';
-import { useFastSurferRunController } from './useFastSurferRunController';
+import { useAnalysisRunController } from './useAnalysisRunController';
 import { type AnalysisToolSummary, type CaseSummary, type ChatMessage, type OutputVolume, type UploadState, type Volume } from '../types';
 import { loadClosedCaseVolumes, removeCaseState } from '../utils/caseStorage';
 import * as api from '../utils/api';
-import { dedupeOutputVolumes, outputVolumesToViewerLayers, visibleOutputVolumes } from '../utils/caseLayers';
+import { dedupeOutputVolumes, mergeOutputVolumesIntoViewerLayers, outputVolumesToViewerLayers, visibleOutputVolumes } from '../utils/caseLayers';
 import { restorePersistedCaseLayers, savePersistedCaseLayers } from '../utils/caseLayerPersistence';
 import { isCaseTransitionPending } from '../utils/caseLoading';
 import { caseViewerPath } from '../utils/caseRoutes';
@@ -44,7 +44,6 @@ export function useCaseWorkspaceController({
   const [guiSessionId] = useState(createGuiSessionId);
   const suppressedRouteCaseRef = useRef<string | null>(null);
   const caseTitlesRef = useRef<Record<string, string>>({});
-  const autoOpenedTerminalCaseRef = useRef<string | null>(null);
   const workspaceActionRef = useRef(0);
 
   const startWorkspaceAction = useCallback(() => {
@@ -64,16 +63,20 @@ export function useCaseWorkspaceController({
   const fetchCaseOutputs = useCallback(async (caseId: string, actionId?: number) => {
     try {
       const data = await api.fetchOutputsList(caseId);
+      if (actionId !== undefined && isStaleWorkspaceAction(actionId)) return;
       const dedupedVolumes = dedupeOutputVolumes(data.volumes);
-      const inputOptions = dedupedVolumes.filter((volume) => volume.id && volume.kind === 'volume' && (volume.type ?? 'intensity') === 'intensity');
+      const inputOptions = dedupedVolumes.filter((volume) => volume.kind === 'volume' && volume.type === 'intensity');
       setRunInputOptions(inputOptions);
       if (dedupedVolumes.length === 0) {
         return;
       }
-      if (actionId !== undefined && isStaleWorkspaceAction(actionId)) return;
       const closedFilenames = new Set(loadClosedCaseVolumes(caseId));
       const visibleVolumes = visibleOutputVolumes(dedupedVolumes, closedFilenames);
-      setVolumes(outputVolumesToViewerLayers(visibleVolumes));
+      if (actionId !== undefined) {
+        setVolumes(outputVolumesToViewerLayers(visibleVolumes));
+      } else {
+        setVolumes((current) => mergeOutputVolumesIntoViewerLayers(current, visibleVolumes));
+      }
     } catch (error) {
       console.error('Error fetching outputs:', error);
     }
@@ -83,9 +86,9 @@ export function useCaseWorkspaceController({
     try {
       const data = await api.fetchCases(initialWorkspaceId);
       setAvailableCases(data.cases);
-      const activeCase = currentCaseId ? data.cases.find((caseItem) => caseItem.case_id === currentCaseId) : null;
-      if (activeCase?.subject_name) {
-        setCurrentCaseTitle(activeCase.subject_name);
+      const activeCase = currentCaseId ? data.cases.find((caseItem) => caseItem.id === currentCaseId) : null;
+      if (activeCase?.title) {
+        setCurrentCaseTitle(activeCase.title);
       }
     } catch (error) {
       console.error('Error fetching cases:', error);
@@ -102,13 +105,11 @@ export function useCaseWorkspaceController({
     }
   }, [isStaleWorkspaceAction]);
 
-  const runController = useFastSurferRunController({
+  const runController = useAnalysisRunController({
     initialWorkspaceId,
     currentCaseId,
     currentCaseTitle,
     availableCases,
-    runInputOptions,
-    volumes,
     navigate,
     fetchAvailableCases,
     setActiveCaseId,
@@ -154,12 +155,12 @@ export function useCaseWorkspaceController({
   }, [fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setRunStatus, setVolumes, startWorkspaceAction]);
 
   const handleRenameCase = useCallback(async (oldId: string, newId: string) => {
-    const renamed = await api.renameCase(oldId, newId);
+    const renamed = await api.updateCase(oldId, { title: newId });
     if (currentCaseId === oldId) {
-      setActiveCaseId(renamed.new_id);
-      setCurrentCaseTitle(renamed.new_title);
+      setActiveCaseId(renamed.id);
+      setCurrentCaseTitle(renamed.title);
       if (initialWorkspaceId) {
-        void navigate(caseViewerPath(initialWorkspaceId, renamed.new_id, renamed.new_title));
+        void navigate(caseViewerPath(initialWorkspaceId, renamed.id));
       }
     }
     await fetchAvailableCases();
@@ -180,10 +181,10 @@ export function useCaseWorkspaceController({
   }, [currentCaseId, fetchAvailableCases, setRunStatus, setVolumes]);
 
   const openCase = useCallback((caseId: string) => {
-    const targetCase = availableCases.find((caseItem) => caseItem.case_id === caseId);
+    const targetCase = availableCases.find((caseItem) => caseItem.id === caseId);
     const targetWorkspaceId = targetCase?.workspace_id ?? initialWorkspaceId;
     if (!targetWorkspaceId) return;
-    void navigate(caseViewerPath(targetWorkspaceId, caseId, targetCase?.subject_name));
+    void navigate(caseViewerPath(targetWorkspaceId, caseId));
   }, [availableCases, initialWorkspaceId, navigate]);
 
   const uploadModal = useCaseUploadModal({
@@ -206,7 +207,7 @@ export function useCaseWorkspaceController({
         setActiveCaseId(data.case_id);
         setCurrentCaseTitle(data.title);
         suppressedRouteCaseRef.current = data.case_id;
-        void navigate(caseViewerPath(data.workspace_id, data.case_id, data.title));
+        void navigate(caseViewerPath(data.workspace_id, data.case_id));
       } catch (error) {
         if (!isStaleWorkspaceAction(actionId)) {
           suppressedRouteCaseRef.current = null;
@@ -245,7 +246,7 @@ export function useCaseWorkspaceController({
 
   useEffect(() => {
     caseTitlesRef.current = Object.fromEntries(
-      availableCases.map((caseItem) => [caseItem.case_id, caseItem.subject_name]),
+      availableCases.map((caseItem) => [caseItem.id, caseItem.title]),
     );
   }, [availableCases]);
 
@@ -312,27 +313,9 @@ export function useCaseWorkspaceController({
     return () => window.clearTimeout(timerId);
   }, [currentCaseId, fetchLogs, runStatus]);
 
-  useEffect(() => {
-    if (!currentCaseId) {
-      autoOpenedTerminalCaseRef.current = null;
-      return;
-    }
-    if (!isRunTerminal(runStatus)) {
-      autoOpenedTerminalCaseRef.current = null;
-      return;
-    }
-    if (!logs.trim() || autoOpenedTerminalCaseRef.current === currentCaseId) {
-      return;
-    }
-    const timerId = window.setTimeout(() => {
-      autoOpenedTerminalCaseRef.current = currentCaseId;
-    }, 0);
-    return () => window.clearTimeout(timerId);
-  }, [currentCaseId, logs, runStatus]);
-
   const hasUploadedCase = currentCaseId !== null;
   const suggestedCaseName = currentCaseTitle
-    ?? (currentCaseId ? (availableCases.find((caseItem) => caseItem.case_id === currentCaseId)?.subject_name ?? currentCaseId) : '');
+    ?? (currentCaseId ? (availableCases.find((caseItem) => caseItem.id === currentCaseId)?.title ?? currentCaseId) : '');
 
   return {
     guiSessionId,
@@ -343,8 +326,10 @@ export function useCaseWorkspaceController({
     uploadState,
     showUploadModal: uploadModal.showUploadModal,
     showConfirm: runController.showConfirm,
+    selectedAnalysisToolId: runController.selectedToolId,
     activeCaseId: currentCaseId,
     runStatus,
+    isSubmittingRun: runController.isSubmittingRun,
     logs,
     chatNotifications,
     availableCases,
@@ -354,10 +339,9 @@ export function useCaseWorkspaceController({
     hasUploadedCase,
     suggestedCaseName,
     setShowConfirm: runController.setShowConfirm,
-    handleRunFastSurfer: runController.handleRunFastSurfer,
+    handleRunAnalysis: runController.handleRunAnalysis,
     handleCancel: runController.handleCancel,
     confirmRun: runController.confirmRun,
-    handleAgentRunFastSurfer: runController.handleAgentRunFastSurfer,
     fetchAvailableCases,
     handleRenameCase,
     handleDeleteCase,

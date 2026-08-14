@@ -19,7 +19,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from gui_helpers import GATEWAY_URL, get_auth_headers, routed_case_id, slug_name, take_screenshot
+from gui_helpers import APP_URL, get_auth_headers, routed_case_id, slug_name, take_screenshot
 
 pytest_plugins = ["conftest_gui"]
 
@@ -82,7 +82,7 @@ def test_public_head_dicom_zip_upload_converts_and_selects_t1_input_candidate(pa
     workspace_id = workspace["id"]
     case_name = f"zenodo-head-dicom-{uuid4().hex[:6]}"
 
-    page.goto(f"{GATEWAY_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
+    page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases", wait_until="domcontentloaded", timeout=30_000)
     page.wait_for_url(f"**/workspaces/{workspace_id}/cases", timeout=15_000)
 
     upload_tile = page.locator("button:has-text('Upload Case')").first

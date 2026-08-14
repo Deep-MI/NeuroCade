@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createViewerLayer, inferOutputVolumeLayerType, isMaskLikeFilename, outputVolumeLayerType } from '../src/utils/layerBuilders.js';
+import { createViewerLayer, outputVolumeLayerType } from '../src/utils/layerBuilders.js';
 import type { OutputVolume } from '../src/types.js';
 
 void test('createViewerLayer applies shared segmentation defaults', () => {
@@ -33,11 +33,14 @@ void test('createViewerLayer applies shared surface defaults', () => {
   assert.equal(layer.surfaceColorMode, 'solid');
 });
 
-void test('layer type helpers normalize runtime and output volume type hints', () => {
-  const drawing = { filename: 'drawing.nii.gz', type: 'drawing' } as OutputVolume;
-  const unknownSeg = { filename: 'mri/brainmask.mgz', type: undefined } as OutputVolume;
+void test('output volumes preserve their required declared layer type', () => {
+  const segmentation: OutputVolume = {
+    id: 'artifact-1',
+    filename: 'mri/brainmask.mgz',
+    downloadUrl: '/api/app/artifacts/artifact-1/download',
+    kind: 'volume',
+    type: 'segmentation',
+  };
 
-  assert.equal(outputVolumeLayerType(drawing), 'drawing');
-  assert.equal(inferOutputVolumeLayerType(unknownSeg), 'segmentation');
-  assert.equal(isMaskLikeFilename('mri/brainmask.mgz'), true);
+  assert.equal(outputVolumeLayerType(segmentation), 'segmentation');
 });

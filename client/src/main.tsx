@@ -8,7 +8,7 @@ import { BackendStartupGate } from './components/BackendStartupGate.tsx'
 import { RouteErrorPage } from './components/RouteErrorPage.tsx'
 import { installGlobalErrorReporting } from './utils/monitoring.ts'
 
-const App = lazy(() => import('./App.tsx'))
+const DefaultWorkspaceRedirectPage = lazy(() => import('./pages/DefaultWorkspaceRedirectPage.tsx').then(module => ({ default: module.DefaultWorkspaceRedirectPage })))
 const CasesLayout = lazy(() => import('./pages/CasesLayout.tsx').then(module => ({ default: module.CasesLayout })))
 const CaseListPage = lazy(() => import('./pages/CaseListPage.tsx').then(module => ({ default: module.CaseListPage })))
 const CaseDetailPage = lazy(() => import('./pages/CaseDetailPage.tsx').then(module => ({ default: module.CaseDetailPage })))
@@ -26,7 +26,7 @@ const router = createBrowserRouter([
         path: '/',
         element: (
           <RequireAuth>
-            <App />
+            <DefaultWorkspaceRedirectPage />
           </RequireAuth>
         ),
       },

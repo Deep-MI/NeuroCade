@@ -18,7 +18,7 @@ interface BaseViewerLayer {
 }
 
 export interface IntensityVolumeLayer extends BaseViewerLayer {
-  type?: 'intensity';
+  type: 'intensity';
   /** Brightness adjustment, –100 to 100, default 0. */
   brightness?: number;
   /** Contrast multiplier, 0.0 to 2.0, default 1.0. */
@@ -64,15 +64,15 @@ export function isSegmentationLayer(volume: Volume): volume is SegmentationVolum
 
 /** A case returned by the workspace case listing endpoint. */
 export interface CaseSummary {
-  case_id: string;
-  subject_name: string;
+  id: string;
+  title: string;
   description?: string | null;
   modalities?: string[];
   tags?: string[];
   notes?: string | null;
-  status: string;
-  created_at: number;
-  workspace_id?: string;
+  latest_run_status: string | null;
+  created_at: string;
+  workspace_id: string;
   thread_id?: string | null;
   artifact_count?: number;
 }
@@ -84,17 +84,26 @@ export interface StatusConfig {
   badge: string;
 }
 
-/** FastSurfer run parameters configured via the confirmation modal. */
-export interface FastSurferParams {
-  input_artifact_id: string;
-  seg_only: boolean;
-  no_bias: boolean;
-  no_cereb: boolean;
-  no_asegdkt: boolean;
-  no_hypothal: boolean;
-  three_t: boolean;
-  vox_size?: string;
-  case_name?: string;
+/** One ordered input declared by a configured analysis workflow. */
+interface AnalysisToolInput {
+  name: string;
+  description: string;
+}
+
+/** One typed output declared by a configured analysis workflow. */
+interface AnalysisToolOutput {
+  name: string;
+  type: 'intensity_volume' | 'segmentation_volume' | 'surface' | 'other';
+  path: string;
+  description: string;
+  required: boolean;
+}
+
+/** Parameters submitted by the generated Run Analysis form. */
+export interface AnalysisRunParams {
+  tool_id: string;
+  input_artifact_ids: string[];
+  output_name_overrides: Record<string, string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -111,8 +120,15 @@ export interface AnalysisToolSummary {
   id: string;
   label: string;
   description: string;
-  container_id: string;
-  container_label: string;
+  inputs: AnalysisToolInput[];
+  outputs: AnalysisToolOutput[];
+  input_artifact_kind: 'intensity_volume';
+  execution: {
+    mode: 'synchronous' | 'background';
+    gpu: boolean;
+    timeout_s: number | null;
+    queue: string;
+  };
 }
 
 export interface CaseListResponse {
@@ -123,16 +139,14 @@ export interface StatusResponse {
   status: string;
 }
 
-export interface LogsResponse {
-  logs: string;
-}
-
 export interface OutputVolume {
-  id?: string;
+  id: string;
+  name?: string;
   filename: string;
   downloadUrl: string;
-  kind?: string;
-  type?: LayerType;
+  kind: string;
+  outputType?: 'intensity_volume' | 'segmentation_volume' | 'surface';
+  type: Exclude<LayerType, 'drawing'>;
   lut?: 'freesurfer' | 'binary';
   customLutDownloadUrl?: string;
   curvatureDownloadUrl?: string;
@@ -140,17 +154,15 @@ export interface OutputVolume {
   visible?: boolean;
 }
 
-export type SaveGeneratedVolumeResult = ArtifactListItem;
-
 export interface OutputsListResponse {
   volumes: OutputVolume[];
 }
 
 export interface RunResult {
-  task_id: string;
+  run_id: string;
   case_id: string;
   status: string;
-  workspace_id?: string | null;
+  workspace_id: string;
 }
 
 export interface GuiStateSyncResponse {
@@ -177,7 +189,7 @@ export interface GuiLayerState {
 
 export interface GuiCommand {
   id: string;
-  type: 'load_layer' | 'remove_layers' | 'set_layer_visibility' | 'set_layer_display' | 'move_cursor' | 'run_fastsurfer';
+  type: 'load_layer' | 'remove_layers' | 'reorder_layer' | 'set_layer_visibility' | 'set_layer_display' | 'move_cursor';
   payload: Record<string, unknown>;
   created_at: string;
   expires_at: string;
@@ -220,7 +232,6 @@ export interface WorkspaceSummary {
   role: string;
   kind: string;
   is_default: boolean;
-  status: string;
   case_count?: number;
 }
 
@@ -231,7 +242,7 @@ export interface MonitoringStatusItem {
   details: Record<string, unknown>;
 }
 
-export interface MonitoringUserSummary {
+interface MonitoringUserSummary {
   id: string;
   email: string;
   full_name: string;
@@ -276,49 +287,6 @@ export interface MonitoringSummary {
   recent_activity: MonitoringAuditEventSummary[];
 }
 
-export interface MonitoringEventsResponse {
-  events: MonitoringEventSummary[];
-  audit_events: MonitoringAuditEventSummary[];
-}
-
-export interface WorkspaceBatchCaseRun {
-  run_id: string;
-  case_id: string;
-  case_title: string;
-  status: string;
-  external_task_id?: string | null;
-  error_message?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceBatchRunSummary {
-  run_id: string;
-  workspace_id: string;
-  status: string;
-  run_type: string;
-  execution_mode: 'workspace_wide' | 'per_case';
-  command: string;
-  report_name: string;
-  analysis_id?: string | null;
-  selected_case_count: number;
-  total_cases: number;
-  queued_cases: number;
-  running_cases: number;
-  completed_cases: number;
-  failed_cases: number;
-  canceled_cases: number;
-  external_task_id?: string | null;
-  artifact_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceBatchRunDetail extends WorkspaceBatchRunSummary {
-  cases: WorkspaceBatchCaseRun[];
-  artifacts: ArtifactListItem[];
-}
-
 export type AssistantScope = 'case' | 'workspace';
 
 export interface UploadState {
@@ -335,13 +303,13 @@ interface PersistedBaseLayer {
   opacity: number;
 }
 
-export interface PersistedIntensityVolumeLayer extends PersistedBaseLayer {
+interface PersistedIntensityVolumeLayer extends PersistedBaseLayer {
   type: 'intensity';
   brightness: number;
   contrast: number;
 }
 
-export interface PersistedSegmentationVolumeLayer extends PersistedBaseLayer {
+interface PersistedSegmentationVolumeLayer extends PersistedBaseLayer {
   type: 'segmentation';
   lut?: 'freesurfer' | 'binary';
   customLutUrl?: string;
@@ -349,7 +317,7 @@ export interface PersistedSegmentationVolumeLayer extends PersistedBaseLayer {
   contrast: number;
 }
 
-export interface PersistedSurfaceLayer extends PersistedBaseLayer {
+interface PersistedSurfaceLayer extends PersistedBaseLayer {
   type: 'surface';
   surfaceColorMode?: SurfaceColorMode;
   curvatureUrl?: string;
@@ -363,6 +331,7 @@ export type PersistedVolume = PersistedIntensityVolumeLayer | PersistedSegmentat
 
 /** Per-case persistence envelope stored in localStorage. */
 export interface CaseState {
+  version: 1;
   caseId: string;
   volumes: PersistedVolume[];
   lastAccessed: number;
@@ -385,9 +354,18 @@ export interface ChatTextPart {
 export type ChatContentPart = ChatTextPart | ChatImagePart;
 
 export interface ToolCallEntry {
+  call_id?: string | null;
+  execution_id?: string | null;
+  ledger_status?: string | null;
+  external_run_id?: string | null;
   name: string;
   arguments: Record<string, unknown>;
   result: string;
+  is_error?: boolean;
+  details?: Record<string, unknown>;
+  artifacts?: Record<string, unknown>[];
+  terminal?: boolean;
+  elapsed_ms?: number | null;
 }
 
 export interface ReasoningEntry {
@@ -413,18 +391,14 @@ export interface ProviderSummary {
   provider: string;
   provider_family: string;
   model: string;
-  role: string;
   is_default: boolean;
-  native_tool_calling: boolean;
-  json_mode: boolean;
   vision: boolean;
-  streaming: boolean;
   available: boolean;
   availability_reason?: string | null;
 }
 
 export interface ArtifactListItem {
-  id?: string;
+  id: string;
   case_id?: string | null;
   workspace_id?: string | null;
   name: string;

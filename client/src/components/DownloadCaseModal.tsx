@@ -16,14 +16,17 @@ interface DownloadCaseModalProps {
 }
 
 function artifactLabel(artifact: ArtifactListItem): string {
+  const displayName = typeof artifact.metadata?.display_name === 'string'
+    ? artifact.metadata.display_name
+    : artifact.name;
   const volumeRole = typeof artifact.metadata?.volume_role === 'string' ? artifact.metadata.volume_role : null;
   if (volumeRole === 'segmentation') {
-    return `${artifact.name} (segmentation)`;
+    return `${displayName} (segmentation)`;
   }
   if (volumeRole === 'intensity') {
-    return `${artifact.name} (intensity)`;
+    return `${displayName} (intensity)`;
   }
-  return artifact.name;
+  return displayName;
 }
 
 export function DownloadCaseModal({
@@ -81,7 +84,7 @@ export function DownloadCaseModal({
           value={selectedDownloadArtifactId}
           onChange={(event) => setSelectedArtifactId(event.target.value)}
           disabled={downloadableArtifacts.length === 0 || actionLoading !== null}
-          className="mb-4 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-primary/50 disabled:opacity-50"
+          className="mb-4 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-[var(--nc-interactive)] disabled:opacity-50"
         >
           {downloadableArtifacts.length === 0 ? (
             <option value="">No downloadable volumes available</option>

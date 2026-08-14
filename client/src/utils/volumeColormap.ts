@@ -15,7 +15,7 @@ const BINARY_SEGMENTATION_COLORMAP = {
 let freesurferColorMap: NiivueColorMap | null = null;
 let freesurferColorMapPromise: Promise<NiivueColorMap> | null = null;
 
-export function inferredSegmentationLut(volume: Volume): 'binary' | 'freesurfer' | undefined {
+function inferredSegmentationLut(volume: Volume): 'binary' | 'freesurfer' | undefined {
   if (volume.type !== 'segmentation') return undefined;
   if (volume.lut === 'binary' || volume.lut === 'freesurfer') return volume.lut;
   const normalized = `${volume.filename} ${volume.name} ${volume.url}`.toLowerCase();

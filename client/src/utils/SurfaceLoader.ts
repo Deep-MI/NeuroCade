@@ -1,4 +1,4 @@
-export interface SurfaceAnnotationData {
+interface SurfaceAnnotationData {
   labels: Int32Array;
   colorTable: Uint8Array;
   names: string[];

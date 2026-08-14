@@ -4,14 +4,14 @@ import test from 'node:test';
 import { isCaseTransitionPending } from '../src/utils/caseLoading.js';
 
 void test('a routed case is pending until it becomes active', () => {
-  assert.equal(isCaseTransitionPending('workspace__sample-case', null, null), true);
-  assert.equal(isCaseTransitionPending('workspace__sample-case', 'workspace__other-case', null), true);
-  assert.equal(isCaseTransitionPending('workspace__sample-case', 'workspace__sample-case', null), false);
+  assert.equal(isCaseTransitionPending('sample-case-id', null, null), true);
+  assert.equal(isCaseTransitionPending('sample-case-id', 'other-case-id', null), true);
+  assert.equal(isCaseTransitionPending('sample-case-id', 'sample-case-id', null), false);
 });
 
 void test('an explicit load remains pending for the active route', () => {
   assert.equal(
-    isCaseTransitionPending('workspace__sample-case', 'workspace__sample-case', 'workspace__sample-case'),
+    isCaseTransitionPending('sample-case-id', 'sample-case-id', 'sample-case-id'),
     true,
   );
 });

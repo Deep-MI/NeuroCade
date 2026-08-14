@@ -50,10 +50,9 @@ def test_agent_applies_pial_surface_preset(page, screenshot_dir):
     if processed_case:
         case_id = processed_case["id"]
         workspace_id = processed_case["workspace_id"]
-        case_slug = case_id.removeprefix(f"{workspace_id}__")
         origin = page.url.split("/workspaces/", 1)[0]
         page.goto(
-            f"{origin}/workspaces/{workspace_id}/cases/{case_slug}",
+            f"{origin}/workspaces/{workspace_id}/cases/{case_id}",
             wait_until="domcontentloaded",
             timeout=30_000,
         )

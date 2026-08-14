@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from gui_helpers import DEFAULT_STORAGE_STATE_PATH, GATEWAY_URL, load_processed_case
+from gui_helpers import APP_URL, DEFAULT_STORAGE_STATE_PATH, load_processed_case
 
 pytest_plugins = ["conftest_gui"]
 
@@ -101,11 +101,11 @@ def _clear_case_persistence(page) -> None:
 def _load_timing_case(page) -> None:
     explicit_case_id = os.environ.get("NEUROCADE_TIMING_CASE_ID", "").strip()
     if explicit_case_id:
-        if "__" not in explicit_case_id:
-            raise AssertionError("NEUROCADE_TIMING_CASE_ID must use the canonical '<workspace_id>__<case_slug>' form")
-        workspace_id, case_slug = explicit_case_id.split("__", 1)
-        page.goto(f"{GATEWAY_URL}/workspaces/{workspace_id}/cases/{case_slug}", wait_until="domcontentloaded", timeout=30_000)
-        page.wait_for_url(f"**/workspaces/{workspace_id}/cases/{case_slug}", timeout=15_000)
+        workspace_id = os.environ.get("NEUROCADE_TIMING_WORKSPACE_ID", "").strip()
+        if not workspace_id:
+            raise AssertionError("NEUROCADE_TIMING_WORKSPACE_ID is required with NEUROCADE_TIMING_CASE_ID")
+        page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases/{explicit_case_id}", wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_url(f"**/workspaces/{workspace_id}/cases/{explicit_case_id}", timeout=15_000)
         return
     load_processed_case(page)
 
@@ -437,7 +437,7 @@ def test_viewer_interaction_timing_report(browser, services_up):
             and "/api/" in event.get("url", "")
         ]
         report = {
-            "gateway_url": GATEWAY_URL,
+            "app_url": APP_URL,
             "settle_ms": int(os.environ.get("NEUROCADE_TIMING_SETTLE_MS", "15000")),
             "interaction_click_method": "visible control locator.click(force=True, no_wait_after=True)",
             "targets_ms": TARGETS_MS,

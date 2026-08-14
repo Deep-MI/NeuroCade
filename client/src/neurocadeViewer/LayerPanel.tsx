@@ -1,12 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Brush, ChevronDown, ChevronRight, Download, Eraser, Eye, EyeOff, Layers, MousePointer2, Pencil, Plus, Undo2, X } from 'lucide-react';
+import type React from 'react';
+import { ChevronDown, ChevronRight, Eye, EyeOff, Layers, Plus, X } from 'lucide-react';
 
-import { isSegmentationLayer, isSurfaceLayer, type LayerType, type SegmentationVolumeLayer, type SurfaceColorMode, type Volume } from '../types';
+import { isSurfaceLayer, type LayerType, type SegmentationVolumeLayer, type SurfaceColorMode, type Volume } from '../types';
+import { DrawingToolsPanel } from './DrawingToolsPanel';
+import { layerDefaultOpacity } from './layerDisplay';
 import {
-  clampOpacity,
-  layerDefaultOpacity,
-  parseEditableSliderValue,
-} from './layerDisplay';
+  CurvatureThresholdControl,
+  EditableSliderValue,
+  LayerOpacityControl,
+} from './LayerControls';
 import { layerType } from './niivueLayers';
 import type { WindowSetting } from './paneSyncKeys';
 import type { DrawingOptions, DrawingSession } from './nativeDrawing';
@@ -36,258 +38,6 @@ function sectionTitle(type: LayerType) {
   if (type === 'segmentation') return 'Segmentations';
   return 'Intensity';
 }
-
-function formatRoundedSliderValue(value: number): string {
-  return String(Math.round(value));
-}
-
-interface EditableSliderValueProps {
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  ariaLabel: string;
-  disabled?: boolean;
-  constrainToSliderRange?: boolean;
-  onCommit: (value: number) => void;
-  format?: (value: number) => string;
-}
-
-const EditableSliderValue = React.memo(function EditableSliderValue({
-  value,
-  min,
-  max,
-  step,
-  ariaLabel,
-  disabled = false,
-  constrainToSliderRange = true,
-  onCommit,
-  format = String,
-}: EditableSliderValueProps) {
-  const editingRef = useRef(false);
-  const [draft, setDraft] = useState(() => format(value));
-
-  useEffect(() => {
-    if (!editingRef.current) setDraft(format(value));
-  }, [format, value]);
-
-  const commit = (text: string) => {
-    editingRef.current = false;
-    const next = parseEditableSliderValue(
-      text,
-      min,
-      max,
-      constrainToSliderRange,
-    );
-    if (next === null) {
-      setDraft(format(value));
-      return;
-    }
-    setDraft(format(next));
-    onCommit(next);
-  };
-
-  return (
-    <input
-      type="number"
-      min={constrainToSliderRange ? min : undefined}
-      max={constrainToSliderRange ? max : undefined}
-      step={step}
-      value={draft}
-      disabled={disabled}
-      onChange={(event) => setDraft(event.currentTarget.value)}
-      onFocus={(event) => {
-        editingRef.current = true;
-        event.currentTarget.select();
-      }}
-      onBlur={(event) => commit(event.currentTarget.value)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') event.currentTarget.blur();
-      }}
-      className="nc-viewer-slider-value nc-mono"
-      aria-label={ariaLabel}
-      title={constrainToSliderRange
-        ? 'Click to type a value'
-        : 'Click to type any finite value; the slider range stays unchanged'}
-    />
-  );
-});
-
-interface LayerOpacityControlProps {
-  volume: Volume;
-  defaultOpacity: number;
-  onPreview: (id: string, opacity: number) => void;
-  onCommit: (id: string, opacity: number) => void;
-}
-
-const LayerOpacityControl = React.memo(function LayerOpacityControl({
-  volume,
-  defaultOpacity,
-  onPreview,
-  onCommit,
-}: LayerOpacityControlProps) {
-  const committedOpacity = clampOpacity(volume.opacity, defaultOpacity);
-  const [draftOpacity, setDraftOpacity] = useState(committedOpacity);
-  const draftOpacityRef = useRef(committedOpacity);
-  const committedOpacityRef = useRef(committedOpacity);
-
-  useEffect(() => {
-    committedOpacityRef.current = committedOpacity;
-    draftOpacityRef.current = committedOpacity;
-    setDraftOpacity(committedOpacity);
-  }, [committedOpacity]);
-
-  const preview = useCallback((value: number) => {
-    const next = clampOpacity(value, defaultOpacity);
-    draftOpacityRef.current = next;
-    setDraftOpacity(next);
-    onPreview(volume.id, next);
-  }, [defaultOpacity, onPreview, volume.id]);
-
-  const commit = useCallback(() => {
-    const next = draftOpacityRef.current;
-    if (Math.abs(next - committedOpacityRef.current) < 0.0001) return;
-    committedOpacityRef.current = next;
-    onCommit(volume.id, next);
-  }, [onCommit, volume.id]);
-
-  return (
-    <>
-      <input
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        value={draftOpacity}
-        onChange={(event) => preview(Number(event.currentTarget.value))}
-        onPointerUp={commit}
-        onKeyUp={commit}
-        onBlur={commit}
-        className="nc-viewer-layer-slider"
-        aria-label={`${volume.name} opacity`}
-        data-testid="viewer-layer-opacity"
-      />
-      <EditableSliderValue
-        value={Math.round(draftOpacity * 100)}
-        min={0}
-        max={100}
-        step={1}
-        ariaLabel={`${volume.name} opacity value`}
-        onCommit={(percent) => {
-          preview(percent / 100);
-          commit();
-        }}
-        format={formatRoundedSliderValue}
-      />
-    </>
-  );
-});
-
-interface DrawingLabelControlProps {
-  labels: DrawingLabelOption[];
-  value: number;
-  onChange: (value: number) => void;
-}
-
-function drawingLabelText(label: DrawingLabelOption | undefined, value: number): string {
-  return label ? `${label.value} · ${label.name}` : String(value);
-}
-
-const DrawingLabelControl = React.memo(function DrawingLabelControl({
-  labels,
-  value,
-  onChange,
-}: DrawingLabelControlProps) {
-  const selected = labels.find((label) => label.value === value);
-  const selectedText = drawingLabelText(selected, value);
-  const [draft, setDraft] = useState(selectedText);
-
-  useEffect(() => {
-    setDraft(selectedText);
-  }, [selectedText]);
-
-  const update = (text: string) => {
-    setDraft(text);
-    const parsed = Number.parseInt(text, 10);
-    if (Number.isInteger(parsed) && parsed > 0) onChange(parsed);
-  };
-
-  return (
-    <>
-      <span
-        className="h-3 w-3 shrink-0 rounded-sm border border-[var(--nc-border)]"
-        style={{ backgroundColor: selected?.color ?? 'transparent' }}
-        aria-hidden="true"
-      />
-      <input
-        type="text"
-        list="viewer-drawing-label-options"
-        value={draft}
-        onChange={(event) => update(event.currentTarget.value)}
-        onFocus={(event) => event.currentTarget.select()}
-        className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
-        aria-label="Drawing label"
-        placeholder="Type a label name or number"
-      />
-      <datalist id="viewer-drawing-label-options">
-        {labels.map((label) => (
-          <option key={label.value} value={drawingLabelText(label, label.value)} />
-        ))}
-      </datalist>
-    </>
-  );
-});
-
-interface CurvatureThresholdControlProps {
-  label: 'Green' | 'Red';
-  ariaLabel: string;
-  value: number;
-  onCommit: (value: number) => void;
-}
-
-const CurvatureThresholdControl = React.memo(function CurvatureThresholdControl({
-  label,
-  ariaLabel,
-  value,
-  onCommit,
-}: CurvatureThresholdControlProps) {
-  const [draft, setDraft] = useState(String(value));
-
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
-  const commit = () => {
-    const parsed = Number(draft);
-    const valid = Number.isFinite(parsed) && (label === 'Green' ? parsed < 0 : parsed > 0);
-    if (!valid) {
-      setDraft(String(value));
-      return;
-    }
-    onCommit(parsed);
-  };
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className={`nc-mono w-12 shrink-0 text-[11px] ${label === 'Green' ? 'text-green-400' : 'text-red-400'}`}>{label}</span>
-      <input
-        type="number"
-        step={0.01}
-        value={draft}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            commit();
-            event.currentTarget.blur();
-          }
-        }}
-        className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
-        aria-label={ariaLabel}
-      />
-    </div>
-  );
-});
 
 interface LayerPanelProps {
   layerPanelWidth: number;
@@ -360,9 +110,6 @@ export function LayerPanel({
   onSaveDrawing,
   onCloseDrawing,
 }: LayerPanelProps) {
-  const segmentationSources = groupedLayers.segmentation.filter(isSegmentationLayer);
-  const [drawingMenuOpen, setDrawingMenuOpen] = useState(false);
-
   const renderLayerSection = (type: LayerType, items: Volume[]) => (
     <section key={type} className="nc-viewer-layer-section">
       <div className="nc-viewer-layer-section-header">
@@ -599,248 +346,6 @@ export function LayerPanel({
     </section>
   );
 
-  const renderDrawingTools = () => (
-    <section className="nc-viewer-layer-section">
-      <div className="nc-viewer-layer-section-header">
-        <span>Voxel edit</span>
-        <div className="relative">
-          <button
-            type="button"
-            className="nc-btn nc-icon-btn !border-0"
-            onClick={() => setDrawingMenuOpen((open) => !open)}
-            title="Start voxel editing"
-            aria-label="Start voxel editing"
-            aria-expanded={drawingMenuOpen}
-            disabled={!canAddLayers}
-          >
-            <Plus size={13} />
-          </button>
-          {drawingMenuOpen && (
-            <button
-              type="button"
-              aria-hidden="true"
-              tabIndex={-1}
-              className="fixed inset-0 z-10 cursor-default"
-              onClick={() => setDrawingMenuOpen(false)}
-            />
-          )}
-          {drawingMenuOpen && (
-            <div className="nc-viewer-drawing-menu" role="menu">
-              <button
-                type="button"
-                role="menuitem"
-                className="nc-viewer-drawing-menu-item"
-                onClick={() => { setDrawingMenuOpen(false); onBeginBlankDrawing(); }}
-                disabled={groupedLayers.intensity.length === 0}
-                title={groupedLayers.intensity.length === 0 ? 'Load an intensity volume first' : 'Empty drawing matching the active volume'}
-              >
-                New label volume
-              </button>
-              <div className="nc-viewer-drawing-menu-label">Edit segmentation</div>
-              {segmentationSources.length === 0 ? (
-                <div className="nc-viewer-drawing-menu-empty">No segmentations loaded</div>
-              ) : (
-                segmentationSources.map((segmentation) => (
-                  <button
-                    key={segmentation.id}
-                    type="button"
-                    role="menuitem"
-                    className="nc-viewer-drawing-menu-item truncate"
-                    onClick={() => { setDrawingMenuOpen(false); onBeginDrawingFromSegmentation(segmentation); }}
-                    title={`Edit a copy of ${segmentation.name}`}
-                  >
-                    {segmentation.name}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="nc-viewer-drawing-tools p-2 space-y-1.5">
-        <div className="flex items-center gap-2">
-          <Pencil size={12} className="text-[var(--nc-accent)]" />
-          <span className="nc-mono min-w-0 flex-1 truncate text-[11px] text-[var(--nc-tx-dim)]" title={drawingSession.source?.name ?? drawingSession.filename}>
-            {drawingSession.active ? `Editing: ${drawingSession.source?.name ?? drawingSession.filename}` : 'No active label edit'}
-          </span>
-        </div>
-
-        {drawingSession.error && (
-          <div className="rounded border border-[var(--nc-danger-border)] bg-[var(--nc-danger-bg)] px-2 py-1 text-[11px] text-[var(--nc-danger)]">
-            {drawingSession.error}
-          </div>
-        )}
-
-        <div className="grid grid-cols-3 gap-1">
-          <button
-            type="button"
-            className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.tool === 'navigate' ? 'nc-btn-active' : ''}`}
-            onClick={() => onUpdateDrawingOptions({ tool: 'navigate' })}
-            disabled={!drawingSession.active}
-            title="Navigate without painting"
-          >
-            <MousePointer2 size={11} /> Navigate
-          </button>
-          <button
-            type="button"
-            className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.tool === 'paint' ? 'nc-btn-active' : ''}`}
-            onClick={() => onUpdateDrawingOptions({ tool: 'paint' })}
-            disabled={!drawingSession.active}
-            title="Paint the selected label"
-            data-testid="viewer-drawing-paint"
-          >
-            <Brush size={11} /> Paint
-          </button>
-          <button
-            type="button"
-            className={`nc-btn flex items-center justify-center gap-1 text-[11px] ${drawingSession.tool === 'erase' ? 'nc-btn-active' : ''}`}
-            onClick={() => onUpdateDrawingOptions({ tool: 'erase' })}
-            disabled={!drawingSession.active}
-            title="Erase labels with the current brush"
-          >
-            <Eraser size={11} /> Erase
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">File</span>
-          <input
-            type="text"
-            value={drawingSession.filename}
-            disabled={!drawingSession.active}
-            onChange={(event) => onUpdateDrawingOptions({ filename: event.currentTarget.value })}
-            className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
-            aria-label="Drawing filename"
-          />
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Opacity</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={drawingSession.opacity}
-            disabled={!drawingSession.active}
-            onChange={(event) => onUpdateDrawingOptions({ opacity: Number(event.currentTarget.value) })}
-            className="nc-viewer-layer-slider"
-            aria-label="Drawing opacity"
-          />
-          <EditableSliderValue
-            value={Math.round(drawingSession.opacity * 100)}
-            min={0}
-            max={100}
-            step={1}
-            disabled={!drawingSession.active}
-            ariaLabel="Drawing opacity value"
-            onCommit={(percent) => onUpdateDrawingOptions({ opacity: percent / 100 })}
-            format={formatRoundedSliderValue}
-          />
-        </div>
-
-        {drawingSession.tool !== 'navigate' && (
-          <div className="flex items-center gap-2">
-            <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Brush</span>
-            <input
-              type="range"
-              min={1}
-              max={10}
-              step={1}
-              value={drawingSession.brushSize}
-              disabled={!drawingSession.active}
-              onChange={(event) => onUpdateDrawingOptions({ brushSize: Number(event.currentTarget.value) })}
-              className="nc-viewer-layer-slider"
-              aria-label="Drawing brush size"
-            />
-            <EditableSliderValue
-              value={drawingSession.brushSize}
-              min={1}
-              max={10}
-              step={1}
-              disabled={!drawingSession.active}
-              ariaLabel="Drawing brush size value"
-              onCommit={(brushSize) => onUpdateDrawingOptions({ brushSize: Math.round(brushSize) })}
-              format={formatRoundedSliderValue}
-            />
-          </div>
-        )}
-
-        {drawingSession.tool === 'paint' && (
-          <div className="flex items-center gap-2">
-            <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">LUT</span>
-            <select
-              className="nc-viewer-layer-select nc-mono min-w-0 flex-1"
-              value={drawingSession.lut}
-              onChange={(event) => onUpdateDrawingOptions({
-                lut: event.currentTarget.value as DrawingOptions['lut'],
-                penValue: 1,
-              })}
-              disabled={!drawingSession.active}
-              aria-label="Drawing color table"
-            >
-              <option value="binary">Binary</option>
-              <option value="freesurfer">FreeSurfer</option>
-            </select>
-          </div>
-        )}
-
-        {drawingSession.active && drawingSession.lut === 'freesurfer' && (
-          <div className="nc-mono text-[10px] text-[var(--nc-tx-dim)]">
-            Native NiiVue editing supports FreeSurfer label values 1–255.
-          </div>
-        )}
-
-        {drawingSession.tool === 'paint' && (
-          <div className="flex items-center gap-2">
-            <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Label</span>
-            <DrawingLabelControl
-              labels={drawingLabels}
-              value={drawingSession.penValue}
-              onChange={(penValue) => onUpdateDrawingOptions({ penValue })}
-            />
-          </div>
-        )}
-
-        {drawingSession.tool === 'paint' && (
-          <div className="grid grid-cols-2 gap-2">
-            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
-              <input
-                type="checkbox"
-                checked={drawingSession.fillOutline}
-                disabled={!drawingSession.active}
-                onChange={(event) => onUpdateDrawingOptions({ fillOutline: event.currentTarget.checked })}
-              />
-              <span>Fill outline</span>
-            </label>
-            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--nc-tx-dim)]">
-              <input
-                type="checkbox"
-                checked={drawingSession.overwrite}
-                disabled={!drawingSession.active}
-                onChange={(event) => onUpdateDrawingOptions({ overwrite: event.currentTarget.checked })}
-              />
-              <span>Replace labels</span>
-            </label>
-          </div>
-        )}
-
-        <div className="flex gap-1 pt-0.5">
-          <button type="button" className="nc-btn flex flex-1 items-center justify-center gap-1 text-[11px]" onClick={onDrawUndo} disabled={!drawingSession.active || !canUndo} title="Undo last drawing change">
-            <Undo2 size={11} /> Undo
-          </button>
-          <button type="button" className="nc-btn flex flex-1 items-center justify-center gap-1 text-[11px]" onClick={onSaveDrawing} disabled={!drawingSession.active} title="Save as segmentation artifact">
-            <Download size={11} /> Save
-          </button>
-          <button type="button" className="nc-btn flex flex-1 items-center justify-center gap-1 text-[11px]" onClick={onCloseDrawing} disabled={!drawingSession.active} title="Close drawing without saving">
-            <X size={11} /> Close
-          </button>
-        </div>
-      </div>
-    </section>
-  );
-
   return (
     <aside className="nc-panel relative flex shrink-0 flex-col overflow-hidden border-r" style={{ width: layerPanelWidth }}>
       <div className="nc-pane-header">
@@ -850,7 +355,20 @@ export function LayerPanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {renderLayerSection('intensity', groupedLayers.intensity)}
         {renderLayerSection('segmentation', groupedLayers.segmentation)}
-        {renderDrawingTools()}
+        <DrawingToolsPanel
+          intensityLayers={groupedLayers.intensity}
+          segmentationLayers={groupedLayers.segmentation}
+          canAddLayers={canAddLayers}
+          drawingSession={drawingSession}
+          drawingLabels={drawingLabels}
+          canUndo={canUndo}
+          onUpdateDrawingOptions={onUpdateDrawingOptions}
+          onBeginBlankDrawing={onBeginBlankDrawing}
+          onBeginDrawingFromSegmentation={onBeginDrawingFromSegmentation}
+          onDrawUndo={onDrawUndo}
+          onSaveDrawing={onSaveDrawing}
+          onCloseDrawing={onCloseDrawing}
+        />
         {renderLayerSection('surface', groupedLayers.surface)}
       </div>
       <div

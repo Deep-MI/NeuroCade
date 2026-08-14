@@ -70,6 +70,11 @@ export function previewLayerOpacity(nv: Niivue, id: string, next: Volume): PaneR
 }
 
 export function capturePaneSnapshot(nv: Niivue | null | undefined): string | null {
-  const canvas = nv ? (nv as unknown as { canvas?: HTMLCanvasElement }).canvas : undefined;
-  return canvas ? canvas.toDataURL('image/jpeg', 0.8) : null;
+  if (!nv) return null;
+  const renderer = nv as unknown as {
+    canvas?: HTMLCanvasElement;
+    view?: { render: () => void };
+  };
+  renderer.view?.render();
+  return renderer.canvas?.toDataURL('image/jpeg', 0.8) ?? null;
 }

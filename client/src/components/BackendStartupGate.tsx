@@ -23,7 +23,11 @@ function isFrontendDevServer() {
   return import.meta.env.DEV && isLocalHost()
 }
 
-function localGatewayUrl() {
+function isElectronApp() {
+  return Boolean(window.neurocadeElectron)
+}
+
+function localAppUrl() {
   return `${window.location.protocol}//${window.location.hostname === '127.0.0.1' ? '127.0.0.1' : 'localhost'}:8000`
 }
 
@@ -66,25 +70,28 @@ function BackendStartupScreen({
 }) {
   const local = isLocalHost()
   const devFrontendOnly = isFrontendDevServer()
+  const electron = isElectronApp()
   const timedOut = status === 'timeout'
   const title = timedOut
     ? `${APP_DISPLAY_NAME} backend did not respond`
     : devFrontendOnly
-      ? 'Frontend is ready. Backend is not connected yet'
+      ? `Waiting for the ${APP_DISPLAY_NAME} backend`
       : local
-        ? `Starting ${APP_DISPLAY_NAME} services`
-        : `Connecting to ${APP_DISPLAY_NAME} services`
+        ? `Starting ${APP_DISPLAY_NAME}`
+        : `Connecting to ${APP_DISPLAY_NAME}`
   const detail = timedOut
-    ? 'The web UI loaded, but the API never became reachable. The most common cause is that the local backend container is not running.'
+    ? 'The web UI loaded, but the NeuroCade backend never became reachable. Check the backend process and its startup logs.'
     : devFrontendOnly
-      ? 'You are viewing the Vite frontend directly. Start the local NeuroCade backend, then open the app URL so the API and viewer are connected.'
+      ? 'You are viewing the Vite frontend directly. Start the local NeuroCade backend, then open the app URL so the API and viewer use the same application process.'
       : local
-        ? 'The local NeuroCade backend may still be starting. The workspace will open automatically when the API is healthy.'
-        : 'The workspace will open automatically when the API is healthy.'
-  const gatewayUrl = localGatewayUrl()
-  const recoveryCommand = devFrontendOnly
-    ? './scripts/run.sh start\n# then open http://localhost:8000'
-    : './scripts/run.sh start'
+        ? 'The local backend serves the application API and runs the background job scheduler in one process. The workspace will open automatically when it is ready.'
+        : 'The workspace will open automatically when the NeuroCade backend is ready.'
+  const appUrl = localAppUrl()
+  const recoveryCommand = !local
+    ? null
+    : electron || devFrontendOnly
+      ? './scripts/desktop/run_backend.sh\n# then open http://localhost:8000'
+      : './scripts/run.sh start'
   const checks = [
     {
       label: 'Web UI',
@@ -94,18 +101,18 @@ function BackendStartupScreen({
       tone: 'nc-chip-green',
     },
     {
-      label: 'Application API',
-      state: timedOut ? 'No response' : 'Waiting',
-      detail: healthUrl,
-      icon: timedOut ? AlertTriangle : CircleDashed,
+      label: 'NeuroCade backend',
+      state: timedOut ? 'No response' : devFrontendOnly ? 'Not connected' : 'Starting',
+      detail: 'Single FastAPI/uvicorn application process',
+      icon: timedOut ? AlertTriangle : TerminalSquare,
       tone: timedOut ? 'nc-chip-yellow' : 'nc-chip-blue',
     },
     {
-      label: 'NeuroCade backend',
-      state: devFrontendOnly || timedOut ? 'Needs a check' : 'Starting',
-      detail: './scripts/desktop/run_backend.sh',
-      icon: TerminalSquare,
-      tone: '',
+      label: 'Health check',
+      state: timedOut ? 'No response' : 'Waiting',
+      detail: healthUrl,
+      icon: timedOut ? AlertTriangle : CircleDashed,
+      tone: timedOut ? 'nc-chip-yellow' : '',
     },
   ]
 
@@ -158,18 +165,20 @@ function BackendStartupScreen({
           </div>
         </div>
 
-        <div className="mt-5 rounded border border-[var(--nc-border)] bg-[var(--nc-bg-deep)] px-4 py-4 text-[var(--nc-tx)]">
-          <div className="nc-eyebrow mb-2 flex items-center gap-2">
-            <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-            Try this from the repo root
+        {recoveryCommand && (
+          <div className="mt-5 rounded border border-[var(--nc-border)] bg-[var(--nc-bg-deep)] px-4 py-4 text-[var(--nc-tx)]">
+            <div className="nc-eyebrow mb-2 flex items-center gap-2">
+              <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+              Try this from the repo root
+            </div>
+            <pre className="nc-mono overflow-auto whitespace-pre-wrap break-words text-xs leading-5">{recoveryCommand}</pre>
           </div>
-          <pre className="nc-mono overflow-auto whitespace-pre-wrap break-words text-xs leading-5">{recoveryCommand}</pre>
-        </div>
+        )}
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {local && (
             <a
-              href={gatewayUrl}
+              href={appUrl}
               className="nc-btn nc-btn-active"
             >
               <ExternalLink className="h-4 w-4" aria-hidden="true" />

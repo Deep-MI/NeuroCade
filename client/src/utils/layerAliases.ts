@@ -32,10 +32,6 @@ const HEMISPHERE_LABELS: Record<string, string> = { lh: 'Left', rh: 'Right' };
 const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path;
 export const surfaceFileStem = (filename: string): string => basename(filename).replace(/\.surf$/, '');
 
-export function isLayerFile(filename: string, file: string): boolean {
-  return basename(filename) === file;
-}
-
 function surfaceAlias(filename: string): string | undefined {
   const match = /^([lr]h)\.([^.]+)$/.exec(surfaceFileStem(filename));
   if (!match) return undefined;

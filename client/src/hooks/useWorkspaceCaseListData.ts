@@ -1,27 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { isRunActive, isRunTerminal } from '../constants';
-import type { CaseSummary, ChatMessage, WorkspaceBatchRunSummary, WorkspaceSummary } from '../types';
-import { fetchCases, fetchWorkspaceBatchRuns } from '../utils/api';
-
-function buildWorkspaceRunCompletionMessage(run: WorkspaceBatchRunSummary): ChatMessage {
-  const name = run.report_name || run.run_id;
-  if (run.status === 'completed' || run.status === 'finished') return { role: 'info', content: `Workspace run "${name}" finished.` };
-  if (run.status === 'failed' || run.status === 'error') return { role: 'info', content: `Workspace run "${name}" failed.` };
-  if (run.status === 'canceled') return { role: 'info', content: `Workspace run "${name}" was canceled.` };
-  return { role: 'info', content: `Workspace run "${name}" ended with status "${run.status}".` };
-}
+import { isRunActive } from '../constants';
+import type { CaseSummary, WorkspaceSummary } from '../types';
+import { fetchCases } from '../utils/api';
 
 export function useWorkspaceCaseListData(workspaceId: string | undefined, workspaces: WorkspaceSummary[] | undefined) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [workspaceCaseCounts, setWorkspaceCaseCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [workspaceBatchRuns, setWorkspaceBatchRuns] = useState<WorkspaceBatchRunSummary[]>([]);
-  const [workspaceChatNotifications, setWorkspaceChatNotifications] = useState<ChatMessage[]>([]);
   const [workspaceChatClearRequestToken, setWorkspaceChatClearRequestToken] = useState(0);
   const [isWorkspaceChatClearing, setIsWorkspaceChatClearing] = useState(false);
-  const previousBatchRunStatusesRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     setWorkspaceCaseCounts((current) => {
@@ -39,20 +28,16 @@ export function useWorkspaceCaseListData(workspaceId: string | undefined, worksp
   }, [workspaces]);
 
   useEffect(() => {
-    setWorkspaceChatNotifications([]);
-    previousBatchRunStatusesRef.current = {};
-  }, [workspaceId]);
-
-  useEffect(() => {
     if (!workspaceId) {
       setCases([]);
-      setWorkspaceBatchRuns([]);
       setLoading(false);
       return;
     }
     let cancelled = false;
     let initial = true;
+    let timeoutId: number | undefined;
     const loadWorkspaceData = async () => {
+      let hasActiveRuns = false;
       if (initial) setLoading(true);
       try {
         const casesResponse = await fetchCases(workspaceId);
@@ -61,24 +46,11 @@ export function useWorkspaceCaseListData(workspaceId: string | undefined, worksp
         setWorkspaceCaseCounts((current) => (
           current[workspaceId] === casesResponse.cases.length ? current : { ...current, [workspaceId]: casesResponse.cases.length }
         ));
+        hasActiveRuns = casesResponse.cases.some((caseItem) => isRunActive(caseItem.latest_run_status ?? 'uploaded'));
         setError(null);
         if (initial) {
           setLoading(false);
           initial = false;
-        }
-        const batchRuns = await fetchWorkspaceBatchRuns(workspaceId);
-        if (cancelled) return;
-        const priorStatuses = previousBatchRunStatusesRef.current;
-        const completedMessages = batchRuns
-          .filter((run) => {
-            const previousStatus = priorStatuses[run.run_id];
-            return previousStatus !== undefined && isRunActive(previousStatus) && isRunTerminal(run.status);
-          })
-          .map(buildWorkspaceRunCompletionMessage);
-        previousBatchRunStatusesRef.current = Object.fromEntries(batchRuns.map((run) => [run.run_id, run.status]));
-        setWorkspaceBatchRuns(batchRuns);
-        if (completedMessages.length > 0) {
-          setWorkspaceChatNotifications((current) => [...current, ...completedMessages]);
         }
       } catch (err) {
         if (cancelled) return;
@@ -90,13 +62,18 @@ export function useWorkspaceCaseListData(workspaceId: string | undefined, worksp
           setLoading(false);
           initial = false;
         }
+        if (!cancelled) {
+          timeoutId = window.setTimeout(
+            () => void loadWorkspaceData(),
+            hasActiveRuns ? 5000 : 30000,
+          );
+        }
       }
     };
     void loadWorkspaceData();
-    const intervalId = window.setInterval(() => void loadWorkspaceData(), 5000);
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [workspaceId]);
 
@@ -108,9 +85,6 @@ export function useWorkspaceCaseListData(workspaceId: string | undefined, worksp
     loading,
     error,
     setError,
-    workspaceBatchRuns,
-    setWorkspaceBatchRuns,
-    workspaceChatNotifications,
     workspaceChatClearRequestToken,
     requestWorkspaceChatClear: () => setWorkspaceChatClearRequestToken((token) => token + 1),
     isWorkspaceChatClearing,

@@ -5,6 +5,16 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   cacheDir: '/tmp/vite-cache',
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('/node_modules/@niivue/')) return 'niivue'
+          return undefined
+        },
+      },
+    },
+  },
   server: {
     allowedHosts: ['kronecker.dzne.ds', 'hopper.dzne.de', 'hopper.dzne.ds', 'germain.dzne.de'],
     proxy: {

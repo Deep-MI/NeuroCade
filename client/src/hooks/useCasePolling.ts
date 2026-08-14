@@ -30,11 +30,11 @@ export function useCasePolling({
     let logInterval: ReturnType<typeof setInterval> | undefined
     let outputInterval: ReturnType<typeof setInterval> | undefined
 
-    if (activeCaseId && isRunActive(runStatus)) {
+    if (activeCaseId) {
       statusInterval = setInterval(async () => {
         try {
           const data = await fetchStatus(activeCaseId)
-          if (!data.status) return
+          if (!data.status || data.status === 'unknown' || data.status === runStatus) return
           onStatusChange(data.status)
           if (isRunTerminal(data.status)) {
             await fetchLogs(activeCaseId)
@@ -44,8 +44,10 @@ export function useCasePolling({
         } catch (error) {
           onError?.(error)
         }
-      }, 2000)
+      }, isRunActive(runStatus) ? 2000 : 3000)
 
+    }
+    if (activeCaseId && isRunActive(runStatus)) {
       logInterval = setInterval(() => {
         void fetchLogs(activeCaseId).catch(onError)
       }, 3000)

@@ -3,7 +3,7 @@ import {
   DEFAULT_SURFACE_CURVATURE_POSITIVE_THRESHOLD,
 } from '../constants.js';
 import type { LayerType, OutputVolume, Volume } from '../types.js';
-import { isLayerFile, layerDisplayName, surfaceFileStem } from './layerAliases.js';
+import { layerDisplayName } from './layerAliases.js';
 import { defaultSurfaceColorModeForLayer } from './surfaceColors.js';
 
 type LoadableLayerType = Exclude<LayerType, 'drawing'>;
@@ -26,19 +26,8 @@ interface ViewerLayerOptions {
   defaultVisible?: boolean;
 }
 
-export function isMaskLikeFilename(filename: string): boolean {
-  const normalized = filename.toLowerCase();
-  return normalized.includes('mask') || normalized.includes('brainmask') || normalized.includes('_bin');
-}
-
-export function outputVolumeLayerType(volume: OutputVolume): LayerType {
-  return volume.type === 'surface' || volume.type === 'segmentation' || volume.type === 'drawing' || volume.type === 'intensity'
-    ? volume.type
-    : 'intensity';
-}
-
-function defaultVisibleSurface(filename: string): boolean {
-  return ['lh.pial', 'rh.pial'].includes(surfaceFileStem(filename));
+export function outputVolumeLayerType(volume: OutputVolume): LoadableLayerType {
+  return volume.type;
 }
 
 export function defaultOutputVolumeVisible(
@@ -47,26 +36,7 @@ export function defaultOutputVolumeVisible(
     initialIntensityVolume?: OutputVolume;
   },
 ): boolean {
-  const isSurface = volume.type === 'surface';
-  const isDefaultSegmentation = isLayerFile(volume.filename, 'aparc.DKTatlas+aseg.deep.mgz');
-  return isSurface
-    ? defaultVisibleSurface(volume.filename)
-    : volume.filename === options.initialIntensityVolume?.filename || isDefaultSegmentation;
-}
-
-export function inferOutputVolumeLayerType(volume: OutputVolume): LoadableLayerType {
-  if (volume.type === 'surface') return 'surface';
-  if (volume.type === 'segmentation') return 'segmentation';
-  const normalized = volume.filename.toLowerCase();
-  return normalized.includes('aparc')
-    || normalized.includes('aseg')
-    || normalized.includes('seg')
-    || normalized.includes('mask')
-    || normalized.includes('cereb')
-    || normalized.includes('wmparc')
-    || normalized.includes('hypothalamus')
-    ? 'segmentation'
-    : 'intensity';
+  return volume.type === 'intensity' && volume.filename === options.initialIntensityVolume?.filename;
 }
 
 export function createViewerLayer(source: ViewerLayerSource, options: ViewerLayerOptions = {}): Volume {
@@ -102,7 +72,7 @@ export function createViewerLayer(source: ViewerLayerSource, options: ViewerLaye
       type: 'segmentation',
       lut: (source.lut === 'binary' || source.lut === 'freesurfer')
         ? source.lut
-        : (isMaskLikeFilename(source.filename) ? 'binary' : 'freesurfer'),
+        : 'freesurfer',
       customLutUrl: source.customLutUrl,
       brightness: 0,
       contrast: 1.0,

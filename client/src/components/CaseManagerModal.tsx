@@ -45,8 +45,8 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
     if (!isOpen) return null;
 
     const startEditing = (caseItem: CaseSummary) => {
-        setEditingId(caseItem.case_id);
-        setEditValue(caseItem.subject_name);
+        setEditingId(caseItem.id);
+        setEditValue(caseItem.title);
         setDeletingId(null);
         setError(null);
     };
@@ -65,8 +65,8 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
             return;
         }
         // No-op: user didn't change the title.
-        const currentCase = availableCases.find((entry) => entry.case_id === oldId);
-        if (trimmed === currentCase?.subject_name) {
+        const currentCase = availableCases.find((entry) => entry.id === oldId);
+        if (trimmed === currentCase?.title) {
             cancelEditing();
             return;
         }
@@ -104,18 +104,18 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
 
             <div className="relative bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl p-8 max-w-xl w-full shadow-[0_0_50px_rgba(0,0,0,0.5)] overflow-hidden max-h-[90vh] flex flex-col">
                 {/* Glow effect */}
-                <div className="absolute -top-24 -right-24 w-48 h-48 bg-primary/10 blur-[80px] rounded-full" />
+                <div className="absolute -top-24 -right-24 w-48 h-48 bg-[var(--nc-interactive-subtle)] blur-[80px] rounded-full" />
 
                 <button
                     onClick={onClose}
-                    className="absolute top-4 right-4 p-1 text-secondary hover:text-white transition-colors"
+                    className="absolute top-4 right-4 p-1 text-[var(--nc-tx-dim)] hover:text-white transition-colors"
                 >
                     <X size={20} />
                 </button>
 
                 <div className="flex flex-col items-center text-center mb-6">
-                    <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 border border-primary/20">
-                        <FolderOpen className="text-primary w-8 h-8" />
+                    <div className="w-16 h-16 bg-[var(--nc-interactive-subtle)] rounded-full flex items-center justify-center mb-4 border border-[var(--nc-interactive-border)]">
+                        <FolderOpen className="text-[var(--nc-interactive)] w-8 h-8" />
                     </div>
                     <h3 className="text-xl font-bold text-white mb-1 tracking-tight">Manage Cases</h3>
                     <p className="text-slate-400 text-sm">Rename, delete, or load your analysis cases</p>
@@ -135,19 +135,20 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
                         </div>
                     )}
                     {availableCases.map((caseItem) => {
-                        const sc = statusConfig[caseItem.status] ?? statusConfig.unknown;
-                        const isActive = caseItem.case_id === activeCaseId;
-                        const locked = isRunActive(caseItem.status);
-                        const isEditing = editingId === caseItem.case_id;
-                        const isDeleting = deletingId === caseItem.case_id;
-                        const isLoading = loading === caseItem.case_id;
+                        const runStatus = caseItem.latest_run_status ?? 'uploaded';
+                        const sc = statusConfig[runStatus] ?? statusConfig.unknown;
+                        const isActive = caseItem.id === activeCaseId;
+                        const locked = isRunActive(runStatus);
+                        const isEditing = editingId === caseItem.id;
+                        const isDeleting = deletingId === caseItem.id;
+                        const isLoading = loading === caseItem.id;
 
                         return (
                             <div
-                                key={caseItem.case_id}
+                                key={caseItem.id}
                                 className={`group rounded-xl border transition-all ${
                                     isActive
-                                        ? 'bg-primary/10 border-primary/30'
+                                        ? 'bg-[var(--nc-interactive-subtle)] border-[var(--nc-interactive-border)]'
                                         : 'bg-white/5 border-white/5 hover:border-white/10'
                                 }`}
                             >
@@ -157,20 +158,20 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
                                         {isEditing ? (
                                             <div className="flex items-center gap-2">
                                                 <input
-                                                    data-testid={`manage-case-rename-input-${caseItem.case_id}`}
+                                                    data-testid={`manage-case-rename-input-${caseItem.id}`}
                                                     type="text"
                                                     value={editValue}
                                                     onChange={(e) => setEditValue(e.target.value)}
                                                     onKeyDown={(e) => {
-                                                        if (e.key === 'Enter') void confirmRename(caseItem.case_id);
+                                                        if (e.key === 'Enter') void confirmRename(caseItem.id);
                                                         if (e.key === 'Escape') cancelEditing();
                                                     }}
                                                     autoFocus
-                                                    className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-primary/50 transition-colors"
+                                                    className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[var(--nc-interactive)] transition-colors"
                                                 />
                                                 <button
-                                                    data-testid={`manage-case-rename-confirm-${caseItem.case_id}`}
-                                                    onClick={() => void confirmRename(caseItem.case_id)}
+                                                    data-testid={`manage-case-rename-confirm-${caseItem.id}`}
+                                                    onClick={() => void confirmRename(caseItem.id)}
                                                     disabled={isLoading}
                                                     className="p-1.5 text-green-400 hover:text-green-300 transition-colors disabled:opacity-50"
                                                     title="Confirm rename"
@@ -188,9 +189,9 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
                                             </div>
                                         ) : isDeleting ? (
                                             <div className="flex items-center gap-2">
-                                                <span className="text-sm text-red-300 font-medium">Delete &quot;{caseItem.subject_name}&quot;?</span>
+                                                <span className="text-sm text-red-300 font-medium">Delete &quot;{caseItem.title}&quot;?</span>
                                                 <button
-                                                    onClick={() => void confirmDelete(caseItem.case_id)}
+                                                    onClick={() => void confirmDelete(caseItem.id)}
                                                     disabled={isLoading}
                                                     className="px-2.5 py-1 text-xs font-semibold bg-red-500/20 text-red-300 hover:bg-red-500/30 rounded-lg transition-colors disabled:opacity-50"
                                                 >
@@ -206,19 +207,19 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
                                             </div>
                                         ) : (
                                             <button
-                                                onClick={() => { onLoadCase(caseItem.case_id); onClose(); }}
+                                                onClick={() => { onLoadCase(caseItem.id); onClose(); }}
                                                 className="text-left w-full"
                                             >
                                                 <div className="text-sm font-semibold text-white truncate">
-                                                    <span data-testid={`manage-case-title-${caseItem.case_id}`}>
-                                                        {caseItem.subject_name}
+                                                    <span data-testid={`manage-case-title-${caseItem.id}`}>
+                                                        {caseItem.title}
                                                     </span>
                                                     {isActive && (
-                                                        <span className="ml-2 text-[10px] font-medium text-primary uppercase tracking-wider">Active</span>
+                                                        <span className="ml-2 text-[10px] font-medium text-[var(--nc-interactive)] uppercase tracking-wider">Active</span>
                                                     )}
                                                 </div>
                                                 <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
-                                                    <span>{new Date(caseItem.created_at * 1000).toLocaleDateString()}</span>
+                                                    <span>{new Date(caseItem.created_at).toLocaleDateString()}</span>
                                                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider ${sc.badge}`}>
                                                         {sc.label}
                                                     </span>
@@ -231,7 +232,7 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
                                     {!isEditing && !isDeleting && (
                                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                                             <button
-                                                data-testid={`manage-case-rename-${caseItem.case_id}`}
+                                                data-testid={`manage-case-rename-${caseItem.id}`}
                                                 onClick={() => startEditing(caseItem)}
                                                 disabled={locked}
                                                 className="p-1.5 text-slate-400 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
@@ -240,7 +241,7 @@ export const CaseManagerModal: React.FC<CaseManagerModalProps> = ({
                                                 <Pencil size={14} />
                                             </button>
                                             <button
-                                                onClick={() => { setDeletingId(caseItem.case_id); setEditingId(null); setError(null); }}
+                                                onClick={() => { setDeletingId(caseItem.id); setEditingId(null); setError(null); }}
                                                 disabled={locked}
                                                 className="p-1.5 text-slate-400 hover:text-red-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                                 title={locked ? 'Cannot delete while running' : 'Delete case'}

@@ -449,7 +449,10 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           />
           {loading && (
             <div className="nc-viewer-canvas-spinner" role="status" aria-label="Loading imaging data">
-              <span className="mri-loading-spinner" />
+              <span className="loader" aria-hidden="true">
+                <span className="loader-plane-middle" />
+              </span>
+              <span className="nc-viewer-loading-label">Loading layers</span>
             </div>
           )}
           {!loading && volumes.length === 0 && (

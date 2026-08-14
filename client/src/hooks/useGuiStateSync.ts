@@ -11,7 +11,6 @@ interface UseGuiStateSyncOptions {
   guiSessionId: string
   runStatus: string
   volumes: Volume[]
-  currentCaseId: string | null
   currentIntensityArtifactId: string | null
   currentIntensityVolume: string | null
   isRunActive: (status: string) => boolean
@@ -25,7 +24,6 @@ export function useGuiStateSync({
   guiSessionId,
   runStatus,
   volumes,
-  currentCaseId,
   currentIntensityArtifactId,
   currentIntensityVolume,
   isRunActive,
@@ -40,7 +38,7 @@ export function useGuiStateSync({
         artifact_id: volume.artifactId,
         filename: volume.filename,
         name: volume.name,
-        type: volume.type ?? 'intensity',
+        type: volume.type,
         role: surfaceMatch?.[2] ?? (volume.type === 'segmentation' ? 'segmentation' : 'intensity'),
         hemisphere: surfaceMatch?.[1] === 'lh' ? 'left' as const : surfaceMatch?.[1] === 'rh' ? 'right' as const : undefined,
         loaded: true as const,
@@ -61,14 +59,12 @@ export function useGuiStateSync({
       case_id: caseId,
       gui_session_id: guiSessionId,
       is_job_running: isRunActive(runStatus),
-      current_case_id: currentCaseId,
       layers: volumeSnapshot,
       current_intensity_artifact_id: currentIntensityArtifactId,
       current_intensity_volume: currentIntensityVolume,
     }
   }, [
     caseId,
-    currentCaseId,
     currentIntensityArtifactId,
     currentIntensityVolume,
     guiSessionId,

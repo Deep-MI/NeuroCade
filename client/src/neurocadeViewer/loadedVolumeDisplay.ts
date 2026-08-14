@@ -2,8 +2,8 @@ import type Niivue from '@niivue/niivue';
 
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop.js';
 
-export type NiivueOpacityUpdate = 'none' | 'updated';
-export type WorldCoordinate = [number, number, number];
+type NiivueOpacityUpdate = 'none' | 'updated';
+type WorldCoordinate = [number, number, number];
 
 function isFiniteCoordinate(value: unknown): value is WorldCoordinate {
   return Array.isArray(value)

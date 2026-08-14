@@ -172,6 +172,7 @@ export function NiivuePane({
       // slice and look as if part of the line is behind bright anatomy.
       crosshairColor: [0.47, 0.66, 1, 1],
       crosshairGap: 3,
+      crosshairWidth: 0.75,
       sliceType,
       showRender,
       multiplanarType: MULTIPLANAR_TYPE.GRID,

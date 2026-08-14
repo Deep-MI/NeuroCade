@@ -14,7 +14,7 @@ export function layerReconcileKeyOf(volumes: Volume[]): string {
       volume.id,
       volume.url,
       volume.filename,
-      volume.type ?? 'intensity',
+      volume.type,
       isSurfaceLayer(volume) && volume.visible ? 1 : 0,
       isSurfaceLayer(volume) ? volume.curvatureUrl ?? '' : '',
       isSurfaceLayer(volume) ? volume.annotationUrl ?? '' : '',
@@ -37,7 +37,7 @@ export function volumeAppearanceKeyOf(volumes: Volume[]): string {
     .map((volume) => [
       volume.id,
       volume.colormap,
-      volume.type ?? 'intensity',
+      volume.type,
       volume.type === 'segmentation' ? volume.lut ?? '' : '',
       volume.type === 'segmentation' ? volume.customLutUrl ?? '' : '',
       'brightness' in volume ? volume.brightness ?? '' : '',

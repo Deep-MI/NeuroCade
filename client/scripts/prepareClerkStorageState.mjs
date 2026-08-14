@@ -40,7 +40,7 @@ for (const envPath of [
   }
 }
 
-const gatewayUrl = process.env.GATEWAY_URL ?? 'http://localhost:8000';
+const appUrl = process.env.APP_URL ?? 'http://localhost:8000';
 const storageStatePath = path.resolve(
   process.env.CLERK_STORAGE_STATE_PATH ?? path.join(repoRoot, 'playwright', '.clerk', 'user.json'),
 );
@@ -61,9 +61,9 @@ try {
   const context = await browser.newContext({ ignore_https_errors: true });
   const page = await context.newPage();
 
-  await page.goto(`${gatewayUrl}/sign-in`, { waitUntil: 'networkidle', timeout: 60_000 });
+  await page.goto(`${appUrl}/sign-in`, { waitUntil: 'networkidle', timeout: 60_000 });
   await clerk.signIn({ page, emailAddress: testEmail });
-  await page.goto(`${gatewayUrl}/`, { waitUntil: 'networkidle', timeout: 60_000 });
+  await page.goto(`${appUrl}/`, { waitUntil: 'networkidle', timeout: 60_000 });
   await page.waitForURL(url => !url.pathname.startsWith('/sign-in') && !url.pathname.startsWith('/sign-up'), { timeout: 60_000 });
   await context.storageState({ path: storageStatePath });
 

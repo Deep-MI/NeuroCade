@@ -43,7 +43,7 @@ interface LabelLookupResult {
 }
 
 export function layerType(volume: Volume): LayerType {
-  return volume.type ?? 'intensity';
+  return volume.type;
 }
 
 function isSegmentationVolume(volume: Volume): boolean {
@@ -59,7 +59,7 @@ export function setNiivueLayerBufferCacheScope(scope: string): void {
   arrayBufferCacheScope = scope;
 }
 
-export async function fetchCachedArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
+async function fetchCachedArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
   if (signal.aborted) {
     throw new DOMException('Artifact fetch aborted', 'AbortError');
   }

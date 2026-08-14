@@ -1,5 +1,5 @@
 import type { OutputVolume, Volume } from '../types';
-import { createViewerLayer, defaultOutputVolumeVisible, inferOutputVolumeLayerType } from './layerBuilders.js';
+import { createViewerLayer, defaultOutputVolumeVisible, outputVolumeLayerType } from './layerBuilders.js';
 
 export function dedupeOutputVolumes(volumes: OutputVolume[]): OutputVolume[] {
   return volumes.filter((volume, index, volumesList) => (
@@ -9,7 +9,7 @@ export function dedupeOutputVolumes(volumes: OutputVolume[]): OutputVolume[] {
 
 function selectInitialIntensityOutputVolume(volumes: OutputVolume[]): OutputVolume | undefined {
   return volumes.find((volume) => (
-    volume.kind === 'volume' && (volume.type ?? 'intensity') === 'intensity'
+    volume.kind === 'volume' && volume.type === 'intensity'
   ));
 }
 
@@ -24,8 +24,9 @@ function outputVolumeToLayer(
     initialIntensityVolume?: OutputVolume;
   },
 ): Volume {
-  const layerType = inferOutputVolumeLayerType(volume);
+  const layerType = outputVolumeLayerType(volume);
   return createViewerLayer({
+    name: volume.name,
     filename: volume.filename,
     artifactId: volume.id,
     url: volume.downloadUrl,
@@ -49,4 +50,28 @@ export function outputVolumesToViewerLayers(volumes: OutputVolume[]): Volume[] {
   return [...volumes].reverse().map((volume) => (
     outputVolumeToLayer(volume, { initialIntensityVolume })
   ));
+}
+
+/** Preserve interactive layer state while adding newly materialized workflow outputs. */
+export function mergeOutputVolumesIntoViewerLayers(current: Volume[], outputs: OutputVolume[]): Volume[] {
+  const incoming = outputVolumesToViewerLayers(outputs);
+  const matchedIds = new Set<string>();
+  const merged = incoming.map((layer) => {
+    const existing = current.find((candidate) => (
+      candidate.artifactId === layer.artifactId || candidate.filename === layer.filename
+    ));
+    if (existing?.type !== layer.type) return layer;
+    matchedIds.add(existing.id);
+    return {
+      ...layer,
+      ...existing,
+      artifactId: layer.artifactId,
+      url: layer.url,
+      ...(layer.type === 'surface' && existing.type === 'surface' ? {
+        curvatureUrl: layer.curvatureUrl ?? existing.curvatureUrl,
+        annotationUrl: layer.annotationUrl ?? existing.annotationUrl,
+      } : {}),
+    };
+  });
+  return [...merged, ...current.filter((layer) => !matchedIds.has(layer.id))];
 }

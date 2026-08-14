@@ -147,7 +147,7 @@ function startupHtml() {
 <body>
   <main>
     <h1>Starting ${appDisplayName}</h1>
-    <p>The local analysis services are starting. This window will open the workspace when the backend is ready.</p>
+    <p>The local NeuroCade backend is starting. It serves the application API and runs the background job scheduler in one process. This window will open the workspace when it is ready.</p>
     <div class="bar" aria-hidden="true"></div>
     <details>
       <summary>Startup logs</summary>

@@ -20,20 +20,18 @@ import { Chat } from '../components/Chat';
 import { UploadCaseModal } from '../components/UploadCaseModal';
 import { WorkspaceDialogs } from '../components/WorkspaceDialogs';
 import { WorkspaceSidebar } from '../components/WorkspaceSidebar';
-import { isRunActive } from '../constants';
 import { useCaseUploadModal } from '../hooks/useCaseUploadModal';
 import { useHorizontalPaneResize } from '../hooks/useHorizontalPaneResize';
 import { useWorkspaceCaseListData } from '../hooks/useWorkspaceCaseListData';
 import type { CaseSummary } from '../types';
 import {
-  cancelWorkspaceBatchRun,
   createCaseWithUpload,
   createWorkspace,
   deleteCase,
   deleteWorkspace,
   downloadCaseArchive,
-  renameCase,
-  renameWorkspace,
+  updateCase,
+  updateWorkspace,
 } from '../utils/api';
 import { removeCaseState } from '../utils/caseStorage';
 import { caseSummaryPath, caseViewerPath, workspaceCasesPath } from '../utils/caseRoutes';
@@ -51,7 +49,6 @@ export function CaseListPage() {
   const [deletingCaseId, setDeletingCaseId] = useState<string | null>(null);
   const [caseActionLoadingId, setCaseActionLoadingId] = useState<string | null>(null);
   const [caseActionError, setCaseActionError] = useState<{ caseId: string; message: string } | null>(null);
-  const [cancelingRunId, setCancelingRunId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
   const [chatOpen, setChatOpen] = useState(true);
@@ -76,10 +73,6 @@ export function CaseListPage() {
     setWorkspaceCaseCounts,
     loading,
     error,
-    setError,
-    workspaceBatchRuns,
-    setWorkspaceBatchRuns,
-    workspaceChatNotifications,
     workspaceChatClearRequestToken,
     requestWorkspaceChatClear,
     isWorkspaceChatClearing,
@@ -87,7 +80,6 @@ export function CaseListPage() {
   } = useWorkspaceCaseListData(workspaceId, session?.workspaces);
   const currentWorkspace = session?.workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
   const workspaceDeleteTarget = session?.workspaces.find((workspace) => workspace.id === workspaceDeleteTargetId) ?? null;
-  const activeWorkspaceRuns = workspaceBatchRuns.filter((run) => isRunActive(run.status));
   const uploadsEnabled = session?.features.uploads !== false;
   const destructiveActionsEnabled = session?.features.destructive_actions !== false;
 
@@ -102,8 +94,8 @@ export function CaseListPage() {
     const query = search.trim().toLowerCase();
     if (!query) return cases;
     return cases.filter((caseItem) => (
-      caseItem.subject_name.toLowerCase().includes(query)
-      || caseItem.case_id.toLowerCase().includes(query)
+      caseItem.title.toLowerCase().includes(query)
+      || caseItem.id.toLowerCase().includes(query)
       || (caseItem.description ?? '').toLowerCase().includes(query)
       || (caseItem.modalities ?? []).join(' ').toLowerCase().includes(query)
       || (caseItem.tags ?? []).join(' ').toLowerCase().includes(query)
@@ -126,7 +118,7 @@ export function CaseListPage() {
       setUploading(true);
       try {
         const uploaded = await createCaseWithUpload(files, workspaceId, caseName, metadata);
-        void navigate(caseViewerPath(uploaded.workspace_id, uploaded.case_id, uploaded.title));
+        void navigate(caseViewerPath(uploaded.workspace_id, uploaded.case_id));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setUploadError(message);
@@ -138,9 +130,7 @@ export function CaseListPage() {
   });
 
   const openCase = (caseItem: CaseSummary) => {
-    const target = caseSummaryPath(caseItem, workspaceId);
-    if (!target) return;
-    void navigate(target);
+    void navigate(caseSummaryPath(caseItem));
   };
 
   const handleUploadCardClick = () => {
@@ -150,8 +140,8 @@ export function CaseListPage() {
   };
 
   const startEditingCase = (caseItem: CaseSummary) => {
-    setEditingCaseId(caseItem.case_id);
-    setEditValue(caseItem.subject_name);
+    setEditingCaseId(caseItem.id);
+    setEditValue(caseItem.title);
     setDeletingCaseId(null);
     setCaseActionError(null);
   };
@@ -166,39 +156,39 @@ export function CaseListPage() {
     const trimmed = editValue.trim();
     const validationError = getCaseNameValidationError(trimmed);
     if (validationError) {
-      setCaseActionError({ caseId: caseItem.case_id, message: validationError });
+      setCaseActionError({ caseId: caseItem.id, message: validationError });
       return;
     }
-    if (trimmed === caseItem.subject_name) {
+    if (trimmed === caseItem.title) {
       cancelEditingCase();
       return;
     }
-    setCaseActionLoadingId(caseItem.case_id);
+    setCaseActionLoadingId(caseItem.id);
     setCaseActionError(null);
     try {
-      const renamed = await renameCase(caseItem.case_id, trimmed);
+      const renamed = await updateCase(caseItem.id, { title: trimmed });
       setCases((current) => current.map((entry) => (
-        entry.case_id === caseItem.case_id
-          ? { ...entry, case_id: renamed.new_id, subject_name: renamed.new_title }
+        entry.id === caseItem.id
+          ? { ...entry, id: renamed.id, title: renamed.title }
           : entry
       )));
       setEditingCaseId(null);
       setEditValue('');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setCaseActionError({ caseId: caseItem.case_id, message });
+      setCaseActionError({ caseId: caseItem.id, message });
     } finally {
       setCaseActionLoadingId(null);
     }
   };
 
   const handleDeleteCase = async (caseItem: CaseSummary) => {
-    setCaseActionLoadingId(caseItem.case_id);
+    setCaseActionLoadingId(caseItem.id);
     setCaseActionError(null);
     try {
-      await deleteCase(caseItem.case_id);
-      removeCaseState(caseItem.case_id);
-      setCases((current) => current.filter((entry) => entry.case_id !== caseItem.case_id));
+      await deleteCase(caseItem.id);
+      removeCaseState(caseItem.id);
+      setCases((current) => current.filter((entry) => entry.id !== caseItem.id));
       if (workspaceId) {
         setWorkspaceCaseCounts((current) => ({
           ...current,
@@ -206,10 +196,10 @@ export function CaseListPage() {
         }));
       }
       setDeletingCaseId(null);
-      if (editingCaseId === caseItem.case_id) cancelEditingCase();
+      if (editingCaseId === caseItem.id) cancelEditingCase();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setCaseActionError({ caseId: caseItem.case_id, message });
+      setCaseActionError({ caseId: caseItem.id, message });
     } finally {
       setCaseActionLoadingId(null);
     }
@@ -217,22 +207,9 @@ export function CaseListPage() {
 
   const handleDownloadCase = async (caseItem: CaseSummary) => {
     try {
-      await downloadCaseArchive(caseItem.case_id, caseItem.subject_name);
+      await downloadCaseArchive(caseItem.id, caseItem.title);
     } catch (err) {
-      setCaseActionError({ caseId: caseItem.case_id, message: err instanceof Error ? err.message : String(err) });
-    }
-  };
-
-  const handleCancelBatchRun = async (runId: string) => {
-    if (!workspaceId || cancelingRunId) return;
-    setCancelingRunId(runId);
-    try {
-      const detail = await cancelWorkspaceBatchRun(workspaceId, runId);
-      setWorkspaceBatchRuns((current) => current.map((run) => (run.run_id === detail.run_id ? detail : run)));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCancelingRunId(null);
+      setCaseActionError({ caseId: caseItem.id, message: err instanceof Error ? err.message : String(err) });
     }
   };
 
@@ -250,7 +227,7 @@ export function CaseListPage() {
     try {
       setWorkspaceError(null);
       if (editingWorkspaceId) {
-        const workspace = await renameWorkspace(editingWorkspaceId, name, workspaceDescription);
+        const workspace = await updateWorkspace(editingWorkspaceId, { name, description: workspaceDescription });
         void navigate(workspaceCasesPath(workspace.id));
       } else {
         const workspace = await createWorkspace(name, workspaceDescription);
@@ -308,7 +285,7 @@ export function CaseListPage() {
     setWorkspaceDeleteError(null);
     try {
       await deleteWorkspace(workspaceDeleteTarget.id, confirmNonEmptyWorkspaceDelete);
-      const fallbackWorkspace = session?.workspaces.find((workspace) => workspace.id !== workspaceDeleteTarget.id && workspace.status === 'active');
+      const fallbackWorkspace = session?.workspaces.find((workspace) => workspace.id !== workspaceDeleteTarget.id);
       setWorkspaceDeleteTargetId(null);
       setWorkspaceMenuOpenId(null);
       if (workspaceDeleteTarget.id === workspaceId) {
@@ -428,13 +405,13 @@ export function CaseListPage() {
               )}
               {filteredCases.map((caseItem) => (
                 <CaseCard
-                  key={caseItem.case_id}
+                  key={caseItem.id}
                   caseItem={caseItem}
                   viewMode={viewMode}
-                  isEditing={editingCaseId === caseItem.case_id}
-                  isDeleting={deletingCaseId === caseItem.case_id}
-                  isActionLoading={caseActionLoadingId === caseItem.case_id}
-                  actionError={caseActionError?.caseId === caseItem.case_id ? caseActionError.message : null}
+                  isEditing={editingCaseId === caseItem.id}
+                  isDeleting={deletingCaseId === caseItem.id}
+                  isActionLoading={caseActionLoadingId === caseItem.id}
+                  actionError={caseActionError?.caseId === caseItem.id ? caseActionError.message : null}
                   editValue={editValue}
                   destructiveActionsEnabled={destructiveActionsEnabled}
                   onOpen={openCase}
@@ -485,29 +462,8 @@ export function CaseListPage() {
                 <span aria-hidden="true">+</span>
               </button>
             </div>
-            {activeWorkspaceRuns.length > 0 && (
-              <div className="border-b border-[var(--nc-border)] p-3">
-                <div className="nc-mono mb-2 text-[var(--nc-fs-2xs)] uppercase tracking-[1px] text-[var(--nc-warning)]">Active Runs</div>
-                <div className="space-y-2">
-                  {activeWorkspaceRuns.map((run) => (
-                    <div key={run.run_id} className="rounded border border-[var(--nc-border)] bg-[var(--nc-bg-deep)] p-2">
-                      <div className="truncate text-[var(--nc-fs-sm)] text-[var(--nc-tx)]">{run.report_name}</div>
-                      <div className="nc-mono mt-1 text-[var(--nc-fs-2xs)] text-[var(--nc-tx-dim)]">
-                        {run.running_cases} running / {run.completed_cases} done
-                      </div>
-                      {(run.status === 'queued' || run.status === 'running') && (
-                        <button type="button" onClick={() => void handleCancelBatchRun(run.run_id)} disabled={cancelingRunId === run.run_id} className="nc-btn mt-2 !min-h-0 !px-2 !py-1">
-                          {cancelingRunId === run.run_id ? 'Canceling...' : 'Cancel Run'}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
             <Chat
               workspaceId={workspaceId ?? null}
-              externalMessages={workspaceChatNotifications}
               style={{ flex: 1, minHeight: 0, marginTop: 0, borderRadius: 0 }}
               hideHeader
               guiSessionId={guiSessionIdRef.current}

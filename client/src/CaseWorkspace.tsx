@@ -1,36 +1,36 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, Download, FileUp, Folder, Layers, LoaderCircle, MessageSquare, Moon, Play, RefreshCw, Square, Sun, TerminalSquare, X } from 'lucide-react';
 import { useNavigate } from 'react-router';
 
 import { useAppSession } from './auth/sessionContext';
+import { CaseWorkspaceRightPanel } from './components/CaseWorkspaceRightPanel';
+import { CaseWorkspaceToolbar, type WorkspaceRightPanel } from './components/CaseWorkspaceToolbar';
 import { DownloadCaseModal } from './components/DownloadCaseModal';
+import { LayerPickerModal } from './components/LayerPickerModal';
 import type { ChatMessage, GuiCommand, LocationInfo, MriViewerRef } from './types';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { UploadCaseModal } from './components/UploadCaseModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { STATUS_CONFIG, isRunActive, isRunDone, isRunFailed } from './constants';
 import { useCaseWorkspaceController } from './hooks/useCaseWorkspaceController';
+import { useCaseDownloads } from './hooks/useCaseDownloads';
 import { useGuiStateSync } from './hooks/useGuiStateSync';
 import { useHorizontalPaneResize } from './hooks/useHorizontalPaneResize';
 import { useWorkspaceVolumeState } from './hooks/useWorkspaceVolumeState';
-import { isSegmentationLayer, type ArtifactListItem, type LayerType, type OutputVolume, type Volume } from './types';
+import { type LayerType, type OutputVolume, type Volume } from './types';
 import { makeDrawingFilename, type DrawingLut, type DrawingSession } from './neurocadeViewer/nativeDrawing';
-import { downloadArtifactFile, downloadCaseArchive as downloadCaseArchiveFile, fetchCaseArtifacts, fetchOutputsList, saveGeneratedVolume } from './utils/api';
+import { fetchOutputsList, saveGeneratedVolume } from './utils/api';
 import { workspaceCasesPath } from './utils/caseRoutes';
 import { defaultPaneWidth } from './utils/guiSession';
-import { isMaskLikeFilename, outputVolumeLayerType } from './utils/layerBuilders';
-import { layerDisplayName } from './utils/layerAliases';
+import { outputVolumeLayerType } from './utils/layerBuilders';
 
 const NeuroCadeCaseViewer = lazy(() => import('./neurocadeViewer/NeuroCadeCaseViewer').then(module => ({ default: module.NeuroCadeCaseViewer })));
 const CaseManagerModal = lazy(() => import('./components/CaseManagerModal').then(module => ({ default: module.CaseManagerModal })));
-const Chat = lazy(() => import('./components/Chat').then(module => ({ default: module.Chat })));
 
 interface CaseWorkspaceProps {
   initialCaseId?: string | null;
   initialWorkspaceId?: string | null;
 }
 
-const DOWNLOAD_ARTIFACT_TIMEOUT_MS = 8000;
 const WEBGPU_FALLBACK_WARNING = [
   'Viewer warning: WebGPU initialization failed; using WebGL2, so layer visibility and windowing may be significantly slower.',
   'For sandboxed Chromium on Linux with NVIDIA graphics, enable "Default ANGLE Vulkan" at chrome://flags/#default-angle-vulkan or launch Chromium with --use-angle=vulkan.',
@@ -43,19 +43,12 @@ interface SavedNativeDrawing {
   source?: DrawingSession['source'];
 }
 
-const LAYER_PICKER_LABELS: Record<LayerType, string> = {
-  intensity: 'Intensity Volume',
-  segmentation: 'Segmentation Volume',
-  drawing: 'Drawing Source',
-  surface: 'Surface Mesh',
-};
-
 function selectCurrentIntensityInput(options: OutputVolume[], volumes: Volume[]): OutputVolume | null {
-  const inputOptions = options.filter((option) => option.id && option.kind === 'volume' && (option.type ?? 'intensity') === 'intensity');
+  const inputOptions = options.filter((option) => option.kind === 'volume' && option.type === 'intensity');
   if (inputOptions.length === 0) return null;
 
-  const visibleIntensityLayers = volumes.filter((volume) => (volume.type ?? 'intensity') === 'intensity' && volume.visible);
-  const loadedIntensityLayers = volumes.filter((volume) => (volume.type ?? 'intensity') === 'intensity');
+  const visibleIntensityLayers = volumes.filter((volume) => volume.type === 'intensity' && volume.visible);
+  const loadedIntensityLayers = volumes.filter((volume) => volume.type === 'intensity');
   for (const layer of [...visibleIntensityLayers, ...loadedIntensityLayers]) {
     const byArtifact = layer.artifactId ? inputOptions.find((option) => option.id === layer.artifactId) : undefined;
     if (byArtifact) return byArtifact;
@@ -66,105 +59,6 @@ function selectCurrentIntensityInput(options: OutputVolume[], volumes: Volume[])
   return inputOptions.find((option) => option.visible === true) ?? inputOptions[0] ?? null;
 }
 
-function AnalysisStatusIndicator({ status }: { status: string }) {
-  if (isRunDone(status)) {
-    return <span className="analysis-status-indicator is-done" title="Analysis finished" aria-label="Analysis finished"><Check size={13} /></span>;
-  }
-  if (isRunFailed(status)) {
-    return <span className="analysis-status-indicator is-failed" title="Analysis failed" aria-label="Analysis failed"><X size={13} /></span>;
-  }
-  if (status === 'queued') {
-    return <span className="analysis-status-indicator is-queued" title="Analysis queued" aria-label="Analysis queued"><span aria-hidden="true">...</span></span>;
-  }
-  if (isRunActive(status)) {
-    return <span className="analysis-status-indicator is-running" title="Analysis running" aria-label="Analysis running"><LoaderCircle size={13} className="animate-spin" /></span>;
-  }
-  return null;
-}
-
-interface LayerPickerModalProps {
-  type: LayerType;
-  options: OutputVolume[];
-  loadedFilenames: Set<string>;
-  loading: boolean;
-  error: string | null;
-  onClose: () => void;
-  onRefresh: () => void;
-  onLoad: (option: OutputVolume) => void;
-}
-
-function LayerPickerModal({ type, options, loadedFilenames, loading, error, onClose, onRefresh, onLoad }: LayerPickerModalProps) {
-  const title = `Load ${LAYER_PICKER_LABELS[type]}`;
-
-  return (
-    <div className="fixed inset-0 z-[116] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative flex max-h-[82vh] w-full max-w-xl flex-col overflow-hidden rounded border border-[var(--nc-border)] bg-[var(--nc-bg-panel)] shadow-2xl">
-        <div className="flex items-center gap-2 border-b border-[var(--nc-border)] px-4 py-3">
-          <Layers size={14} className="text-[var(--nc-interactive)]" />
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-[var(--nc-tx)]">{title}</h3>
-            <div className="nc-mono text-[11px] text-[var(--nc-tx-dim)]">Select an existing file from this case directory.</div>
-          </div>
-          <button type="button" className="nc-btn nc-icon-btn" onClick={onRefresh} disabled={loading} title="Refresh case directory" aria-label="Refresh case directory">
-            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-          </button>
-          <button type="button" className="nc-btn nc-icon-btn" onClick={onClose} title="Close" aria-label="Close layer picker">
-            <X size={14} />
-          </button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {error && (
-            <div className="mb-3 rounded border border-[var(--nc-danger-border)] bg-[var(--nc-danger-bg)] px-3 py-2 text-sm text-[var(--nc-danger)]">
-              {error}
-            </div>
-          )}
-
-          {loading && options.length === 0 ? (
-            <div className="nc-mono py-8 text-center text-sm text-[var(--nc-tx-muted)]">Loading case directory...</div>
-          ) : options.length > 0 ? (
-            <div className="divide-y divide-[var(--nc-border)] border-y border-[var(--nc-border)]">
-              {options.map((option) => {
-                const loaded = loadedFilenames.has(option.filename);
-                const pathLabel = option.filename;
-                const displayName = layerDisplayName(option);
-                return (
-                  <button
-                    key={`${option.type ?? 'intensity'}:${option.filename}`}
-                    type="button"
-                    className="flex w-full items-center gap-3 px-2 py-2 text-left transition hover:bg-[var(--nc-row-hover)] disabled:cursor-default disabled:hover:bg-transparent"
-                    disabled={loaded}
-                    onClick={() => onLoad(option)}
-                    title={loaded ? `${pathLabel} is already loaded` : `Load ${pathLabel}`}
-                  >
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${type === 'surface' ? 'bg-[var(--nc-warning)]' : type === 'segmentation' ? 'bg-[var(--nc-success)]' : type === 'drawing' ? 'bg-[var(--nc-accent)]' : 'bg-[var(--nc-interactive)]'}`} />
-                    <span className="min-w-0 flex-1">
-                      <span className={`block truncate text-sm ${loaded ? 'text-[var(--nc-tx-faint)]' : 'text-[var(--nc-tx)]'}`}>{displayName}</span>
-                      <span className="nc-mono block truncate text-[11px] text-[var(--nc-tx-dim)]">{pathLabel}</span>
-                    </span>
-                    <span className="nc-mono shrink-0 text-[11px] text-[var(--nc-tx-faint)]">{loaded ? 'Loaded' : 'Load'}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="rounded border border-[var(--nc-border)] bg-[var(--nc-bg-deep)] px-3 py-8 text-center">
-              <div className="text-sm text-[var(--nc-tx-muted)]">No matching files found in this case directory.</div>
-              <div className="nc-mono mt-1 text-[11px] text-[var(--nc-tx-dim)]">New images can be added via Upload.</div>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between gap-3 border-t border-[var(--nc-border)] px-4 py-3">
-          <div className="nc-mono text-[11px] text-[var(--nc-tx-dim)]">New images can be added via Upload.</div>
-          <button type="button" className="nc-btn" onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: CaseWorkspaceProps) {
   const navigate = useNavigate();
   const { session } = useAppSession();
@@ -172,17 +66,13 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   const [showCaseManager, setShowCaseManager] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<LocationInfo | null>(null);
   const [requestedCursor, setRequestedCursor] = useState<[number, number, number] | null>(null);
-  const [showDownloadModal, setShowDownloadModal] = useState(false);
-  const [downloadArtifacts, setDownloadArtifacts] = useState<ArtifactListItem[]>([]);
-  const [downloadLoading, setDownloadLoading] = useState(false);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [downloadAction, setDownloadAction] = useState<'volume' | 'case' | null>(null);
-  const [rightPanel, setRightPanel] = useState<'chat' | 'results' | null>('chat');
+  const [rightPanel, setRightPanel] = useState<WorkspaceRightPanel>('chat');
   const [chatClearRequestToken, setChatClearRequestToken] = useState(0);
   const [isChatClearing, setIsChatClearing] = useState(false);
   const [viewerDiagnostics, setViewerDiagnostics] = useState<ChatMessage[]>([]);
   const [layerPanelOpen, setLayerPanelOpen] = useState(true);
   const [isLight, setIsLight] = useState(false);
+  const [analysisToolId, setAnalysisToolId] = useState('');
   const [layerPickerType, setLayerPickerType] = useState<LayerType | null>(null);
   const [layerPickerOptions, setLayerPickerOptions] = useState<OutputVolume[]>([]);
   const [layerPickerLoading, setLayerPickerLoading] = useState(false);
@@ -191,7 +81,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   const [rightPanelWidth, startRightPanelResize] = useHorizontalPaneResize(defaultPaneWidth(300, 380), { minWidth: 260, maxWidth: 620, edge: 'left' });
 
   const mriViewerRef = useRef<MriViewerRef>(null);
-  const downloadRequestIdRef = useRef(0);
   const currentWorkspace = session?.workspaces.find((workspace) => workspace.id === initialWorkspaceId) ?? null;
 
   const controller = useCaseWorkspaceController({
@@ -201,7 +90,13 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     volumes,
     setVolumes,
   });
-  const currentFastSurferInput = useMemo(
+  const activeCaseId = controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId;
+  const downloads = useCaseDownloads({
+    caseId: activeCaseId,
+    caseTitle: controller.currentCaseTitle ?? activeCaseId,
+    volumes,
+  });
+  const currentAnalysisInput = useMemo(
     () => selectCurrentIntensityInput(controller.runInputOptions, volumes),
     [controller.runInputOptions, volumes],
   );
@@ -239,9 +134,8 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     guiSessionId: controller.guiSessionId,
     runStatus: controller.runStatus,
     volumes,
-    currentCaseId: controller.activeCaseId,
-    currentIntensityArtifactId: currentFastSurferInput?.id ?? null,
-    currentIntensityVolume: currentFastSurferInput?.filename ?? null,
+    currentIntensityArtifactId: currentAnalysisInput?.id ?? null,
+    currentIntensityVolume: currentAnalysisInput?.filename ?? null,
     isRunActive,
     onSyncResponse: data => {
       data.commands.forEach((command: GuiCommand) => {
@@ -264,6 +158,12 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
           });
         } else if (command.type === 'remove_layers') {
           volumeState.handleRemoveLayersCommand(payload.layer_ids as string[]);
+        } else if (command.type === 'reorder_layer') {
+          volumeState.reorderVolume(
+            String(payload.layer_id),
+            String(payload.target_layer_id),
+            payload.position === 'before' ? 'before' : 'after',
+          );
         } else if (command.type === 'set_layer_visibility') {
           volumeState.handleSetLayerVisibilityCommand(
             payload.changes as { layer_id: string; visible: boolean }[],
@@ -278,15 +178,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
               surface_color_mode?: 'solid' | 'curvature' | 'annotation';
             },
           );
-        } else if (command.type === 'run_fastsurfer') {
-          setRightPanel('results');
-          void controller.handleAgentRunFastSurfer(payload as {
-            case_id: string;
-            input_artifact_id?: string;
-            input_volume?: string;
-            seg_only?: boolean;
-            case_name?: string;
-          });
         }
       });
     },
@@ -299,108 +190,12 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     window.neurocadeElectron?.setTitlebarTheme(isLight ? 'light' : 'dark');
   }, [isLight]);
 
-  useEffect(() => {
-    downloadRequestIdRef.current += 1;
-    setShowDownloadModal(false);
-    setDownloadArtifacts([]);
-    setDownloadError(null);
-    setDownloadAction(null);
-    setDownloadLoading(false);
-  }, [controller.activeCaseId]);
-
-  const buildFallbackDownloadArtifacts = useCallback((currentVolumes: Volume[]): ArtifactListItem[] => (
-    currentVolumes
-      .filter((volume) => Boolean(volume.url))
-      .map((volume) => ({
-        id: volume.id,
-        name: volume.filename,
-        kind: 'volume',
-        downloadPath: volume.url,
-        metadata: {
-          volume_role: volume.type === 'segmentation' ? 'segmentation' : 'intensity',
-          lut: isSegmentationLayer(volume) ? volume.lut : undefined,
-          customLutDownloadUrl: isSegmentationLayer(volume) ? volume.customLutUrl : undefined,
-          visible: volume.visible,
-        },
-      }))
-  ), []);
-
-  const closeDownloadModal = useCallback(() => {
-    downloadRequestIdRef.current += 1;
-    setShowDownloadModal(false);
-    setDownloadLoading(false);
-    setDownloadAction(null);
-    setDownloadError(null);
-  }, []);
-
-  const openDownloadModal = useCallback(() => {
-    const caseId = controller.activeCaseId ?? initialCaseId ?? null;
-    if (!caseId) return;
-    const fallbackArtifacts = buildFallbackDownloadArtifacts(volumes);
-    const requestId = downloadRequestIdRef.current + 1;
-    downloadRequestIdRef.current = requestId;
-    setShowDownloadModal(true);
-    setDownloadArtifacts(fallbackArtifacts);
-    setDownloadLoading(true);
-    setDownloadError(null);
-    const timeoutPromise = new Promise<ArtifactListItem[]>((_, reject) => {
-      window.setTimeout(() => reject(new Error('Timed out while loading the full volume list. You can still download the whole folder or any volume already open.')), DOWNLOAD_ARTIFACT_TIMEOUT_MS);
-    });
-    void Promise.race([fetchCaseArtifacts(caseId), timeoutPromise])
-      .then((artifacts) => {
-        if (downloadRequestIdRef.current !== requestId) return;
-        setDownloadArtifacts(artifacts.length > 0 ? artifacts : fallbackArtifacts);
-      })
-      .catch((error: unknown) => {
-        if (downloadRequestIdRef.current !== requestId) return;
-        const message = error instanceof Error ? error.message : String(error);
-        setDownloadError(fallbackArtifacts.length > 0 ? `${message} Showing currently loaded volumes.` : message);
-      })
-      .finally(() => {
-        if (downloadRequestIdRef.current !== requestId) return;
-        setDownloadLoading(false);
-      });
-  }, [buildFallbackDownloadArtifacts, controller.activeCaseId, initialCaseId, volumes]);
-
-  const handleDownloadVolume = useCallback(async (artifactId: string) => {
-    const artifact = downloadArtifacts.find((entry) => entry.id === artifactId);
-    if (!artifact) {
-      setDownloadError('Select a volume to download.');
-      return;
-    }
-    setDownloadAction('volume');
-    setDownloadError(null);
-    try {
-      await downloadArtifactFile(artifact);
-      closeDownloadModal();
-    } catch (error: unknown) {
-      setDownloadError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setDownloadAction(null);
-    }
-  }, [closeDownloadModal, downloadArtifacts]);
-
-  const handleDownloadCaseArchive = useCallback(async () => {
-    const caseId = controller.activeCaseId ?? initialCaseId ?? null;
-    if (!caseId) {
-      setDownloadError('No active case selected for download.');
-      return;
-    }
-    setDownloadAction('case');
-    setDownloadError(null);
-    try {
-      await downloadCaseArchiveFile(caseId, controller.currentCaseTitle ?? caseId);
-      closeDownloadModal();
-    } catch (error: unknown) {
-      setDownloadError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setDownloadAction(null);
-    }
-  }, [closeDownloadModal, controller.activeCaseId, controller.currentCaseTitle, initialCaseId]);
-
   const handleAnalyze = () => {
+    const tool = controller.analysisTools.find((item) => item.id === analysisToolId)
+      ?? controller.analysisTools[0];
+    if (!tool) return;
     setRightPanel('results');
-    controller.handleRunFastSurfer();
+    controller.handleRunAnalysis(tool.id);
   };
 
   const loadLayerPickerOptions = useCallback(async (type: LayerType) => {
@@ -471,7 +266,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
       downloadPath: option.downloadUrl,
       filename: option.filename,
       type: layerType,
-      lut: option.lut ?? (layerType === 'segmentation' && isMaskLikeFilename(option.filename) ? 'binary' : undefined),
+      lut: option.lut,
       customLutDownloadUrl: option.customLutDownloadUrl,
       curvatureDownloadUrl: option.curvatureDownloadUrl,
       annotationDownloadUrl: option.annotationDownloadUrl,
@@ -486,70 +281,47 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   };
 
   const workspaceBackPath = initialWorkspaceId ? workspaceCasesPath(initialWorkspaceId) : '/';
-  const primaryAnalysisTool = controller.analysisTools[0] ?? null;
-  const analysisToolLabel = primaryAnalysisTool?.label ?? 'FastSurfer';
+  const selectedAnalysisTool = controller.analysisTools.find((tool) => tool.id === analysisToolId)
+    ?? controller.analysisTools[0]
+    ?? null;
+  const modalAnalysisTool = controller.analysisTools.find((tool) => tool.id === controller.selectedAnalysisToolId)
+    ?? selectedAnalysisTool;
+  const displayedRunStatus = controller.isSubmittingRun ? 'starting' : controller.runStatus;
+  const terminalStatusMessage = isRunDone(displayedRunStatus)
+    ? '✓ Analysis job completed successfully.'
+    : isRunFailed(displayedRunStatus)
+      ? displayedRunStatus === 'canceled'
+        ? 'Analysis job canceled.'
+        : 'Analysis job failed.'
+      : null;
 
   return (
     <div className={`nc-shell ${isLight ? 'nc-light' : ''}`}>
-      <div className="nc-topbar">
-        <div className="nc-logo">
-          <img src="/logo-192.png" alt="" className="nc-logo-mark" aria-hidden="true" />
-          <span>NeuroCade</span>
-        </div>
-        <div className="h-5 w-px bg-[var(--nc-border)]" />
-        <button type="button" onClick={() => void navigate(workspaceBackPath)} className="nc-btn" data-testid="case-workspace-back">
-          <ArrowLeft size={13} className="text-[var(--nc-interactive)]" />
-          <span className="hidden max-w-[130px] truncate lg:inline">{currentWorkspace?.name ?? 'Workspace'}</span>
-        </button>
-        <button type="button" onClick={() => setShowCaseManager(true)} className="nc-btn nc-btn-active">
-          <Folder size={13} className="text-[var(--nc-interactive)]" />
-          <span className="max-w-[105px] truncate font-normal sm:max-w-[150px]">{controller.currentCaseTitle ?? controller.activeCaseId ?? initialCaseId ?? 'Select Case'}</span>
-        </button>
-        <button type="button" onClick={controller.handleUpload} className="nc-btn">
-          <FileUp size={13} />
-          <span className="hidden lg:inline">Upload</span>
-          <span className="sr-only">Choose MRI File</span>
-        </button>
-        <button type="button" onClick={openDownloadModal} disabled={!controller.hasUploadedCase} className="nc-btn">
-          <Download size={13} />
-          <span className="hidden lg:inline">Download</span>
-        </button>
-        <div className="flex-1" />
-        <button type="button" onClick={() => setLayerPanelOpen((value) => !value)} className={`nc-btn ${layerPanelOpen ? 'nc-btn-active' : ''}`}>
-          <Layers size={13} />
-          <span className="hidden lg:inline">Layers</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (isRunActive(controller.runStatus)) {
-              setRightPanel('results');
-              void controller.handleCancel();
-            } else {
-              handleAnalyze();
-            }
-          }}
-          disabled={(!isRunActive(controller.runStatus) && !controller.hasUploadedCase && !isRunFailed(controller.runStatus)) || isRunDone(controller.runStatus)}
-          className="nc-btn nc-btn-warning"
-        >
-          {isRunActive(controller.runStatus) ? <Square size={13} /> : <Play size={13} />}
-          <span className="hidden lg:inline">{isRunActive(controller.runStatus) ? 'Cancel' : isRunDone(controller.runStatus) ? 'Analyzed' : isRunFailed(controller.runStatus) ? 'Rerun' : 'Analyze'}</span>
-          <span className="sr-only">
-            {isRunActive(controller.runStatus) ? 'Cancel Analysis' : `Run ${analysisToolLabel} Analysis`}
-          </span>
-        </button>
-        <button type="button" onClick={() => setRightPanel((panel) => panel === 'chat' ? null : 'chat')} className={`nc-btn ${rightPanel === 'chat' ? 'nc-btn-active' : ''}`}>
-          <MessageSquare size={13} />
-          <span className="hidden lg:inline">Chat</span>
-        </button>
-        <button type="button" onClick={() => setRightPanel((panel) => panel === 'results' ? null : 'results')} className={`nc-btn ${rightPanel === 'results' ? 'nc-btn-active' : ''}`}>
-          <TerminalSquare size={13} />
-          <span className="hidden lg:inline">Terminal</span>
-        </button>
-        <button type="button" onClick={() => setIsLight((value) => !value)} className="nc-btn nc-icon-btn" title={isLight ? 'Switch to dark mode' : 'Switch to light mode'}>
-          {isLight ? <Moon size={14} /> : <Sun size={14} />}
-        </button>
-      </div>
+      <CaseWorkspaceToolbar
+        workspaceName={currentWorkspace?.name ?? 'Workspace'}
+        caseTitle={controller.currentCaseTitle ?? activeCaseId ?? 'Select Case'}
+        hasCase={controller.hasUploadedCase}
+        layerPanelOpen={layerPanelOpen}
+        rightPanel={rightPanel}
+        isLight={isLight}
+        runStatus={controller.runStatus}
+        isSubmittingRun={controller.isSubmittingRun}
+        analysisTools={controller.analysisTools}
+        selectedAnalysisToolId={selectedAnalysisTool?.id ?? ''}
+        onBack={() => void navigate(workspaceBackPath)}
+        onOpenCaseManager={() => setShowCaseManager(true)}
+        onUpload={controller.handleUpload}
+        onDownload={downloads.open}
+        onToggleLayers={() => setLayerPanelOpen((value) => !value)}
+        onSelectAnalysisTool={setAnalysisToolId}
+        onAnalyze={handleAnalyze}
+        onCancel={() => {
+          setRightPanel('results');
+          void controller.handleCancel();
+        }}
+        onToggleRightPanel={(panel) => setRightPanel((current) => current === panel ? null : panel)}
+        onToggleTheme={() => setIsLight((value) => !value)}
+      />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ErrorBoundary label="NeuroCadeCaseViewer">
@@ -576,56 +348,24 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         </ErrorBoundary>
 
         {rightPanel && (
-          <aside className="nc-panel relative flex shrink-0 flex-col overflow-hidden border-l" style={{ width: rightPanelWidth }}>
-            <div className="nc-pane-header">
-              {rightPanel === 'chat' ? <MessageSquare size={12} /> : <TerminalSquare size={12} />}
-              <span>{rightPanel === 'chat' ? 'Case Assistant' : 'Terminal Output'}</span>
-              {rightPanel === 'chat' ? (
-                <button
-                  type="button"
-                  className="chat-clear-button ml-auto"
-                  onClick={() => setChatClearRequestToken((token) => token + 1)}
-                  disabled={isChatClearing}
-                  title="Clear chat context"
-                  aria-label="Clear chat context"
-                >
-                  <span aria-hidden="true">+</span>
-                </button>
-              ) : (
-                <AnalysisStatusIndicator status={controller.runStatus} />
-              )}
-            </div>
-            {rightPanel === 'chat' ? (
-              <ErrorBoundary label="Chat">
-                <Suspense fallback={<div className="p-4 text-sm text-[var(--nc-tx-muted)]">Loading chat...</div>}>
-                  <Chat
-                    externalMessages={chatMessages}
-                    style={{ flex: 1, minHeight: 0, marginTop: 0, borderRadius: 0 }}
-                    hideHeader
-                    currentLocation={currentLocation}
-                    getMriSnapshots={() => mriViewerRef.current?.getSnapshots() ?? null}
-                    workspaceId={initialWorkspaceId}
-                    caseId={controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId}
-                    guiSessionId={controller.guiSessionId}
-                    clearRequestToken={chatClearRequestToken}
-                    onClearStateChange={setIsChatClearing}
-                  />
-                </Suspense>
-              </ErrorBoundary>
-            ) : (
-              <div className="flex min-h-0 flex-1 flex-col bg-[var(--nc-bg-deep)]">
-                <pre data-testid="terminal-content" className="nc-mono min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap p-3 text-[11px] leading-[1.45] text-[var(--nc-tx-muted)]">
-                  {terminalOutput || 'No analysis run yet. Click Analyze to start.'}
-                </pre>
-              </div>
-            )}
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              className="nc-resize-handle nc-resize-handle-left"
-              onMouseDown={startRightPanelResize}
-            />
-          </aside>
+          <CaseWorkspaceRightPanel
+            panel={rightPanel}
+            width={rightPanelWidth}
+            onStartResize={startRightPanelResize}
+            runStatus={displayedRunStatus}
+            terminalOutput={terminalOutput}
+            terminalStatusMessage={terminalStatusMessage}
+            chatMessages={chatMessages}
+            currentLocation={currentLocation}
+            getMriSnapshots={() => mriViewerRef.current?.getSnapshots() ?? null}
+            workspaceId={initialWorkspaceId}
+            caseId={activeCaseId}
+            guiSessionId={controller.guiSessionId}
+            chatClearRequestToken={chatClearRequestToken}
+            isChatClearing={isChatClearing}
+            onRequestChatClear={() => setChatClearRequestToken((token) => token + 1)}
+            onChatClearStateChange={setIsChatClearing}
+          />
         )}
       </div>
 
@@ -633,11 +373,10 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         isOpen={controller.showConfirm}
         onClose={() => controller.setShowConfirm(false)}
         onConfirm={confirmRun}
-        title={`Start ${analysisToolLabel}`}
+        tool={modalAnalysisTool}
         message={controller.queueMessage}
-        defaultCaseName={controller.suggestedCaseName}
         inputOptions={controller.runInputOptions}
-        defaultInputArtifactId={currentFastSurferInput?.id ?? null}
+        defaultInputArtifactId={currentAnalysisInput?.id ?? null}
       />
 
       {controller.showUploadModal && (
@@ -656,15 +395,15 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
       )}
 
       <DownloadCaseModal
-        isOpen={showDownloadModal}
-        caseTitle={controller.currentCaseTitle ?? controller.activeCaseId ?? initialCaseId ?? null}
-        artifacts={downloadArtifacts}
-        loadingArtifacts={downloadLoading}
-        error={downloadError}
-        actionLoading={downloadAction}
-        onClose={closeDownloadModal}
-        onDownloadVolume={handleDownloadVolume}
-        onDownloadCase={handleDownloadCaseArchive}
+        isOpen={downloads.isOpen}
+        caseTitle={controller.currentCaseTitle ?? activeCaseId}
+        artifacts={downloads.artifacts}
+        loadingArtifacts={downloads.loading}
+        error={downloads.error}
+        actionLoading={downloads.action}
+        onClose={downloads.close}
+        onDownloadVolume={downloads.downloadVolume}
+        onDownloadCase={downloads.downloadArchive}
       />
 
       {layerPickerType && (

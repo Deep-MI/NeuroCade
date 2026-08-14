@@ -32,11 +32,14 @@ function intensity(id: string): Volume {
 
 void test('restorePersistedCaseLayers restores order and display settings', () => {
   storage.clear();
-  storage.set('fastsurfer-case-demo', JSON.stringify({
+  storage.set('neurocade-case-v1-demo', JSON.stringify({
+    version: 1,
+    caseId: 'demo',
     volumes: [
       { ...intensity('b.mgz'), visible: false, opacity: 0.4, brightness: 10, contrast: 2 },
       { ...intensity('a.mgz'), visible: true, opacity: 1, brightness: 0, contrast: 1 },
     ],
+    lastAccessed: Date.now(),
   }));
 
   const restored = restorePersistedCaseLayers('demo', [intensity('a.mgz'), intensity('b.mgz')]);

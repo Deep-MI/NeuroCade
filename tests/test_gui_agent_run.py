@@ -7,10 +7,9 @@ This test validates the full round-trip:
   1. User uploads MRI file → eager upload to server
   2. runtime state sync picks up the uploaded file + case ID
   3. User asks agent "Run FastSurfer on this case"
-  4. Agent calls gui_run_fastsurfer tool
-  5. runtime handler queues a typed run_fastsurfer command
-  6. Frontend applies and acknowledges the command, then submits /run
-  7. GUI updates: terminal panel opens, status transitions, case list refreshes
+  4. Agent starts the configured FastSurfer workflow directly
+  5. The GUI observes the durable run status
+  6. GUI status and case outputs refresh
 
 Prerequisites:
   ./scripts/run.sh start -d
@@ -136,18 +135,16 @@ class TestGuiAgentTriggeredRun:
         print(f"  Agent response markers: {found}")
 
         # Step 4: Verify GUI updates — terminal/output panel should be visible
-        # Wait for the frontend to apply the typed run command and submit.
+        # Wait for the frontend to observe the durable run status.
         deadline = time.time() + 15
         terminal_visible = False
         cancel_visible = False
-        rerun_visible = False
         error_status = False
         while time.time() < deadline:
             terminal_visible = page.locator("button:has-text('Hide Output')").is_visible()
             cancel_visible = page.locator("button:has-text('Cancel Analysis')").is_visible()
-            rerun_visible = page.locator("button:has-text('Rerun')").is_visible()
             error_status = page.locator("button:has-text('Analysis Finished')").is_visible()
-            if terminal_visible or cancel_visible or rerun_visible or error_status:
+            if terminal_visible or cancel_visible or error_status:
                 break
             page.wait_for_timeout(500)
         take_screenshot(page, "agent_run_03_after_submission", screenshot_dir)
@@ -156,10 +153,9 @@ class TestGuiAgentTriggeredRun:
         # or the terminal panel itself should be visible
         print(f"  Terminal visible: {terminal_visible}")
         print(f"  Cancel visible: {cancel_visible}")
-        print(f"  Rerun visible: {rerun_visible}")
 
         # At least one of these should be true — the run was submitted
-        assert terminal_visible or cancel_visible or rerun_visible or error_status, (
+        assert terminal_visible or cancel_visible or error_status, (
             "Expected the GUI to show the output terminal or status change "
             "after agent triggered FastSurfer, but none of the expected "
             "UI elements are visible."

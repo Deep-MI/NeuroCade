@@ -7,7 +7,7 @@ import { forgetClosedCaseVolume, rememberClosedCaseVolume } from '../utils/caseS
 import { createViewerLayer } from '../utils/layerBuilders';
 
 function layerTypeOf(volume: Volume): LayerType {
-  return volume.type ?? 'intensity';
+  return volume.type;
 }
 
 interface UseWorkspaceVolumeStateArgs {

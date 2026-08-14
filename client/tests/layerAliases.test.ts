@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isLayerFile, layerDisplayName, surfaceFileStem } from '../src/utils/layerAliases.js';
+import { layerDisplayName, surfaceFileStem } from '../src/utils/layerAliases.js';
 
 void test('layerDisplayName aliases known volume filenames', () => {
   assert.equal(layerDisplayName({ filename: 'orig.mgz' }), 'Conformed input image');
@@ -26,10 +26,4 @@ void test('surfaceFileStem normalizes surface filenames', () => {
   assert.equal(surfaceFileStem('lh.pial'), 'lh.pial');
   assert.equal(surfaceFileStem('surf/rh.pial.surf'), 'rh.pial');
   assert.equal(surfaceFileStem('lh.pial.T1'), 'lh.pial.T1');
-});
-
-void test('isLayerFile matches by basename only', () => {
-  assert.equal(isLayerFile('mri/orig.mgz', 'orig.mgz'), true);
-  assert.equal(isLayerFile('orig.mgz', 'orig.mgz'), true);
-  assert.equal(isLayerFile('mri/orig_nu.mgz', 'orig.mgz'), false);
 });

@@ -6,7 +6,7 @@ const NIFTI_HEADER_SIZE = 352;
 const MAX_REFERENCE_AXIS = 512;
 const MAX_REFERENCE_VOXELS = 64 * 1024 * 1024;
 
-export interface FixedReferenceGrid {
+interface FixedReferenceGrid {
   buffer: ArrayBuffer;
   dimensions: [number, number, number];
   spacing: [number, number, number];

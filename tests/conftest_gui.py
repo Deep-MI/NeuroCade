@@ -23,7 +23,7 @@ import shutil
 
 import pytest
 import requests
-from gui_helpers import DEFAULT_CASE_ID, DEFAULT_STORAGE_STATE_PATH, GATEWAY_URL, SCREENSHOT_DIR, get_auth_headers
+from gui_helpers import APP_URL, DEFAULT_CASE_ID, DEFAULT_STORAGE_STATE_PATH, SCREENSHOT_DIR, get_auth_headers
 
 # Lazy-import playwright so non-GUI tests don't fail when it's not installed
 try:
@@ -82,21 +82,21 @@ def page(services_up, browser):
         context_kwargs["storage_state"] = str(DEFAULT_STORAGE_STATE_PATH)
     context = browser.new_context(**context_kwargs)
     page = context.new_page()
-    target_url = f"{GATEWAY_URL}/"
+    target_url = f"{APP_URL}/"
     auth_headers = get_auth_headers()
     target_case_id = DEFAULT_CASE_ID
 
     if auth_headers:
         try:
             session_response = requests.get(
-                f"{GATEWAY_URL}/api/app/session",
+                f"{APP_URL}/api/app/session",
                 headers=auth_headers,
                 timeout=10,
             )
             session_response.raise_for_status()
             session_payload = session_response.json()
             cases_response = requests.get(
-                f"{GATEWAY_URL}/api/app/cases",
+                f"{APP_URL}/api/app/cases",
                 headers=auth_headers,
                 timeout=10,
             )
@@ -113,19 +113,11 @@ def page(services_up, browser):
                 workspace_id_value = target_case.get("workspace_id") or session_payload.get("active_workspace_id") or session_payload.get("default_workspace_id")
                 target_case_id = str(target_case.get("id") or DEFAULT_CASE_ID)
                 workspace_id = str(workspace_id_value) if workspace_id_value else ""
-                if workspace_id:
-                    prefix = f"{workspace_id}__"
-                    if target_case_id.startswith(prefix):
-                        case_slug = target_case_id[len(prefix):]
-                        target_url = f"{GATEWAY_URL}/workspaces/{workspace_id}/cases/{case_slug}"
-                    else:
-                        target_url = f"{GATEWAY_URL}/workspaces/{workspace_id}/cases"
-                else:
-                    target_url = f"{GATEWAY_URL}/"
+                target_url = f"{APP_URL}/workspaces/{workspace_id}/cases/{target_case_id}" if workspace_id else f"{APP_URL}/"
             else:
                 workspace_id = session_payload.get("active_workspace_id") or session_payload.get("default_workspace_id")
                 if workspace_id:
-                    target_url = f"{GATEWAY_URL}/workspaces/{workspace_id}/cases"
+                    target_url = f"{APP_URL}/workspaces/{workspace_id}/cases"
         except requests.RequestException:
             pass
 
