@@ -4,6 +4,7 @@
 
 FROM node:22-alpine AS client-build
 WORKDIR /app/client
+RUN npm install --global npm@11.10.0
 COPY client/package*.json ./
 RUN npm ci
 COPY client ./
@@ -13,10 +14,13 @@ RUN npm run build
 # trixie (the current python:3.12-slim) replaced with libfuse3-4.
 FROM python:3.12-slim-bookworm
 
+ARG NEUROCADE_VERSION=0.0.0
+
 LABEL org.opencontainers.image.source="https://github.com/Deep-MI/NeuroCade"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    NEUROCADE_BUILD_VERSION="$NEUROCADE_VERSION" \
     PYTHONPATH=/app/api-service:/app:/app/packages/neurocade-runtime-tools/src \
     UV_PROJECT_ENVIRONMENT=/opt/neurocade-venv \
     PATH="/opt/neurocade-venv/bin:$PATH"

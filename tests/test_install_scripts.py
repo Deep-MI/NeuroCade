@@ -26,8 +26,11 @@ def _write_fake_docker(bin_dir: Path, log_file: Path) -> Path:
         "  build:*) exit 0 ;;\n"
         "  pull:*) exit 0 ;;\n"
         "  ps:*) exit 0 ;;\n"
+        "  exec:*) exit 0 ;;\n"
         "  rm:-f) exit 0 ;;\n"
-        "  run:*) exit 0 ;;\n"
+        '  run:*)\n'
+        '    if [[ "$*" == *"--gpus all"* && "${FAKE_DOCKER_GPU_AVAILABLE:-true}" != "true" ]]; then exit 1; fi\n'
+        '    exit 0 ;;\n'
         "esac\n"
         "exit 1\n",
         encoding="utf-8",
@@ -46,6 +49,11 @@ def _launcher_env(env_file: Path, bin_dir: Path, log_file: Path, **overrides: st
         "NEUROCADE_SAMPLE_CASE_URL",
         "NEUROCADE_SAMPLE_CASE_SHA256",
         "NEUROCADE_SKIP_SAMPLE_CASE",
+        "NEUROCADE_GPU_MODE",
+        "NEUROCADE_PREPARE_TOOLS",
+        "NEUROCADE_STARTUP_TIMEOUT_SECONDS",
+        "NEUROCADE_UID",
+        "NEUROCADE_GID",
         "FREESURFER_LICENSE",
     ):
         env.pop(key, None)
@@ -84,7 +92,7 @@ def test_install_scripts_drop_legacy_sidecar_config() -> None:
         ]
     )
 
-    # The monolith has no runtime-runner sidecar, Postgres, or Redis to configure.
+    # The monolith has no external runtime or queue services to configure.
     legacy_terms = [
         "runtime_" + "cache_env.sh",
         "HOST_" + "RUNTIME_RUNNER_",
@@ -132,7 +140,114 @@ def test_docker_launcher_accepts_explicit_port(tmp_path) -> None:
     )
 
     assert "-p 127.0.0.1:9123:8000" in log_file.read_text(encoding="utf-8")
+    assert "-e NEUROCADE_ACCESS_URL=http://127.0.0.1:9123" in log_file.read_text(encoding="utf-8")
+    log_text = log_file.read_text(encoding="utf-8")
+    assert f"--user {os.getuid()}:{os.getgid()}" in log_text
+    assert "/.neurocade/passwd:/etc/passwd:ro" in log_text
+    assert "/.neurocade/group:/etc/group:ro" in log_text
+    assert "--gpus all" in log_text
+    assert "python -m api_service.runtime_tools.prepare_images" in log_text
     assert "Starting NeuroCade at http://127.0.0.1:9123" in result.stdout
+    assert "\x1b" not in result.stdout
+
+
+def test_detached_launcher_waits_for_backend_before_printing_url(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+    (checkout / ".env").write_text(
+        "NEUROCADE_SKIP_SAMPLE_CASE=true\nNEUROCADE_PREPARE_TOOLS=false\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "run.sh"), "start", "-d"],
+        check=True,
+        cwd=checkout,
+        env=_launcher_env(checkout / ".env", bin_dir, log_file),
+        text=True,
+        capture_output=True,
+    )
+
+    log_lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert next(index for index, line in enumerate(log_lines) if line.startswith("exec neurocade")) > next(
+        index for index, line in enumerate(log_lines) if line.startswith("run --name neurocade")
+    )
+    assert "NeuroCade is ready at http://127.0.0.1:" in result.stdout
+    assert "Starting NeuroCade at" not in result.stdout
+
+
+def test_docker_launcher_cpu_mode_skips_gpu_passthrough(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+    (checkout / ".env").write_text(
+        "NEUROCADE_SKIP_SAMPLE_CASE=true\nNEUROCADE_GPU_MODE=cpu\nNEUROCADE_PREPARE_TOOLS=false\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "run.sh"), "start"],
+        check=True,
+        cwd=checkout,
+        env=_launcher_env(checkout / ".env", bin_dir, log_file),
+        text=True,
+        capture_output=True,
+    )
+
+    assert "--gpus all" not in log_file.read_text(encoding="utf-8")
+    assert "GPU mode: cpu" in result.stdout
+
+
+def test_docker_launcher_required_cuda_fails_before_app_start(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+    (checkout / ".env").write_text(
+        "NEUROCADE_SKIP_SAMPLE_CASE=true\nNEUROCADE_GPU_MODE=cuda\nNEUROCADE_PREPARE_TOOLS=false\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "run.sh"), "start"],
+        cwd=checkout,
+        env=_launcher_env(
+            checkout / ".env",
+            bin_dir,
+            log_file,
+            FAKE_DOCKER_GPU_AVAILABLE="false",
+        ),
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "CUDA was requested" in result.stderr
+    assert "run --name neurocade" not in log_file.read_text(encoding="utf-8")
 
 
 def test_docker_launcher_selects_next_available_port(tmp_path) -> None:
@@ -598,7 +713,7 @@ def test_docker_launcher_forwards_configured_platform_to_every_container(tmp_pat
     subprocess.run(["bash", str(scripts_dir / "run.sh"), "start"], check=True, env=env, cwd=checkout)
 
     log_text = log_file.read_text(encoding="utf-8")
-    assert log_text.count("--platform linux/amd64") == 2
+    assert log_text.count("--platform linux/amd64") == 5
 
 
 def test_docker_launcher_pulls_mismatched_platform_image(tmp_path) -> None:
@@ -709,7 +824,7 @@ def test_docker_launcher_does_not_manage_freesurfer_license(tmp_path) -> None:
 def test_env_example_documents_runtime_backend() -> None:
     env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
-    # Apptainer is the default tool runtime; the runtime-runner sidecar is gone.
+    # Apptainer is the default tool runtime.
     assert "NEUROCADE_RUNTIME_BACKEND=" in env_example
     assert "NEUROCADE_IMAGE=ghcr.io/deep-mi/neurocade:latest" in env_example
     assert "NEUROCADE_DOCKER_PLATFORM=" in env_example
@@ -748,6 +863,8 @@ def test_release_workflow_matches_the_docker_monolith() -> None:
     assert "packages: write" in workflow
     assert "docker/build-push-action@v7" in workflow
     assert "platforms: linux/amd64" in workflow
+    assert "NEUROCADE_VERSION=${{ steps.release.outputs.version }}" in workflow
+    assert 'printenv NEUROCADE_BUILD_VERSION' in workflow
     assert "ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}" in workflow
     assert "Verify anonymous image access" in workflow
     assert 'DOCKER_CONFIG="$anonymous_config" docker pull' in workflow
@@ -767,3 +884,6 @@ def test_dockerfile_verifies_apptainer_and_uses_locked_dependencies() -> None:
     assert "COPY pyproject.toml uv.lock ./" in dockerfile
     assert "uv sync --locked --no-dev --no-editable" in dockerfile
     assert "pip uninstall -y uv" in dockerfile
+    assert "ARG NEUROCADE_VERSION=0.0.0" in dockerfile
+    assert 'NEUROCADE_BUILD_VERSION="$NEUROCADE_VERSION"' in dockerfile
+    assert "npm install --global npm@11.10.0" in dockerfile

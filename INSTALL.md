@@ -59,6 +59,8 @@ HOST_DATA_DIR=/path/to/NeuroCade/neurocade-data
 NEUROCADE_DB_DIR=/path/on/local-disk/neurocade-db
 DATABASE_URL=sqlite+pysqlite:////path/on/local-disk/neurocade-db/neurocade.db
 NEUROCADE_RUNTIME_BACKEND=apptainer
+NEUROCADE_GPU_MODE=auto
+NEUROCADE_PREPARE_TOOLS=true
 ```
 
 Use `ghcr.io/deep-mi/neurocade:beta` for the current prerelease channel, or an
@@ -75,6 +77,20 @@ mounts `NEUROCADE_DB_DIR` separately at `/database` and uses
 filesystem; SQLite WAL is not suitable for NFS or other network filesystems.
 Large imaging inputs and outputs can remain under `HOST_DATA_DIR`.
 
+### Pre-beta database reset
+
+This beta uses a clean database baseline and does not upgrade databases created
+by earlier development builds. Before starting it against an existing pre-beta
+installation, reset the local application state from the repository root:
+
+```bash
+./scripts/admin/reset_app_state.sh --yes
+```
+
+This removes the SQLite database and workspace data under `HOST_DATA_DIR`; copy
+research data elsewhere first if it must be retained. The reset preserves
+`license.txt`.
+
 ## Apple Silicon
 
 Apple Silicon Macs run the NeuroDesk runtime containers through amd64 emulation.
@@ -90,21 +106,39 @@ NEUROCADE_DOCKER_PLATFORM=linux/amd64
 
 ## Tool Runtime
 
-The app launches neuroimaging tools with Apptainer inside the Docker container,
-so `scripts/run.sh` uses:
+The app launches neuroimaging tools with Apptainer inside the Docker container.
+`scripts/run.sh` supplies the required FUSE privileges and runs the application
+as the invoking host UID/GID, so newly created database, cache, and analysis
+files remain writable by the host user. Set `NEUROCADE_UID` and
+`NEUROCADE_GID` only when the mounted data should belong to a different user.
+
+GPU-capable workflows use `NEUROCADE_GPU_MODE`:
+
+- `auto` (default) verifies both Docker GPU passthrough and CUDA initialization
+  inside the selected tool image; it selects CPU if either check fails.
+- `cuda` requires working NVIDIA passthrough and a CUDA-enabled tool image, and
+  stops startup or run submission when either requirement is unavailable.
+- `cpu` skips the NVIDIA probe and runs workflows on the CPU.
+
+On CUDA systems the launcher adds `--gpus all`. It also uses:
 
 ```bash
 --privileged --device /dev/fuse
 ```
 
-Runtime tools are listed in `config/runtime_tools.json`. `tool_search` searches
-that configured list only, and `tool_call` requires the configured `container_id`
-and `tool_id` returned by search. Startup no longer generates or refreshes a
-tool catalog.
+Run Analysis workflows and assistant tool metadata are defined in
+`config/neuroimaging_tools.yaml` and loaded by `tool_search` and `tool_call`.
+Unknown catalog fields are
+rejected at startup so misspelled settings cannot silently fall back to defaults.
+Workflow terminal logs are retained per run under each case's
+`scripts/runs/<run-id>/` directory.
 
-Apptainer resolves tool images from `NEUROCADE_SIF_DIR` when a matching SIF is
-present, otherwise it falls back to `docker://...` and uses its cache under the
-mounted data directory.
+By default, startup prepares the Run Analysis images as architecture-specific
+SIF files in the persistent `neurocade-data/sif/` directory. Later jobs reuse
+those files instead of converting OCI layers again. Prepare them independently
+with `./scripts/run.sh prepare-tools`, or set `NEUROCADE_PREPARE_TOOLS=false` to
+defer downloading until the first run. Apptainer's routine progress output is
+suppressed in job logs; tool output and failures are still recorded.
 
 ## LLM Providers
 

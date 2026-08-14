@@ -38,7 +38,4 @@ ScienceDirect_files_*.zip
 old_backup/
 sample_case/*
 !sample_case/README.md
-!sample_case/create_fastsurfer_sample_case.sh
 !sample_case/download_sub_rs_mri_proc.sh
-client/shader-demo.html
-client/src/dev/

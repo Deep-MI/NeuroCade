@@ -89,17 +89,15 @@ echo "Removing local runtime state..."
 rm -rf "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 mkdir -p "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 
-echo "Wiping $HOST_DATA_DIR contents..."
-find "$HOST_DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+echo "Wiping workspace and database state under $HOST_DATA_DIR..."
+rm -rf "$HOST_DATA_DIR/output"
 mkdir -p "$HOST_DATA_DIR/output"
-if [[ "$(realpath -m "$NEUROCADE_DB_DIR")" != "$(realpath -m "$HOST_DATA_DIR")" ]]; then
-  echo "Removing SQLite state from $NEUROCADE_DB_DIR..."
-  rm -f \
-    "$NEUROCADE_DB_DIR/neurocade.db" \
-    "$NEUROCADE_DB_DIR/neurocade.db-shm" \
-    "$NEUROCADE_DB_DIR/neurocade.db-wal"
-  mkdir -p "$NEUROCADE_DB_DIR"
-fi
+echo "Removing SQLite state from $NEUROCADE_DB_DIR..."
+rm -f \
+  "$NEUROCADE_DB_DIR/neurocade.db" \
+  "$NEUROCADE_DB_DIR/neurocade.db-shm" \
+  "$NEUROCADE_DB_DIR/neurocade.db-wal"
+mkdir -p "$NEUROCADE_DB_DIR"
 
 if [[ "$KEEP_STACK_DOWN" -eq 1 ]]; then
   echo "Reset complete. Stack left stopped."

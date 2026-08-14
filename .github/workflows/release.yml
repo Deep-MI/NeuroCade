@@ -86,6 +86,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          build-args: |
+            NEUROCADE_VERSION=${{ steps.release.outputs.version }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.release.outputs.head_sha }}
@@ -112,6 +114,7 @@ jobs:
         if: steps.release.outputs.should_release == 'true'
         env:
           RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           container=neurocade-release-smoke
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
@@ -145,6 +148,7 @@ jobs:
               assert response.headers["Cache-Control"] == "no-store"
               assert config["local_auth_enabled"] is True
           '
+          test "$(docker exec "$container" printenv NEUROCADE_BUILD_VERSION)" = "$RELEASE_VERSION"
 
       - name: Publish channel tag
         if: steps.release.outputs.should_release == 'true'

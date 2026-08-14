@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api-service"))
 
 from backend_common import providers as provider_module
-from backend_common.providers import ProviderRole, provider_registry
-from backend_common.scan import classify_volume_metadata
+from backend_common.db import _build_engine
+from backend_common.providers import provider_registry
 from backend_common.settings import Settings
 
 
@@ -21,26 +21,22 @@ def _settings_without_env_file() -> Settings:
     return cast(Any, Settings)(_env_file=None)
 
 
-def test_provider_registry_exposes_chat_and_orchestration_models():
-    models = provider_registry.list_models()
-    roles = {model.role for model in models}
-    assert ProviderRole.chat in roles
-    assert ProviderRole.orchestration in roles
+def test_provider_registry_exposes_chat_models():
+    assert {model.provider for model in provider_registry.list_models()} >= {"openai-compatible", "no-llm"}
 
 
 def test_openai_compatible_provider_builds_langchain_model(monkeypatch):
     monkeypatch.setattr(provider_module.settings, "llm_provider_default", "openai-compatible")
-    monkeypatch.setattr(provider_module.settings, "workflow_default_provider", "openai-compatible")
     monkeypatch.setattr(provider_module.settings, "llm_backend_url", "http://127.0.0.1:11434")
     monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "backend-token")
     registry = provider_module.ProviderRegistry()
 
-    cfg = registry.get(ProviderRole.chat)
+    cfg = registry.get()
     assert cfg.provider == "openai-compatible"
     assert cfg.provider_family == "openai_compatible"
     assert cfg.base_url == provider_module.settings.llm_backend_url
 
-    model = registry.build_chat_model(ProviderRole.chat)
+    model = registry.build_chat_model()
     assert type(model).__name__ == "ChatOpenAI"
 
 
@@ -50,7 +46,7 @@ def test_openai_compatible_provider_allows_blank_api_key(monkeypatch):
     monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "")
 
     registry = provider_module.ProviderRegistry()
-    cfg = registry.get(ProviderRole.chat)
+    cfg = registry.get()
 
     assert cfg.available is True
     assert cfg.api_key is None
@@ -62,23 +58,22 @@ def test_openai_compatible_provider_disables_qwen_thinking_by_default(monkeypatc
     monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "backend-token")
     registry = provider_module.ProviderRegistry()
 
-    model = registry.build_chat_model(ProviderRole.chat)
+    model = registry.build_chat_model()
 
     assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_no_llm_provider_is_registered_but_unavailable(monkeypatch):
     monkeypatch.setattr(provider_module.settings, "llm_provider_default", "no-llm")
-    monkeypatch.setattr(provider_module.settings, "workflow_default_provider", "no-llm")
     registry = provider_module.ProviderRegistry()
 
-    cfg = registry.get(ProviderRole.chat)
+    cfg = registry.get()
 
     assert cfg.provider == "no-llm"
     assert cfg.provider_family == "none"
     assert cfg.available is False
     assert cfg.availability_reason == "LLM setup was skipped during install"
-    assert registry.default_provider_for_role(ProviderRole.chat) == "no-llm"
+    assert registry.default_provider == "no-llm"
 
 
 def test_no_llm_provider_does_not_build_chat_model(monkeypatch):
@@ -86,7 +81,7 @@ def test_no_llm_provider_does_not_build_chat_model(monkeypatch):
     registry = provider_module.ProviderRegistry()
 
     with pytest.raises(ValueError, match="LLM setup was skipped during install"):
-        registry.build_chat_model(ProviderRole.chat)
+        registry.build_chat_model()
 
 
 def test_settings_default_to_sqlite(monkeypatch):
@@ -94,6 +89,11 @@ def test_settings_default_to_sqlite(monkeypatch):
     settings = _settings_without_env_file()
     assert settings.sqlalchemy_database_url.startswith("sqlite+pysqlite:///")
     assert settings.sqlalchemy_database_url.endswith("neurocade.db")
+
+
+def test_database_engine_rejects_non_sqlite_urls():
+    with pytest.raises(RuntimeError, match="supports SQLite DATABASE_URL values only"):
+        _build_engine("postgresql://example.invalid/neurocade")
 
 
 def test_assistant_max_rounds_default_is_shared_limit():
@@ -121,16 +121,6 @@ def test_settings_ignore_removed_data_root_aliases(monkeypatch, tmp_path):
 
     assert settings.fs_data_root != tmp_path / "ignored-data"
     assert settings.outputs_dir != tmp_path / "ignored-output"
-
-
-def test_classify_volume_metadata_distinguishes_segmentation_and_intensity():
-    assert classify_volume_metadata("orig.mgz")["volume_role"] == "intensity"
-    aseg = classify_volume_metadata("aparc.DKTatlas+aseg.deep.mgz")
-    assert aseg["volume_role"] == "segmentation"
-    assert aseg["lut"] == "freesurfer"
-    mask = classify_volume_metadata("brainmask_bin.nii.gz")
-    assert mask["volume_role"] == "segmentation"
-    assert mask["lut"] == "binary"
 
 
 def test_docker_launcher_exposes_clerk_environment():
@@ -217,6 +207,8 @@ def test_env_example_documents_clerk_audience():
 def test_env_example_documents_monitoring_admin_allowlist():
     env_example = Path(".env.example").read_text()
     assert "ASSISTANT_MAX_ROUNDS=18" in env_example
+    assert "ASSISTANT_WORKFLOW_WAIT_SECONDS=300" in env_example
+    assert "ASSISTANT_GUI_ACK_WAIT_SECONDS=10" in env_example
     assert "MONITORING_ADMIN_USER_IDS=" in env_example
     assert "MONITORING_ACTIVE_WINDOW_MINUTES=" in env_example
 

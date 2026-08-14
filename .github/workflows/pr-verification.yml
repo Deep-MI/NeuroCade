@@ -25,6 +25,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: client/package-lock.json
+      - run: npm install --global npm@11.10.0
       - run: npm ci
         working-directory: client
       - run: npm run lint
@@ -64,7 +65,8 @@ jobs:
           pytest \
             tests/test_install_scripts.py \
             tests/test_security_hardening.py \
-            tests/test_runtime_service_tools.py \
+            tests/test_neuroimaging_workflows.py \
+            tests/test_monolith_runtime.py \
             tests/test_assistant_file_tools.py \
             tests/test_assistant_runtime.py \
             -q

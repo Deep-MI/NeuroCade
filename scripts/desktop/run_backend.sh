@@ -29,7 +29,11 @@ if [[ "$APP_HTTP_BIND" == "0.0.0.0" ]]; then
 else
   APP_DISPLAY_HOST="$APP_HTTP_BIND"
 fi
-echo "Starting NeuroCade at http://${APP_DISPLAY_HOST}:${APP_HTTP_PORT}/"
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != "dumb" ]]; then
+  printf '\033[1;32mStarting NeuroCade at \033[1;36mhttp://%s:%s/\033[0m\n' "$APP_DISPLAY_HOST" "$APP_HTTP_PORT"
+else
+  printf 'Starting NeuroCade at http://%s:%s/\n' "$APP_DISPLAY_HOST" "$APP_HTTP_PORT"
+fi
 
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 if [[ ! -x "$PYTHON_BIN" ]]; then

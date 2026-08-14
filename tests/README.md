@@ -44,25 +44,24 @@ rg --files tests -g 'test_*.py' | sort
 Current coverage is organized around these areas:
 
 - Backend architecture, settings, auth, security, monitoring, and install policy: `test_app_architecture.py`, `test_security_hardening.py`, `test_monitoring_routes.py`, `test_install_scripts.py`, `test_chat_limits.py`
-- Assistant orchestration, streamed turns, persisted history, file tools, runtime tools, LUT lookup, and Docker runtime handoff: `test_assistant_runtime.py`, `test_assistant_turn_streaming_routes.py`, `test_assistant_history.py`, `test_assistant_file_tools.py`, `test_runtime_service_tools.py`, `test_lut_lookup.py`, `test_docker_runtime.py`
-- Workspaces, cases, artifacts, scan indexing, sample seeding, admin reset, and app runtime routes: `test_workspace_routes.py`, `test_workspace_batch.py`, `test_artifact_routes.py`, `test_case_resolver.py`, `test_scan_indexing.py`, `test_bootstrap_seed.py`, `test_admin_reset.py`, `test_app_runtime_routes.py`
-- API E2E tests against the running app: `test_chat_simple.py`, `test_agent_run_e2e.py`, `test_fastsurfer_run_e2e.py`; `test_mri_info_e2e.py` is skipped unless an `mri_info` runtime tool is configured.
-- Browser E2E tests with Playwright: `test_gui_upload_run.py`, `test_gui_agent_run.py`, `test_gui_focus_label.py`, `test_gui_dicom_upload.py`, `test_gui_mri_header_alignment.py`
+- Assistant orchestration, streamed turns, persisted history, file tools, runtime tools, LUT lookup, and container runtime handoff: `test_assistant_runtime.py`, `test_assistant_turn_streaming_routes.py`, `test_assistant_history.py`, `test_assistant_file_tools.py`, `test_gui_runtime_tools.py`, `test_lut_lookup.py`, `test_monolith_runtime.py`, `test_runtime_execution.py`
+- Workspaces, cases, artifacts, filesystem reconciliation, sample seeding, admin reset, and app runtime routes: `test_workspace_routes.py`, `test_artifact_routes.py`, `test_case_resolver.py`, `test_bootstrap_seed.py`, `test_admin_reset.py`, `test_app_runtime_routes.py`
+- API E2E tests against the running app: `test_agent_run_e2e.py`, `test_fastsurfer_run_e2e.py`, and `test_mri_info_e2e.py`.
+- Browser E2E tests with Playwright: `test_gui_upload_run.py`, `test_gui_agent_run.py`, `test_gui_focus_label.py`, `test_gui_dicom_upload.py`, `test_gui_surface_commands.py`, and `test_gui_mri_vision.py`
 
 ## Running Tests
 
-### All unit tests (fast, no services needed)
+### Focused unit tests (fast, no services needed)
 ```bash
 source .venv/bin/activate
-pytest tests/test_runtime_service_tools.py tests/test_assistant_file_tools.py tests/test_assistant_runtime.py tests/test_app_architecture.py -v
+pytest tests/test_gui_runtime_tools.py tests/test_assistant_file_tools.py tests/test_assistant_runtime.py tests/test_app_architecture.py -v
 ruff check .
 pyright
 ```
 
 ### Smoke tests (requires the Docker app)
 ```bash
-source .venv/bin/activate
-pytest tests/test_chat_simple.py -v
+curl http://localhost:8000/api/app/healthz
 ```
 
 ### API E2E tests (requires the Docker app)
@@ -75,6 +74,14 @@ pytest tests/test_agent_run_e2e.py tests/test_fastsurfer_run_e2e.py -v
 ```bash
 source .venv/bin/activate
 pytest tests/test_gui_upload_run.py tests/test_gui_focus_label.py tests/test_gui_agent_run.py -v
+```
+
+Tests that send prompts to a live LLM are skipped by default so the regular
+suite does not depend on an external model service. Enable them explicitly
+when the configured backend is reachable:
+
+```bash
+RUN_LLM_E2E=1 pytest tests/test_gui_surface_commands.py tests/test_gui_focus_label.py -v
 ```
 
 ### GUI tests with visible browser
@@ -93,9 +100,10 @@ pytest tests/ -v
 
 | Variable | Default | Description |
 |---|---|---|
-| `GATEWAY_URL` | `http://localhost:8000` | Local app URL |
+| `APP_URL` | `http://localhost:8000` | Local app URL |
 | `API_TOKEN` | `static-token-12345` | Bearer token for API requests |
 | `HEADED` | (unset) | Set to `1` or `true` to show the Playwright browser |
+| `RUN_LLM_E2E` | (unset) | Set to `1` to run browser tests that invoke the configured live LLM |
 
 ## Screenshots
 

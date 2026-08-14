@@ -28,13 +28,21 @@ SAMPLE_CASE_DIR="$ROOT_DIR/sample_case"
 SAMPLE_CASE_NAME="${NEUROCADE_SAMPLE_CASE_NAME:-FastSurfer_Rhineland_0000}"
 SAMPLE_CASE_URL="${NEUROCADE_SAMPLE_CASE_URL:-https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.7/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz}"
 SAMPLE_CASE_SHA256="${NEUROCADE_SAMPLE_CASE_SHA256:-71814b4687180e10543523bb07292725f4b165acce7d0f9d34148028daa061b7}"
+GPU_MODE="${NEUROCADE_GPU_MODE:-auto}"
+RUNTIME_UID="${NEUROCADE_UID:-$(id -u)}"
+RUNTIME_GID="${NEUROCADE_GID:-$(id -g)}"
+PREPARE_TOOLS="${NEUROCADE_PREPARE_TOOLS:-true}"
+STARTUP_TIMEOUT_SECONDS="${NEUROCADE_STARTUP_TIMEOUT_SECONDS:-120}"
+GPU_ARGS=()
+RUNTIME_CONTAINER_ARGS=()
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/run.sh [start|stop|status|logs|pull|build] [options]
+Usage: ./scripts/run.sh [start|stop|status|logs|pull|build|prepare-tools] [options]
 
 Default command is `start`. The script requires Docker only.
 `start` pulls the published image when it is missing; `--build` builds locally.
+`prepare-tools` downloads all catalog workflow images into the persistent SIF directory.
 
 Start options:
   -d, --detach       Run the container in the background.
@@ -58,11 +66,151 @@ pull_image() {
   docker pull "${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}" "$IMAGE"
 }
 
+ensure_app_image() {
+  if ! docker_image_exists; then
+    echo "Image ${IMAGE} was not found; pulling it before start."
+    pull_image
+  elif ! docker_image_matches_platform; then
+    echo "Image ${IMAGE} does not match ${DOCKER_PLATFORM}; pulling the matching image."
+    pull_image
+  fi
+}
+
 truthy() {
   case "${1:-}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+print_access_url() {
+  local message="$1"
+  local url="$2"
+  if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != "dumb" ]]; then
+    printf '\033[1;32m%s \033[1;36m%s\033[0m\n' "$message" "$url"
+  else
+    printf '%s %s\n' "$message" "$url"
+  fi
+}
+
+validate_runtime_settings() {
+  case "$GPU_MODE" in
+    auto|cuda|cpu) ;;
+    *) echo "Invalid NEUROCADE_GPU_MODE=${GPU_MODE}. Expected auto, cuda, or cpu." >&2; exit 2 ;;
+  esac
+  [[ "$RUNTIME_UID" =~ ^[0-9]+$ ]] || { echo "Invalid NEUROCADE_UID=${RUNTIME_UID}." >&2; exit 2; }
+  [[ "$RUNTIME_GID" =~ ^[0-9]+$ ]] || { echo "Invalid NEUROCADE_GID=${RUNTIME_GID}." >&2; exit 2; }
+  [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Invalid NEUROCADE_STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS}. Expected a positive integer." >&2
+    exit 2
+  }
+}
+
+wait_for_backend() {
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if docker exec "$CONTAINER_NAME" python -c \
+      'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/app/healthz", timeout=2).read()' \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "NeuroCade did not become ready within ${STARTUP_TIMEOUT_SECONDS} seconds." >&2
+  docker logs --tail 100 "$CONTAINER_NAME" >&2 || true
+  return 1
+}
+
+ensure_runtime_directories() {
+  mkdir -p \
+    "$HOST_DATA_DIR/output" \
+    "$HOST_DATA_DIR/sif" \
+    "$HOST_DATA_DIR/.neurocade/home" \
+    "$HOST_DATA_DIR/.neurocade/apptainer-cache" \
+    "$HOST_DATA_DIR/.neurocade/apptainer-tmp" \
+    "$NEUROCADE_DB_DIR"
+}
+
+ensure_runtime_ownership() {
+  local marker="$HOST_DATA_DIR/.neurocade/owner-v2-${RUNTIME_UID}-${RUNTIME_GID}"
+  [[ -f "$marker" ]] && return
+  echo "Preparing mounted data for UID ${RUNTIME_UID} and GID ${RUNTIME_GID}."
+  docker run --rm "${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}" \
+    -e "TARGET_UID=$RUNTIME_UID" \
+    -e "TARGET_GID=$RUNTIME_GID" \
+    -v "${HOST_DATA_DIR}:/data" \
+    -v "${NEUROCADE_DB_DIR}:/database" \
+    --entrypoint /bin/sh \
+    "$IMAGE" \
+    -c '
+      chown -R "${TARGET_UID}:${TARGET_GID}" /data/output /data/sif /data/.neurocade /database
+      cp /etc/passwd /data/.neurocade/passwd
+      if ! awk -F: -v uid="${TARGET_UID}" '\''$3 == uid { found=1 } END { exit !found }'\'' /data/.neurocade/passwd; then
+        printf "neurocade-host:x:%s:%s:NeuroCade host user:/data/.neurocade/home:/bin/sh\n" "${TARGET_UID}" "${TARGET_GID}" >> /data/.neurocade/passwd
+      fi
+      cp /etc/group /data/.neurocade/group
+      if ! awk -F: -v gid="${TARGET_GID}" '\''$3 == gid { found=1 } END { exit !found }'\'' /data/.neurocade/group; then
+        printf "neurocade-host:x:%s:\n" "${TARGET_GID}" >> /data/.neurocade/group
+      fi
+      chmod 0644 /data/.neurocade/passwd /data/.neurocade/group
+    '
+  touch "$marker"
+}
+
+runtime_container_args() {
+  RUNTIME_CONTAINER_ARGS=(
+    --privileged
+    --device /dev/fuse
+    --user "${RUNTIME_UID}:${RUNTIME_GID}"
+    -v "${HOST_DATA_DIR}:/data"
+    -v "${NEUROCADE_DB_DIR}:/database"
+    -v "${HOST_DATA_DIR}/.neurocade/passwd:/etc/passwd:ro"
+    -v "${HOST_DATA_DIR}/.neurocade/group:/etc/group:ro"
+    -e HOME=/data/.neurocade/home
+    -e APPTAINER_CACHEDIR=/data/.neurocade/apptainer-cache
+    -e APPTAINER_TMPDIR=/data/.neurocade/apptainer-tmp
+    -e HOST_DATA_DIR=/data
+    -e NEUROCADE_SIF_DIR=/data/sif
+    -e "NEUROCADE_GPU_MODE=${GPU_MODE}"
+    -e DATABASE_URL=sqlite+pysqlite:////database/neurocade.db
+  )
+}
+
+prepare_tool_images() {
+  runtime_container_args
+  docker run --rm "${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}" \
+    "${GPU_ARGS[@]+"${GPU_ARGS[@]}"}" \
+    "${RUNTIME_CONTAINER_ARGS[@]}" \
+    "$IMAGE" \
+    python -m api_service.runtime_tools.prepare_images "$@"
+}
+
+docker_gpu_available() {
+  docker run --rm "${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}" \
+    --gpus all \
+    --entrypoint /bin/sh \
+    "$IMAGE" \
+    -c 'test -c /dev/nvidiactl && command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null && ldconfig -p | grep -q "libcuda.so.1"' \
+    >/dev/null 2>&1
+}
+
+configure_gpu() {
+  GPU_ARGS=()
+  if [[ "$GPU_MODE" == "cpu" ]]; then
+    echo "GPU mode: cpu"
+    return
+  fi
+  if docker_gpu_available; then
+    GPU_ARGS=(--gpus all)
+    echo "GPU mode: cuda (Docker passthrough verified)"
+    return
+  fi
+  if [[ "$GPU_MODE" == "cuda" ]]; then
+    echo "CUDA was requested, but Docker GPU passthrough is unavailable." >&2
+    echo "Install/configure the NVIDIA Container Toolkit or set NEUROCADE_GPU_MODE=cpu." >&2
+    exit 1
+  fi
+  echo "GPU mode: cpu (CUDA passthrough was not detected)"
 }
 
 port_in_use() {
@@ -147,7 +295,7 @@ if not target.exists() or not any(target.rglob("*")):
 
 command="${1:-start}"
 case "$command" in
-  start|stop|status|logs|pull|build)
+  start|stop|status|logs|pull|build|prepare-tools)
     shift || true
     ;;
   -h|--help)
@@ -209,6 +357,14 @@ case "$command" in
   pull)
     pull_image
     ;;
+  prepare-tools)
+    validate_runtime_settings
+    ensure_app_image
+    configure_gpu
+    ensure_runtime_directories
+    ensure_runtime_ownership
+    prepare_tool_images
+    ;;
   stop)
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     ;;
@@ -219,17 +375,14 @@ case "$command" in
     exec docker logs -f "$CONTAINER_NAME"
     ;;
   start)
+    validate_runtime_settings
     display_host="$HTTP_BIND"
     [[ "$display_host" == "0.0.0.0" || "$display_host" == "::" ]] && display_host="localhost"
     if [[ "$build" -eq 1 ]]; then
       echo "Building image ${IMAGE} because --build was provided."
       "$ROOT_DIR/scripts/build_image.sh"
-    elif ! docker_image_exists; then
-      echo "Image ${IMAGE} was not found; pulling it before start."
-      pull_image
-    elif ! docker_image_matches_platform; then
-      echo "Image ${IMAGE} does not match ${DOCKER_PLATFORM}; pulling the matching image."
-      pull_image
+    else
+      ensure_app_image
     fi
     ensure_sample_case
     if docker ps --filter "name=^/${CONTAINER_NAME}$" --filter "status=running" --quiet | grep -q .; then
@@ -238,40 +391,49 @@ case "$command" in
       if [[ "$published_binding" =~ :([0-9]+)$ ]]; then
         running_port="${BASH_REMATCH[1]}"
       fi
-      echo "NeuroCade is already running: http://${display_host}:${running_port}"
+      wait_for_backend
+      print_access_url "NeuroCade is already running:" "http://${display_host}:${running_port}"
       exit 0
     fi
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     select_http_port "$HTTP_PORT"
-    mkdir -p "$HOST_DATA_DIR/output" "$HOST_DATA_DIR/sif" "$NEUROCADE_DB_DIR"
-
-    echo "Starting NeuroCade at http://${display_host}:${HTTP_PORT}"
+    configure_gpu
+    ensure_runtime_directories
+    ensure_runtime_ownership
+    if truthy "$PREPARE_TOOLS"; then
+      prepare_tool_images
+    fi
 
     run_args=(docker run --name "$CONTAINER_NAME")
     run_args+=("${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}")
+    run_args+=("${GPU_ARGS[@]+"${GPU_ARGS[@]}"}")
     if [[ "$detach" -eq 1 ]]; then
       run_args+=(-d --restart unless-stopped)
     else
       run_args+=(--rm)
     fi
+    runtime_container_args
     run_args+=(
-      --privileged
-      --device /dev/fuse
+      "${RUNTIME_CONTAINER_ARGS[@]}"
       --add-host host.docker.internal:host-gateway
       -p "${HTTP_BIND}:${HTTP_PORT}:8000"
-      -v "${HOST_DATA_DIR}:/data"
-      -v "${NEUROCADE_DB_DIR}:/database"
     )
     [[ -d "$SAMPLE_CASE_DIR" ]] && run_args+=(-v "${SAMPLE_CASE_DIR}:/app/sample_case:ro")
     [[ -f "$ENV_FILE" ]] && run_args+=(--env-file "$ENV_FILE")
     run_args+=(
-      -e HOST_DATA_DIR=/data
-      -e NEUROCADE_SIF_DIR=/data/sif
-      -e DATABASE_URL=sqlite+pysqlite:////database/neurocade.db
+      -e "NEUROCADE_ACCESS_URL=http://${display_host}:${HTTP_PORT}"
       -e "NEUROCADE_RUNTIME_BACKEND=${NEUROCADE_RUNTIME_BACKEND:-apptainer}"
       -e "OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       "$IMAGE"
     )
+    if [[ "$detach" -eq 1 ]]; then
+      container_id="$("${run_args[@]}")"
+      [[ -n "$container_id" ]] && printf '%s\n' "$container_id"
+      wait_for_backend
+      print_access_url "NeuroCade is ready at" "http://${display_host}:${HTTP_PORT}"
+      exit 0
+    fi
+    print_access_url "Starting NeuroCade at" "http://${display_host}:${HTTP_PORT}"
     exec "${run_args[@]}"
     ;;
 esac

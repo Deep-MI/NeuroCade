@@ -7,7 +7,7 @@ standalone documentation site is disabled.
 
 Frontend commands run from `client/`:
 
-Node `>=20` and npm `>=11.10.0` are expected.
+Node `^20.19.0`, `^22.13.0`, or `>=24` and npm `>=11.10.0` are expected.
 
 ```bash
 npm install
@@ -30,11 +30,15 @@ source .venv/bin/activate
 alembic -c config/alembic.ini upgrade head
 ```
 
+The current pre-beta schema is a clean baseline and does not upgrade databases
+created by earlier development builds. Reset local application state before
+testing a new baseline with `./scripts/admin/reset_app_state.sh --yes`.
+
 Focused backend/runtime checks:
 
 ```bash
 source .venv/bin/activate
-pytest tests/test_runtime_service_tools.py tests/test_assistant_file_tools.py tests/test_assistant_runtime.py tests/test_app_architecture.py -v
+pytest tests/test_neuroimaging_workflows.py tests/test_monolith_runtime.py tests/test_assistant_file_tools.py tests/test_assistant_runtime.py tests/test_app_architecture.py -v
 ruff check .
 pyright
 ```
@@ -61,9 +65,9 @@ Local Docker checks:
 - Assistant orchestration enters through `api_service.assistant.runtime`.
   Planner coercion, prompts, history persistence, and workspace tool catalog
   logic should stay in dedicated helper modules under `api_service/assistant/`.
-- Workspace batch worker entrypoints enter through `api_service.workspace_batch`.
-  Query, filesystem/mount preparation, and report/artifact synchronization
-  should stay in helper modules beneath that facade.
+- Neuroimaging worker entrypoints enter through
+  `api_service.runtime.neuroimaging_tasks`. Catalog parsing, workflow execution,
+  and artifact indexing stay in focused runtime-tool modules.
 - `CaseWorkspace.tsx` should remain a page/container. Upload, run control,
   polling, navigation, chat notifications, and viewer volume mutations belong in
   hooks or focused child components.
@@ -78,8 +82,7 @@ Local Docker checks:
 - Avoid inline role-set checks in routers.
 - Avoid router-to-router imports and task/worker imports from router modules.
 - Keep unrestricted shell/Python execution out of the web assistant. Container
-  execution should route through approved runtime tools and the on-demand core
-  tool catalog.
+  execution should route through workflows in `config/neuroimaging_tools.yaml`.
 
 ## Assistant Tooling
 
@@ -87,23 +90,71 @@ The web assistant exposes local Pydantic tool schemas from `api-service`.
 
 Contributor-owned tool groups:
 
-- Installed runtime tools: `tool_search`, `tool_call`.
+- Catalog tools: `tool_search`, `tool_inspect`, `tool_call`,
+  `tool_run_status`, `tool_run_cancel`.
 - Workspace tools: `workspace_list_cases`, `workspace_case_file_tree`,
-  `workspace_file_tree`, `workspace_probe_bash`, `workspace_bash`,
-  `workspace_batch_bash`, `workspace_list_batch_runs`,
-  `workspace_cancel_batch_run`.
+  `workspace_file_tree`.
+- Scope-limited text file tools: `read`, `write`, `edit`.
 - Case/runtime tools: `freesurfer_lut`, `read_stats`, `case_file_tree`.
-- Dynamic GUI tools, depending on viewer state: `gui_run_fastsurfer`,
-  `gui_review_segmentation`, `gui_load_volume`, `gui_close_volume`,
-  `gui_select_volume`, `gui_adjust_display`, `gui_move_cursor`,
+- Dynamic GUI tools: `gui_list_layers`, `gui_load_layer`,
+  `gui_set_layer_visibility`, `gui_set_layer_display`, `gui_remove_layer`,
+  `gui_reorder_layer`, `gui_apply_view_preset`, `gui_move_cursor`,
   `gui_focus_label`.
 
 Do not reintroduce MCP server dependencies for assistant tools.
 
+### Assistant Context Contract
+
+At the start of each assistant turn, the runtime resolves its tools, GUI snapshot,
+and workspace summaries, then builds one immutable system-prompt snapshot reused
+for every model/tool round in that turn. Every model call has exactly one system
+message followed by conversation messages and one final response-contract
+message. The system message contains labeled blocks in this order:
+
+1. `<assistant_role>`: complete `config/SOUL.md` content.
+2. `<response_policy>`: the structured-response and evidence rules implemented by
+   the orchestration loop.
+3. `<available_tools>`: every tool currently registered for the request scope,
+   with its description and compact JSON parameter schema.
+4. `<session_context>`: authorization scope, workspace/case identifiers, bounded
+   GUI state, applicable path rules, and bounded workspace case summaries.
+5. `<system_information>`: complete `config/INFORMATION.md` content.
+6. `<operating_rules>`: complete `config/RULES.md` content.
+
+The three prompt files are required and must be non-empty. They are never sliced.
+Keep them concise and put changing capability details in tool descriptions or
+`config/neuroimaging_tools.yaml`, not in static prompt prose.
+
+Context bounds are deliberate and visible to the model:
+
+- GUI context includes at most 50 layers and reports `layer_count` and
+  `layers_omitted`.
+- Workspace context includes at most 50 case summaries and reports `case_count`
+  and `cases_omitted`; the model can call `workspace_list_cases` for the complete
+  current list.
+- Private thread history keeps the newest configured message/character window
+  (`ASSISTANT_HISTORY_MAX_MESSAGES`, `ASSISTANT_HISTORY_MAX_CHARACTERS`) and adds a
+  context notice whenever older material is omitted or compacted.
+- The final request prompt keeps the complete system and response-contract
+  messages, then prioritizes the newest conversation within
+  `ASSISTANT_PROMPT_MAX_CHARACTERS`. Any reduction adds a context notice; a limit
+  too small for the required fixed context fails explicitly instead of slicing it.
+- Individual tool results passed back to the model retain their beginning and end
+  up to 40,000 characters with an omission marker. Tool results stored for UI
+  history retain up to 8,000 characters with the same marker.
+- Current-turn image content is sent as structured multimodal content. Persisted
+  history replaces image data with a text marker rather than storing or replaying
+  the original data URL.
+
+Tool results are converted to user-role messages wrapped in `<tool_output>` and
+explicitly labeled untrusted data. Native user messages remain user messages;
+assistant history remains assistant messages. The final message contains only the
+JSON response contract from `assistant/structured_response.py`.
+
 ## Runtime Tools
 
-The monolith runs in one Docker container. Runtime tools are registered on demand
-from pinned package metadata:
+The monolith runs in one Docker container. Neuroimaging workflows are defined
+authoritatively in `config/neuroimaging_tools.yaml` and loaded on demand:
 
 ```bash
 ./scripts/run.sh status
@@ -116,7 +167,7 @@ Before tagging or publishing a release:
 
 - Confirm the release branch contains only intended changes.
 - Confirm no secrets are committed in `.env`, logs, screenshots, or local data.
-- Review `.env.example` and `.env.local.example`.
+- Review `.env.example`.
 - Confirm `DEPLOYMENT_PROFILE` is one of `local`, `internal`, or `demo`.
 - Confirm `APP_BASE_URL`, `APP_PUBLIC_URL`, and `APP_ALLOWED_HOSTS` match the
   deployed origin.
