@@ -376,7 +376,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         tool={modalAnalysisTool}
         message={controller.queueMessage}
         inputOptions={controller.runInputOptions}
-        defaultInputArtifactId={currentAnalysisInput?.id ?? null}
       />
 
       {controller.showUploadModal && (

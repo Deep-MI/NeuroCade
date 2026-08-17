@@ -263,7 +263,7 @@ export async function createCaseWithUpload(
   workspaceId: string,
   caseName?: string,
   metadata: CaseMetadataInput = {},
-): Promise<{ case_id: string; filename: string; workspace_id: string; title: string }> {
+): Promise<{ case_id: string; filenames: string[]; workspace_id: string; title: string }> {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
   formData.append('workspace_id', workspaceId);
@@ -287,18 +287,17 @@ export async function createCaseWithUpload(
   } else {
     uploadFiles.forEach((file) => formData.append('files', file));
   }
-  const data = await appJson<{ case_id: string; filename: string; workspace_id: string; title: string }>(
+  return appJson<{ case_id: string; filenames: string[]; workspace_id: string; title: string }>(
     '/cases',
     'Upload failed',
     { method: 'POST', body: formData },
   );
-  return { case_id: data.case_id, filename: data.filename, workspace_id: data.workspace_id, title: data.title };
 }
 
 export async function addUploadToCase(
   files: File | File[],
   caseId: string,
-): Promise<{ case_id: string; filename: string; workspace_id: string; title: string }> {
+): Promise<{ case_id: string; filenames: string[]; workspace_id: string; title: string }> {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
   if (uploadFiles.length === 1) {
@@ -306,12 +305,11 @@ export async function addUploadToCase(
   } else {
     uploadFiles.forEach((file) => formData.append('files', file));
   }
-  const data = await appJson<{ case_id: string; filename: string; workspace_id: string; title: string }>(
+  return appJson<{ case_id: string; filenames: string[]; workspace_id: string; title: string }>(
     `/cases/${encodeURIComponent(caseId)}/uploads`,
     'Upload failed',
     { method: 'POST', body: formData },
   );
-  return { case_id: data.case_id, filename: data.filename, workspace_id: data.workspace_id, title: data.title };
 }
 
 export async function cancelCaseRun(caseId: string): Promise<void> {

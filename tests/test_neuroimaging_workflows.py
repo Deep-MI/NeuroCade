@@ -382,22 +382,6 @@ tools:
             """
 version: 1
 tools:
-  - id: ui_workflow
-    image: freesurfer_8.1.0:20260311
-    description: invalid UI contract
-    details: invalid UI contract
-    execution:
-      mode: background
-    ui:
-      run_analysis: true
-    script: echo invalid
-""",
-            "input_artifact_kind",
-        ),
-        (
-            """
-version: 1
-tools:
   - id: typo
     image: freesurfer_8.1.0:20260311
     description: reject unknown fields

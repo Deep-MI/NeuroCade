@@ -327,7 +327,7 @@ class MonitoringIngestResponse(BaseModel):
 class UploadResponse(BaseModel):
     case_id: str
     workspace_id: str
-    filename: str
+    filenames: list[str]
     title: str
 
 

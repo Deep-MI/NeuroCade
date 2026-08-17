@@ -11,7 +11,6 @@ interface ConfirmationModalProps {
   tool: AnalysisToolSummary | null;
   message: string;
   inputOptions: OutputVolume[];
-  defaultInputArtifactId?: string | null;
 }
 
 export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
@@ -21,7 +20,6 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   tool,
   message,
   inputOptions,
-  defaultInputArtifactId = null,
 }) => {
   const [inputArtifactIds, setInputArtifactIds] = useState<string[]>([]);
   const [outputNames, setOutputNames] = useState<Record<string, string>>({});
@@ -30,14 +28,12 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || !tool) return;
-    const fallback = inputOptions.find((option) => option.id === defaultInputArtifactId)?.id
-      ?? inputOptions[0]?.id
-      ?? '';
+    const fallback = inputOptions.length === 1 ? inputOptions[0]?.id ?? '' : '';
     setInputArtifactIds(tool.inputs.map(() => fallback));
     setOutputNames(Object.fromEntries(tool.outputs.map((output) => [output.name, output.name])));
     setError(null);
     setLoading(false);
-  }, [defaultInputArtifactId, inputOptions, isOpen, tool]);
+  }, [inputOptions, isOpen, tool]);
 
   if (!isOpen || !tool) return null;
 
@@ -112,11 +108,16 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               >
                 {inputOptions.length === 0 ? (
                   <option value="">No intensity volumes available</option>
-                ) : inputOptions.map((option) => (
-                  <option key={option.id ?? option.filename} value={option.id ?? ''}>
-                    {layerDisplayName(option)}
-                  </option>
-                ))}
+                ) : (
+                  <>
+                    {inputOptions.length > 1 && <option value="">Choose an input volume</option>}
+                    {inputOptions.map((option) => (
+                      <option key={option.id ?? option.filename} value={option.id ?? ''}>
+                        {layerDisplayName(option)}
+                      </option>
+                    ))}
+                  </>
+                )}
               </select>
             </div>
           ))}

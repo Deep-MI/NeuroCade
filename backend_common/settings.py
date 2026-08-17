@@ -22,7 +22,6 @@ class Settings(BaseSettings):
 
     fs_data_root: Path = Field(default=ROOT_DIR / "neurocade-data", alias="HOST_DATA_DIR")
     sif_dir: Path = Field(default=ROOT_DIR / "neurocade-data" / "sif", alias="NEUROCADE_SIF_DIR")
-    dicom_raw_retention: str = Field(default="discard", alias="DICOM_RAW_RETENTION")
     dicom_conversion_timeout_seconds: int = Field(default=300, alias="DICOM_CONVERSION_TIMEOUT_SECONDS")
     max_upload_file_size_bytes: int = Field(default=2 * 1024 * 1024 * 1024, alias="MAX_UPLOAD_FILE_SIZE_BYTES")
     dicom_zip_max_entries: int = Field(default=5000, alias="DICOM_ZIP_MAX_ENTRIES")

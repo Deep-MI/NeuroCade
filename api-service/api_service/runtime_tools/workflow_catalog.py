@@ -107,15 +107,7 @@ class WorkflowReturn(StrictWorkflowModel):
 class WorkflowUi(StrictWorkflowModel):
     """Optional presentation metadata for the Run Analysis menu."""
 
-    run_analysis: bool = Field(
-        default=False,
-        description="Legacy visibility hint; all workflows are exposed in Run Analysis.",
-    )
     label: str | None = None
-    input_artifact_kind: Literal["intensity_volume"] | None = Field(
-        default=None,
-        description="Set only when run_analysis is true; otherwise omit this field.",
-    )
 
 
 class NeuroimagingWorkflow(StrictWorkflowModel):
@@ -173,12 +165,6 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
             raise ValueError(f"duplicate output name(s): {', '.join(duplicate_outputs)}")
         if duplicate_paths:
             raise ValueError(f"duplicate output path(s): {', '.join(duplicate_paths)}")
-        if self.ui.run_analysis and self.execution.mode != "background":
-            raise ValueError("Run Analysis workflows must use background execution")
-        if self.ui.run_analysis and self.ui.input_artifact_kind != "intensity_volume":
-            raise ValueError("Run Analysis workflows must declare ui.input_artifact_kind: intensity_volume")
-        if not self.ui.run_analysis and self.ui.input_artifact_kind is not None:
-            raise ValueError("ui.input_artifact_kind is only valid for Run Analysis workflows")
         try:
             syntax_check = subprocess.run(
                 ["bash", "-n"],
@@ -452,7 +438,7 @@ def run_analysis_workflows_payload(
             "inputs": [item.model_dump() for item in tool.inputs],
             "outputs": [item.model_dump() for item in tool.outputs],
             "execution": tool.execution.model_dump(),
-            "input_artifact_kind": tool.ui.input_artifact_kind or "intensity_volume",
+            "input_artifact_kind": "intensity_volume",
         }
         for tool in workflows(settings=settings, user_id=user_id)
     ]

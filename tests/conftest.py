@@ -505,7 +505,7 @@ def _build_case_context(workspace: dict, upload_result: dict) -> dict:
         "workspace_name": workspace["name"],
         "case_id": upload_result["case_id"],
         "title": upload_result["title"],
-        "upload_filename": upload_result["filename"],
+        "upload_filename": upload_result["filenames"][0],
         "case_dir": case_dir,
         "loaded_volumes": loaded_volumes,
         "gui_state": {
@@ -513,7 +513,7 @@ def _build_case_context(workspace: dict, upload_result: dict) -> dict:
             "case_id": upload_result["case_id"],
             "is_job_running": False,
             "layers": _gui_layers_for_volumes(loaded_volumes),
-            "current_intensity_volume": upload_result["filename"],
+            "current_intensity_volume": upload_result["filenames"][0],
             "current_intensity_artifact_id": None,
         },
     }
@@ -548,7 +548,7 @@ def build_fresh_uploaded_case(
     )
     if input_artifact is not None:
         context["gui_state"]["current_intensity_artifact_id"] = input_artifact.get("id")
-        context["gui_state"]["current_intensity_volume"] = input_artifact.get("name") or upload_result["filename"]
+        context["gui_state"]["current_intensity_volume"] = input_artifact.get("name") or upload_result["filenames"][0]
     context["runs"] = case_detail.get("runs", [])
     return context
 

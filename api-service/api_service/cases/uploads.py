@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -26,36 +25,6 @@ from backend_common.storage import resolve_artifact_path
 
 DIRECT_VOLUME_SUFFIXES = (".nii.gz", ".nii", ".mgz")
 DICOM_UPLOAD_SUFFIXES = (".dcm", ".dicom", ".ima")
-STRUCTURAL_SERIES_HINTS = (
-    "t1",
-    "t1w",
-    "mprage",
-    "bravo",
-    "spgr",
-    "mp2rage",
-    "tfe",
-    "struct",
-    "anatom",
-)
-NON_STRUCTURAL_SERIES_HINTS = (
-    "localizer",
-    "locator",
-    "scout",
-    "dwi",
-    "diff",
-    "dti",
-    "bold",
-    "fmri",
-    "func",
-    "asl",
-    "fieldmap",
-    "fmap",
-    "adc",
-    "phase",
-    "phasediff",
-    "trace",
-    "fa",
-)
 
 def _require_run_analysis_input_artifact(db: Session, case: Case, artifact_id: str | None) -> Artifact:
     """Return a selected intensity-volume input or raise an API error."""
@@ -236,59 +205,6 @@ def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
                 shutil.copyfileobj(source, output)
 
 
-def _series_metadata_for_volume(volume_path: Path) -> dict:
-    """Read dcm2niix JSON sidecar metadata for a converted volume when present."""
-    sidecar = volume_path.with_suffix("")
-    if volume_path.name.lower().endswith(".nii.gz"):
-        sidecar = volume_path.with_suffix("").with_suffix(".json")
-    elif volume_path.suffix.lower() == ".nii":
-        sidecar = volume_path.with_suffix(".json")
-    if not sidecar.exists():
-        return {}
-    try:
-        return json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _score_converted_volume(volume_path: Path) -> tuple[int, str]:
-    """Score a converted volume by structural MRI metadata hints and filename."""
-    metadata = _series_metadata_for_volume(volume_path)
-    haystack = " ".join(
-        str(value)
-        for key, value in metadata.items()
-        if key.lower() in {"seriesdescription", "protocolname", "sequencename", "imagecomments"}
-    )
-    haystack = f"{haystack} {volume_path.name}".lower()
-    score = 0
-    matched_structural = [hint for hint in STRUCTURAL_SERIES_HINTS if hint in haystack]
-    matched_non_structural = [hint for hint in NON_STRUCTURAL_SERIES_HINTS if hint in haystack]
-    score += 100 * len(matched_structural)
-    score -= 150 * len(matched_non_structural)
-    if "3d" in haystack:
-        score += 20
-    if "sag" in haystack or "sagittal" in haystack:
-        score += 10
-    reason = "structural series hint" if matched_structural else "largest converted volume fallback"
-    if matched_non_structural and not matched_structural:
-        reason = "largest converted volume fallback after non-structural hint penalty"
-    return score, reason
-
-
-def _select_converted_input_volume(volume_paths: list[Path]) -> tuple[Path, str]:
-    """Choose the most likely anatomical input volume from dcm2niix outputs."""
-    if len(volume_paths) == 1:
-        return volume_paths[0], "single converted output"
-    ranked = sorted(
-        volume_paths,
-        key=lambda path: (_score_converted_volume(path)[0], path.stat().st_size, path.name),
-        reverse=True,
-    )
-    selected = ranked[0]
-    _score, reason = _score_converted_volume(selected)
-    return selected, reason
-
-
 def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
     """Convert staged DICOM files with the configured dcm2niix container."""
     command = ["dcm2niix", "-z", "y", "-b", "y", "-ba", "y", "-o", "/output", "-f", "%p_%s", "/input"]
@@ -343,36 +259,6 @@ async def _stage_dicom_sources(upload_files: list[UploadFile], input_dir: Path, 
             shutil.copy2(staged_path, target_path)
 
 
-def _store_raw_dicom_archive(
-    db: Session,
-    case: Case,
-    workspace: Workspace,
-    case_dir: Path,
-    raw_dir: Path,
-) -> Artifact | None:
-    """Persist a ZIP artifact with the original DICOM uploads when retention is enabled."""
-    if settings.dicom_raw_retention.strip().lower() != "archive":
-        return None
-    archive_name = unique_upload_name(case_dir, "raw-dicom.zip")
-    archive_path = case_dir / archive_name
-    shutil.make_archive(str(archive_path.with_suffix("")), "zip", raw_dir)
-    if archive_path.with_suffix(".zip") != archive_path:
-        archive_path = archive_path.with_suffix(".zip")
-    artifact = Artifact(
-        case_id=case.id,
-        workspace_id=workspace.id,
-        kind=ArtifactKind.derived,
-        name=archive_path.name,
-        relative_path=str(archive_path.relative_to(case_dir)),
-        mime_type="application/zip",
-        size_bytes=archive_path.stat().st_size,
-        metadata_json={"source": "dicom-upload", "dicom_raw": True},
-    )
-    db.add(artifact)
-    db.flush()
-    return artifact
-
-
 def _create_volume_artifact(
     db: Session,
     case: Case,
@@ -409,12 +295,12 @@ async def _store_case_upload(
     workspace: Workspace,
     file: UploadFile,
     *,
-    name_primary_after_case: bool,
+    name_after_case: bool,
 ) -> Artifact:
     """Store a direct MRI volume upload and register it as a case artifact."""
     case_dir = ensure_case_storage_layout(settings, case, workspace)
     source_name = file.filename or "upload.nii.gz"
-    stored_name = case_named_upload(case.title, source_name) if name_primary_after_case else _unique_upload_name_for_case(db, case, workspace, case_dir, source_name)
+    stored_name = case_named_upload(case.title, source_name) if name_after_case else _unique_upload_name_for_case(db, case, workspace, case_dir, source_name)
     target_path = case_dir / stored_name
     _size_bytes, mime_type = await _write_upload_file(file, target_path)
     try:
@@ -438,9 +324,7 @@ async def _store_case_dicom_uploads(
     case: Case,
     workspace: Workspace,
     upload_files: list[UploadFile],
-    *,
-    name_primary_after_case: bool,
-) -> Artifact:
+) -> list[Artifact]:
     """Convert DICOM uploads to NIfTI files and register the resulting artifacts."""
     case_dir = ensure_case_storage_layout(settings, case, workspace)
     with tempfile.TemporaryDirectory(prefix="dicom-upload-") as temp_root_name:
@@ -467,19 +351,13 @@ async def _store_case_dicom_uploads(
         if not converted_paths:
             raise HTTPException(status_code=400, detail="DICOM conversion produced no NIfTI volume")
 
-        selected_input, selection_reason = _select_converted_input_volume(converted_paths)
         created_artifacts: list[Artifact] = []
-        selected_artifact: Artifact | None = None
 
         for index, converted_path in enumerate(converted_paths, start=1):
-            is_selected = converted_path == selected_input
-            if is_selected and name_primary_after_case:
-                stored_name = case_named_upload(case.title, converted_path.name)
-            else:
-                stored_name = unique_upload_name(
-                    case_dir,
-                    _safe_storage_filename(converted_path.name, fallback_stem=f"converted-{index}"),
-                )
+            stored_name = unique_upload_name(
+                case_dir,
+                _safe_storage_filename(converted_path.name, fallback_stem=f"converted-{index}"),
+            )
             target_path = case_dir / stored_name
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(converted_path, target_path)
@@ -492,20 +370,12 @@ async def _store_case_dicom_uploads(
                 metadata={
                     "source": "dicom-upload",
                     "dicom_converted": True,
-                    "dicom_selected_input_candidate": is_selected,
-                    "dicom_input_selection_reason": selection_reason if is_selected else None,
                     "original_converted_name": converted_path.name,
                 },
             )
             created_artifacts.append(artifact)
-            if is_selected:
-                selected_artifact = artifact
 
-        _store_raw_dicom_archive(db, case, workspace, case_dir, raw_dir)
-
-    if selected_artifact is not None:
-        return selected_artifact
-    return created_artifacts[0]
+    return created_artifacts
 
 
 async def _store_uploaded_inputs(
@@ -514,8 +384,8 @@ async def _store_uploaded_inputs(
     workspace: Workspace,
     upload_files: list[UploadFile],
     *,
-    name_primary_after_case: bool,
-) -> Artifact:
+    name_after_case: bool,
+) -> list[Artifact]:
     """Route validated uploads to the direct-volume or DICOM conversion storage path."""
     direct_uploads = [upload for upload in upload_files if _is_direct_volume_upload(upload)]
     dicom_uploads = [upload for upload in upload_files if _is_dicom_source_upload(upload)]
@@ -532,17 +402,18 @@ async def _store_uploaded_inputs(
     if direct_uploads and (dicom_uploads or len(upload_files) > 1):
         raise HTTPException(status_code=400, detail="Upload either one MRI volume or a DICOM series, not both")
     if direct_uploads:
-        return await _store_case_upload(
-            db,
-            case,
-            workspace,
-            direct_uploads[0],
-            name_primary_after_case=name_primary_after_case,
-        )
+        return [
+            await _store_case_upload(
+                db,
+                case,
+                workspace,
+                direct_uploads[0],
+                name_after_case=name_after_case,
+            )
+        ]
     return await _store_case_dicom_uploads(
         db,
         case,
         workspace,
         dicom_uploads,
-        name_primary_after_case=name_primary_after_case,
     )

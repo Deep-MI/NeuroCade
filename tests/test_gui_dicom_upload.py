@@ -77,7 +77,7 @@ def _create_workspace(page, name: str) -> dict:
     return result["workspace"]
 
 
-def test_public_head_dicom_zip_upload_converts_and_selects_t1_input_candidate(page, screenshot_dir, public_head_dicom_zip):
+def test_public_head_dicom_zip_upload_converts_all_outputs_and_runs_selected_input(page, screenshot_dir, public_head_dicom_zip):
     workspace = _create_workspace(page, f"dicom-upload-{uuid4().hex[:8]}")
     workspace_id = workspace["id"]
     case_name = f"zenodo-head-dicom-{uuid4().hex[:6]}"
@@ -127,21 +127,18 @@ def test_public_head_dicom_zip_upload_converts_and_selects_t1_input_candidate(pa
     assert artifacts.get("ok"), f"Failed to fetch artifacts for {case_id}: {artifacts}"
 
     uploads = [artifact for artifact in artifacts["artifacts"] if artifact["kind"] == "volume"]
-    selected_input = next((artifact for artifact in uploads if artifact["metadata"].get("dicom_selected_input_candidate")), None)
-
     assert len(uploads) >= 5
-    assert selected_input is not None
-    assert selected_input["name"] == f"{case_name}.nii.gz"
-    assert selected_input["metadata"]["dicom_converted"] is True
-    assert selected_input["metadata"]["dicom_input_selection_reason"] == "structural series hint"
-    assert selected_input["metadata"]["original_converted_name"] == "T1W_FFE_301.nii.gz"
-    assert selected_input["size_bytes"] > 1_000_000
+    assert all(artifact["metadata"]["dicom_converted"] is True for artifact in uploads)
+    assert all("dicom_selected_input_candidate" not in artifact["metadata"] for artifact in uploads)
+    t1_input = next(artifact for artifact in uploads if artifact["metadata"]["original_converted_name"] == "T1W_FFE_301.nii.gz")
+    assert t1_input["size_bytes"] > 1_000_000
 
     with page.expect_response(
         lambda response: response.request.method == "POST" and "/api/app/runs" in response.url,
         timeout=120_000,
     ) as run_response:
         page.click("button:has-text('Run FastSurfer Analysis')")
+        page.locator("select").select_option(label=t1_input["name"])
         page.click("button:has-text('Begin Run')")
     run_result = run_response.value
     assert run_result.ok, f"FastSurfer run start failed with {run_result.status}: {run_result.text()}"

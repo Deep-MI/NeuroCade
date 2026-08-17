@@ -95,15 +95,15 @@ async def create_case_from_upload(
     try:
         db.flush()
         ensure_case_storage_layout(settings, case, workspace)
-        artifact = await _store_uploaded_inputs(db, case, workspace, upload_files, name_primary_after_case=True)
+        artifacts = await _store_uploaded_inputs(db, case, workspace, upload_files, name_after_case=True)
         record_case_event(
             db,
             case,
             "case.uploaded",
             user_id=context.user.id,
-            artifact_id=artifact.id,
+            artifact_id=artifacts[0].id if len(artifacts) == 1 else None,
             details={
-                "filename": artifact.name,
+                "filenames": [artifact.name for artifact in artifacts],
                 "source_filename": original_filename,
                 "upload_count": len(upload_files),
             },
@@ -121,7 +121,12 @@ async def create_case_from_upload(
         delete_case_storage(settings, case, workspace)
         raise
     log_event(db, context, "artifact.uploaded", case_id=case.id, details={"filename": original_filename})
-    return UploadResponse(case_id=case.id, workspace_id=workspace.id, filename=artifact.name, title=case.title)
+    return UploadResponse(
+        case_id=case.id,
+        workspace_id=workspace.id,
+        filenames=[artifact.name for artifact in artifacts],
+        title=case.title,
+    )
 
 
 async def add_upload_to_case(
@@ -141,15 +146,15 @@ async def add_upload_to_case(
     upload_files = _collect_upload_files(file, files)
     original_filename = _upload_filename(upload_files[0])
     try:
-        artifact = await _store_uploaded_inputs(db, case, workspace, upload_files, name_primary_after_case=False)
+        artifacts = await _store_uploaded_inputs(db, case, workspace, upload_files, name_after_case=False)
         record_case_event(
             db,
             case,
             "case.uploaded",
             user_id=context.user.id,
-            artifact_id=artifact.id,
+            artifact_id=artifacts[0].id if len(artifacts) == 1 else None,
             details={
-                "filename": artifact.name,
+                "filenames": [artifact.name for artifact in artifacts],
                 "source_filename": original_filename,
                 "upload_count": len(upload_files),
                 "added_to_case": True,
@@ -158,11 +163,16 @@ async def add_upload_to_case(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        if "artifact" in locals():
+        for artifact in locals().get("artifacts", []):
             resolve_artifact_path(artifact).unlink(missing_ok=True)
         raise_case_conflict(exc, "Case upload conflicts with another update. Please retry.")
     log_event(db, context, "artifact.uploaded", case_id=case.id, details={"filename": original_filename})
-    return UploadResponse(case_id=case.id, workspace_id=workspace.id, filename=artifact.name, title=case.title)
+    return UploadResponse(
+        case_id=case.id,
+        workspace_id=workspace.id,
+        filenames=[artifact.name for artifact in artifacts],
+        title=case.title,
+    )
 
 
 def _safe_generated_volume_name(filename: str) -> str:

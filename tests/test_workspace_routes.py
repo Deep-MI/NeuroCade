@@ -406,10 +406,10 @@ def test_create_case_with_upload_uses_explicit_title(seeded_context, monkeypatch
     assert created_case.id == response.case_id
     assert created_case.title == "chosen-name"
     assert response.title == "chosen-name"
-    assert response.filename == "chosen-name.nii.gz"
+    assert response.filenames == ["chosen-name.nii.gz"]
     assert upload_artifact.metadata_json["volume_role"] == "intensity"
     assert upload_event.artifact_id == upload_artifact.id
-    assert upload_event.details_json["filename"] == "chosen-name.nii.gz"
+    assert upload_event.details_json["filenames"] == ["chosen-name.nii.gz"]
     assert db_session.query(Run).filter(Run.case_id == created_case.id).count() == 0
     stored_path = resolve_artifact_path(upload_artifact)
     assert gzip.decompress(stored_path.read_bytes()) == b"test-bytes"
@@ -441,7 +441,7 @@ def test_create_case_with_valid_gzipped_nifti_upload(seeded_context, monkeypatch
     )
 
     assert db_session.get(Case, response.case_id) is not None
-    assert response.filename == "nifti-case.nii.gz"
+    assert response.filenames == ["nifti-case.nii.gz"]
     assert artifact.name == "nifti-case.nii.gz"
     assert resolve_artifact_path(artifact).exists()
 
@@ -568,18 +568,17 @@ def test_add_case_upload_skips_missing_artifact_filename_collision(seeded_contex
         )
     )
 
-    assert response.filename == "scan-2.mgz"
+    assert response.filenames == ["scan-2.mgz"]
     assert not (fs_root / stale_rel).exists()
     assert (case_dir / "scan-2.mgz").exists()
 
 
-def test_create_case_with_dicom_upload_converts_all_outputs_and_marks_structural_input_candidate(seeded_context, monkeypatch, tmp_path):
+def test_create_case_with_dicom_upload_keeps_all_outputs_without_selecting_an_input(seeded_context, monkeypatch, tmp_path):
     db_session, context, workspace = seeded_context
     fs_root = tmp_path / "neurocade-data"
     outputs_dir = fs_root / "output"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
-    monkeypatch.setattr(cases_module.settings, "dicom_raw_retention", "discard")
     monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
 
     def fake_dcm2niix(_input_dir, output_dir):
@@ -610,50 +609,13 @@ def test_create_case_with_dicom_upload_converts_all_outputs_and_marks_structural
         .order_by(Artifact.name.asc())
         .all()
     )
-    selected_input = next(artifact for artifact in artifacts if artifact.metadata_json.get("dicom_selected_input_candidate") is True)
-
-    assert response.filename == "dicom-case.nii.gz"
+    assert response.filenames == ["localizer-1.nii.gz", "mprage-2.nii.gz"]
     assert len(artifacts) == 2
-    assert selected_input.name == "dicom-case.nii.gz"
-    assert selected_input.metadata_json["dicom_converted"] is True
-    assert selected_input.metadata_json["dicom_input_selection_reason"] == "structural series hint"
-    assert resolve_artifact_path(selected_input).read_bytes() == b"structural-volume"
+    assert [artifact.name for artifact in artifacts] == ["localizer-1.nii.gz", "mprage-2.nii.gz"]
+    assert all(artifact.metadata_json["dicom_converted"] is True for artifact in artifacts)
+    assert all("dicom_selected_input_candidate" not in artifact.metadata_json for artifact in artifacts)
+    assert all("dicom_input_selection_reason" not in artifact.metadata_json for artifact in artifacts)
     assert all(resolve_artifact_path(artifact).exists() for artifact in artifacts)
-
-
-def test_dicom_upload_can_archive_raw_sources_when_configured(seeded_context, monkeypatch, tmp_path):
-    db_session, context, workspace = seeded_context
-    fs_root = tmp_path / "neurocade-data"
-    outputs_dir = fs_root / "output"
-    outputs_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
-    monkeypatch.setattr(cases_module.settings, "dicom_raw_retention", "archive")
-    monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
-
-    def fake_dcm2niix(_input_dir, output_dir):
-        (output_dir / "t1_1.nii.gz").write_bytes(b"converted")
-        (output_dir / "t1_1.json").write_text('{"SeriesDescription": "T1w"}', encoding="utf-8")
-
-    monkeypatch.setattr("api_service.cases.uploads._run_dcm2niix", fake_dcm2niix)
-
-    response = asyncio.run(
-        create_case_with_upload(
-            workspace_id=workspace.id,
-            title="raw-archive-case",
-            file=UploadFile(filename="IM-0001.dcm", file=BytesIO(b"dicom")),
-            db=db_session,
-            context=context,
-        )
-    )
-
-    raw_artifact = (
-        db_session.query(Artifact)
-        .filter(Artifact.case_id == response.case_id, Artifact.kind == ArtifactKind.derived)
-        .one()
-    )
-    assert raw_artifact.name == "raw-dicom.zip"
-    assert raw_artifact.metadata_json["dicom_raw"] is True
-    assert resolve_artifact_path(raw_artifact).exists()
 
 
 def test_dicom_zip_upload_is_extracted_before_conversion(seeded_context, monkeypatch, tmp_path):
@@ -662,7 +624,6 @@ def test_dicom_zip_upload_is_extracted_before_conversion(seeded_context, monkeyp
     outputs_dir = fs_root / "output"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
-    monkeypatch.setattr(cases_module.settings, "dicom_raw_retention", "discard")
     monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
 
     zip_buffer = BytesIO()
@@ -687,7 +648,7 @@ def test_dicom_zip_upload_is_extracted_before_conversion(seeded_context, monkeyp
         )
     )
 
-    assert response.filename == "zip-dicom-case.nii.gz"
+    assert response.filenames == ["t1-1.nii.gz"]
 
 
 def test_deleted_case_title_can_be_reused(seeded_context, monkeypatch, tmp_path):
@@ -852,7 +813,7 @@ def test_add_case_upload_preserves_existing_case_outputs(seeded_context, monkeyp
     assert db_session.query(Case).count() == 1
     assert response.case_id == case.id
     assert response.title == case.title
-    assert response.filename == "replacement.nii.gz"
+    assert response.filenames == ["replacement.nii.gz"]
     assert [artifact.name for artifact in input_artifacts] == ["existing-case.mgz", "replacement.nii.gz"]
     assert (case_upload_dir / "existing-case.mgz").read_bytes() == b"old-bytes"
     assert gzip.decompress((case_upload_dir / "replacement.nii.gz").read_bytes()) == b"new-bytes"
@@ -1163,7 +1124,7 @@ def test_add_case_upload_uses_unique_filename_for_duplicates(seeded_context, mon
         .all()
     }
 
-    assert response.filename == "replacement-2.nii.gz"
+    assert response.filenames == ["replacement-2.nii.gz"]
     assert upload_artifact is not None
     assert upload_artifact_names == {"replacement.nii.gz", "replacement-2.nii.gz"}
     assert gzip.decompress((case_upload_dir / "replacement-2.nii.gz").read_bytes()) == b"new-bytes"
