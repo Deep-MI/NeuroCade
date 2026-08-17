@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service.assistant import runtime as assistant_runtime_module  # noqa: E402
 from api_service.assistant.prompts import build_model_messages, build_system_prompt, load_text  # noqa: E402
 from api_service.assistant.runtime import AssistantRuntime  # noqa: E402
+from api_service.assistant.tools import catalog_tools as catalog_tools_module  # noqa: E402
 from api_service.assistant.tools import probe_tools as probe_tools_module  # noqa: E402
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk  # noqa: E402
 from api_service.runtime import workflow_runs as workflow_runs_module  # noqa: E402
@@ -556,6 +557,7 @@ def test_catalog_tool_call_returns_background_run_immediately(monkeypatch, seede
 
     from api_service.assistant.tools import catalog_execution as catalog_execution_module
 
+    monkeypatch.setattr(catalog_tools_module, "resolve_or_prepare_image", lambda image, **_kwargs: image)
     monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
     monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
@@ -745,6 +747,7 @@ def test_catalog_tool_call_does_not_wait_for_background_failure(
 
     from api_service.assistant.tools import catalog_execution as catalog_execution_module
 
+    monkeypatch.setattr(catalog_tools_module, "resolve_or_prepare_image", lambda image, **_kwargs: image)
     monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
     monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
@@ -839,6 +842,7 @@ def test_case_catalog_tool_call_passes_case_to_worker(monkeypatch, seeded_contex
 
     from api_service.assistant.tools import catalog_execution as catalog_execution_module
 
+    monkeypatch.setattr(catalog_tools_module, "resolve_or_prepare_image", lambda image, **_kwargs: image)
     monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
     monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
