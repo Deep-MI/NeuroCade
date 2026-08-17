@@ -62,7 +62,6 @@ class Settings(BaseSettings):
     llm_provider_default: str = Field(default="openai-compatible", alias="LLM_PROVIDER_DEFAULT")
     llm_chat_model: str | None = Field(default=None, alias="LLM_CHAT_MODEL")
     llm_disable_thinking: bool = Field(default=True, alias="LLM_DISABLE_THINKING")
-    llm_tool_call_mode: str = Field(default="auto", alias="LLM_TOOL_CALL_MODE")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     anthropic_model: str | None = Field(default=None, alias="ANTHROPIC_MODEL")
     google_api_key: str | None = Field(default=None, alias="GOOGLE_API_KEY")

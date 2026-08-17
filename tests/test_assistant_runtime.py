@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.assistant import runtime as assistant_runtime_module  # noqa: E402
-from api_service.assistant.prompts import build_structured_response_messages, build_system_prompt, load_text  # noqa: E402
+from api_service.assistant.prompts import build_model_messages, build_system_prompt, load_text  # noqa: E402
 from api_service.assistant.runtime import AssistantRuntime  # noqa: E402
 from api_service.assistant.tools import probe_tools as probe_tools_module  # noqa: E402
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk  # noqa: E402
@@ -50,15 +50,37 @@ def write_prompt_config(path: Path, *, information: str = "System information") 
 
 
 class FakeModel:
-    """Stub chat model that returns queued JSON or text responses."""
+    """Stub chat model that returns queued native provider responses."""
 
     def __init__(self, responses: Sequence[dict | str]):
         self._responses = list(responses)
+        self._call_index = 0
+
+    def bind_tools(self, _tools):
+        return self
 
     async def ainvoke(self, _messages):
         payload = self._responses.pop(0)
         if isinstance(payload, str):
             return AIMessage(content=payload)
+        reasoning = payload.get("reasoning")
+        additional_kwargs = {"reasoning_content": reasoning} if reasoning else {}
+        if payload.get("kind") == "final":
+            return AIMessage(content=payload.get("content", ""), additional_kwargs=additional_kwargs)
+        if payload.get("kind") == "tool_calls":
+            tool_calls = []
+            for call in payload.get("tool_calls", []):
+                self._call_index += 1
+                tool_calls.append({
+                    "id": f"call-{self._call_index}",
+                    "name": call["name"],
+                    "args": call.get("arguments", {}),
+                })
+            return AIMessage(
+                content=payload.get("message", ""),
+                tool_calls=tool_calls,
+                additional_kwargs=additional_kwargs,
+            )
         return AIMessage(content=json.dumps(payload))
 
 
@@ -899,14 +921,13 @@ def test_catalog_tool_call_rejects_unprepared_image_before_creating_run(monkeypa
 
 def test_run_chat_handles_round_limit(monkeypatch):
     class ToolLoopModel:
+        def bind_tools(self, _tools):
+            return self
+
         async def ainvoke(self, _messages):
             return AIMessage(
-                content=json.dumps(
-                    {
-                        "kind": "tool_calls",
-                        "tool_calls": [{"name": "read_stats", "arguments": {"case_id": "ext-case-1"}}],
-                    }
-                )
+                content="",
+                tool_calls=[{"id": "call-loop", "name": "read_stats", "args": {"case_id": "ext-case-1"}}],
             )
 
     monkeypatch.setattr(provider_module.provider_registry, "build_chat_model", lambda *args, **kwargs: ToolLoopModel())
@@ -937,11 +958,14 @@ def test_failed_turn_persists_completed_tool_evidence(monkeypatch, seeded_contex
     db_session, context, workspace, case_a, _case_b = seeded_context
 
     class ToolLoopModel:
+        def bind_tools(self, _tools):
+            return self
+
         async def ainvoke(self, _messages):
-            return AIMessage(content=json.dumps({
-                "kind": "tool_calls",
-                "tool_calls": [{"name": "read_stats", "arguments": {"label_query": "BrainSegVol"}}],
-            }))
+            return AIMessage(
+                content="",
+                tool_calls=[{"id": "call-loop", "name": "read_stats", "args": {"label_query": "BrainSegVol"}}],
+            )
 
     monkeypatch.setattr(provider_module.provider_registry, "build_chat_model", lambda *args, **kwargs: ToolLoopModel())
     monkeypatch.setattr(assistant_runtime_module.settings, "assistant_max_rounds", 1)
@@ -1158,9 +1182,9 @@ def test_prompt_budget_rejects_limit_that_cannot_hold_required_context(monkeypat
         runtime.loop._bounded_messages(messages)
 
 
-def test_structured_messages_preserve_current_user_images():
+def test_model_messages_preserve_current_user_images():
     image = "data:image/png;base64,AAAA"
-    messages = build_structured_response_messages(
+    messages = build_model_messages(
         "system",
         [{
             "role": "user",
@@ -1843,54 +1867,6 @@ def test_workspace_list_cases_tool_uses_filesystem_names(monkeypatch, seeded_con
     assert all(entry["workspace_path"].startswith("/workspace/cases/") for entry in parsed)
 
 
-def test_build_structured_response_messages_keeps_only_the_initial_system_message():
-    messages = build_structured_response_messages(
-        "system prompt",
-        [
-            {"role": "user", "content": "List structural images."},
-            {"role": "system", "content": "[Tool result] workspace_list_cases: []"},
-            {"role": "assistant", "content": '{"kind":"tool_calls","tool_calls":[]}'},
-        ],
-    )
-
-    assert isinstance(messages[0], SystemMessage)
-    assert isinstance(messages[1], HumanMessage)
-    assert isinstance(messages[2], HumanMessage)
-    assert isinstance(messages[3], AIMessage)
-
-
-def test_run_chat_repairs_non_json_structured_response(monkeypatch):
-    fake_model = FakeModel(
-        [
-            {"not_valid": "structured_response"},
-            {
-                "kind": "final",
-                "reasoning": "Repairing the structured response output.",
-                "content": "ready",
-            },
-        ]
-    )
-    monkeypatch.setattr(provider_module.provider_registry, "build_chat_model", lambda *args, **kwargs: fake_model)
-    runtime = AssistantRuntime(FakeGuiRuntime())
-
-    payload = asyncio.run(
-        runtime.run_chat(
-            db=None,
-            context=None,
-            messages=[{"role": "user", "content": "Reply with the single word ready."}],
-            workspace_id=None,
-            case_id=None,
-            gui_session_id="gui-test",
-            scope="workspace",
-            provider=None,
-            model=None,
-            persist=False,
-        )
-    )
-
-    assert payload["message"]["content"] == "ready"
-
-
 def test_run_chat_allows_final_answer_after_last_tool_round(monkeypatch):
     fake_model = FakeModel(
         [
@@ -1931,78 +1907,32 @@ def test_run_chat_allows_final_answer_after_last_tool_round(monkeypatch):
     assert len(payload["tool_calls_log"]) == 5
 
 
-def test_run_chat_repairs_empty_final_response(monkeypatch):
-    fake_model = FakeModel(
-        [
-            {"kind": "final", "reasoning": "I know what to do next.", "content": ""},
-            {
-                "kind": "final",
-                "reasoning": "The previous response was empty.",
-                "content": "I could not complete the tool step, but I can explain what happened.",
-            },
-        ]
-    )
+def test_run_chat_rejects_empty_native_response(monkeypatch):
+    fake_model = FakeModel([{"kind": "final", "content": ""}])
     monkeypatch.setattr(provider_module.provider_registry, "build_chat_model", lambda *args, **kwargs: fake_model)
     runtime = AssistantRuntime(FakeGuiRuntime())
 
-    payload = asyncio.run(
-        runtime.run_chat(
-            db=None,
-            context=None,
-            messages=[{"role": "user", "content": "Explain the failed tool call."}],
-            workspace_id=None,
-            case_id=None,
-            gui_session_id="gui-test",
-            scope="case",
-            provider=None,
-            model=None,
-            persist=False,
+    with pytest.raises(HTTPException, match="neither content nor a tool call"):
+        asyncio.run(
+            runtime.run_chat(
+                db=None,
+                context=None,
+                messages=[{"role": "user", "content": "Explain the failed tool call."}],
+                workspace_id=None,
+                case_id=None,
+                gui_session_id="gui-test",
+                scope="case",
+                provider=None,
+                model=None,
+                persist=False,
+            )
         )
-    )
-
-    assert payload["message"]["content"] == "I could not complete the tool step, but I can explain what happened."
 
 
-def test_run_chat_repairs_empty_tool_call_list(monkeypatch):
-    fake_model = FakeModel(
-        [
-            {"kind": "tool_calls", "reasoning": "I should use a tool.", "tool_calls": []},
-            {"kind": "tool_calls", "reasoning": "Now I will use the tool.", "tool_calls": [{"name": "read_stats", "arguments": {}}]},
-            {"kind": "final", "reasoning": "Tool execution completed.", "content": "done"},
-        ]
-    )
-    monkeypatch.setattr(provider_module.provider_registry, "build_chat_model", lambda *args, **kwargs: fake_model)
-    runtime = AssistantRuntime(FakeGuiRuntime())
-
-    payload = asyncio.run(
-        runtime.run_chat(
-            db=None,
-            context=None,
-            messages=[{"role": "user", "content": "Read stats."}],
-            workspace_id=None,
-            case_id=None,
-            gui_session_id="gui-test",
-            scope="case",
-            provider=None,
-            model=None,
-            persist=False,
-        )
-    )
-
-    assert payload["message"]["content"] == "done"
-    assert len(payload["tool_calls_log"]) == 1
-
-
-def test_run_chat_rejects_plain_text_when_repair_still_is_not_json(monkeypatch):
+def test_run_chat_requires_native_tool_binding(monkeypatch):
     class PlainTextModel:
-        def __init__(self) -> None:
-            self.calls = 0
-
         async def ainvoke(self, _messages):
-            self.calls += 1
-            if self.calls == 1:
-                return AIMessage(content="Thinking Process:\n\n1. Consider the request.\n\nready")
-            return AIMessage(content="still not json")
+            return AIMessage(content="ready")
 
     fake_model = PlainTextModel()
     monkeypatch.setattr(provider_module.provider_registry, "build_chat_model", lambda *args, **kwargs: fake_model)
@@ -2025,7 +1955,7 @@ def test_run_chat_rejects_plain_text_when_repair_still_is_not_json(monkeypatch):
         )
 
     assert excinfo.value.status_code == 502
-    assert excinfo.value.detail == "Assistant model did not return a usable JSON response"
+    assert excinfo.value.detail == "Configured model does not support native tool calling"
 
 
 def test_run_chat_reports_unconfigured_provider_before_model_call(monkeypatch):

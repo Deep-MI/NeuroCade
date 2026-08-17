@@ -9,7 +9,6 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from api_service.assistant.structured_response import RESPONSE_INSTRUCTION
 from backend_common.db import AssistantScope
 
 MAX_PROMPT_LAYERS = 50
@@ -77,8 +76,6 @@ def render_untrusted_tool_output(name: str, content: str) -> str:
 def build_model_messages(
     system_prompt: str,
     conversation: list[dict[str, Any]],
-    *,
-    native_tool_calling: bool,
 ) -> list[BaseMessage]:
     """Convert persisted conversation data into provider-facing messages.
 
@@ -92,8 +89,7 @@ def build_model_messages(
     Returns
     -------
     list[BaseMessage]
-        Native tool messages when supported, otherwise messages ending with the
-        compatibility JSON response contract.
+        Native provider messages for the configured conversation.
     """
     messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
     for item in conversation:
@@ -106,13 +102,13 @@ def build_model_messages(
         if not text and not item.get("tool_calls"):
             continue
         if role == "assistant":
-            tool_calls = item.get("tool_calls") if native_tool_calling else None
+            tool_calls = item.get("tool_calls")
             messages.append(AIMessage(content=text, tool_calls=tool_calls or []))
         elif role == "tool":
             call_id = item.get("call_id")
             tool_name = str(item.get("name") or "tool")
             untrusted_output = render_untrusted_tool_output(tool_name, text)
-            if native_tool_calling and isinstance(call_id, str) and call_id:
+            if isinstance(call_id, str) and call_id:
                 messages.append(
                     ToolMessage(
                         content=untrusted_output,
@@ -127,14 +123,7 @@ def build_model_messages(
             # Keep the canonical assistant instruction as the only system message and feed
             # tool results / other context back as ordinary follow-up turns.
             messages.append(HumanMessage(content=text))
-    if not native_tool_calling:
-        messages.append(HumanMessage(content=RESPONSE_INSTRUCTION))
     return messages
-
-
-def build_structured_response_messages(system_prompt: str, conversation: list[dict[str, Any]]) -> list[BaseMessage]:
-    """Build messages for the prompted-JSON compatibility protocol."""
-    return build_model_messages(system_prompt, conversation, native_tool_calling=False)
 
 
 def prompt_gui_state(gui_state: Mapping[str, Any]) -> dict[str, Any]:
@@ -218,20 +207,9 @@ def build_system_prompt(
     rules = load_text(config_dir / "RULES.md")
     scope = state["scope"]
     tool_blocks = []
-    tool_names = set()
-    native_tool_calling = bool(getattr(state.get("provider_config"), "native_tool_calling", False))
     for tool in state.get("tool_specs", []):
         function = tool.get("function", {})
-        name = str(function.get("name") or "")
-        if name:
-            tool_names.add(name)
-        block = f"- {function.get('name')}: {function.get('description', '')}"
-        if not native_tool_calling:
-            block += (
-                "\n  Parameters JSON schema: "
-                + json.dumps(function.get("parameters", {}), ensure_ascii=True, separators=(",", ":"))
-            )
-        tool_blocks.append(block)
+        tool_blocks.append(f"- {function.get('name')}: {function.get('description', '')}")
     session_lines = [
         f"Scope: {scope}",
         f"Workspace ID: {state.get('workspace_id')}",
@@ -312,12 +290,8 @@ def build_system_prompt(
         (
             "response_policy",
             "Use available tools instead of describing commands manually. "
-            + (
-                "Call tools through the provider tool interface when needed; otherwise answer the user directly. "
-                if native_tool_calling
-                else "If the task requires a tool, respond with JSON tool_calls. If not, respond with JSON final content. "
-            )
-            + "When continuing after a recoverable tool issue, include a concise user-facing progress update.\n"
+            "Call tools through the provider tool interface when needed; otherwise answer the user directly. "
+            "When continuing after a recoverable tool issue, include a concise user-facing progress update.\n"
             + UNTRUSTED_TOOL_OUTPUT_POLICY
             + "\n"
             "Evidence rule: base factual claims on visible tool evidence. If a result says it is truncated or omits a range, "

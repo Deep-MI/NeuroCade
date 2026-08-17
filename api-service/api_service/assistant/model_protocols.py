@@ -1,22 +1,10 @@
-"""Provider response adapters used by the assistant model driver.
-
-Native provider tool calls and the prompted-JSON compatibility protocol are
-kept separate so fallback parsing cannot leak into normal tool execution.
-"""
+"""Native provider response adapter used by the assistant model driver."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
-
-from langchain_core.messages import BaseMessage
-
-from api_service.assistant.structured_response import (
-    FinalResponse,
-    ToolCallsResponse,
-    coerce_structured_response,
-)
 
 
 def response_text(response: Any) -> str:
@@ -62,31 +50,5 @@ class NativeToolProtocol:
             assistant_message=text.strip()[:4000] or None,
             reasoning=str(reasoning) if reasoning else None,
             usage=dict(usage) if isinstance(usage, dict) else None,
-            raw_text=text,
-        )
-
-
-class PromptedJsonToolProtocol:
-    """Decode the legacy prompted-JSON envelope, including one repair pass."""
-
-    @staticmethod
-    async def parse(
-        model: Any,
-        messages: list[BaseMessage],
-        response: Any,
-    ) -> ModelProtocolResult:
-        text = response_text(response)
-        parsed = await coerce_structured_response(model, messages, text)
-        if isinstance(parsed, FinalResponse):
-            return ModelProtocolResult(
-                final_content=parsed.content,
-                reasoning=parsed.reasoning,
-                raw_text=text,
-            )
-        assert isinstance(parsed, ToolCallsResponse)
-        return ModelProtocolResult(
-            calls=[{"call_id": str(uuid4()), **call.model_dump()} for call in parsed.tool_calls],
-            assistant_message=parsed.message.strip()[:4000] if parsed.message else None,
-            reasoning=parsed.reasoning,
             raw_text=text,
         )

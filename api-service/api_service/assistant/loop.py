@@ -1,7 +1,7 @@
 """Assistant model and tool orchestration loop.
 
 This module owns the assistant turn state machine. It builds the available
-tools, calls the configured chat model for structured JSON responses, executes
+tools, calls the configured chat model with native tool definitions, executes
 requested tools, appends tool results back into the conversation, emits optional
 streaming events, and stops when a final response or terminal error is reached.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,7 @@ from langchain_core.messages import BaseMessage
 from sqlalchemy.orm import Session
 
 from api_service.assistant.context_budget import ContextBudgeter, message_text, message_tokens
-from api_service.assistant.model_protocols import NativeToolProtocol, PromptedJsonToolProtocol, response_text
+from api_service.assistant.model_protocols import NativeToolProtocol, response_text
 from api_service.assistant.prompts import build_model_messages, build_system_prompt
 from api_service.assistant.tool_execution_store import AssistantToolExecutionStore
 from api_service.assistant.tool_executor import AssistantToolExecutor
@@ -106,7 +105,7 @@ class AssistantLoop:
         return bool(state.get("error") or state.get("final_response") is not None)
 
     async def _model_turn(self, state: AssistantState) -> dict[str, Any]:
-        """Call the model through native tools or the compatibility JSON path."""
+        """Call a model that supports native provider tool calls."""
         provider_config = state["provider_config"]
         request_id = state.get("diagnostic_request_id")
         round_number = state["round_count"] + 1
@@ -114,33 +113,22 @@ class AssistantLoop:
             provider_override=provider_config.provider,
             model_override=provider_config.model,
         )
-        native_tool_calling = bool(provider_config.native_tool_calling and hasattr(model, "bind_tools"))
-        if settings.llm_tool_call_mode.strip().lower() == "native" and not native_tool_calling:
+        if not hasattr(model, "bind_tools"):
             raise HTTPException(status_code=502, detail="Configured model does not support native tool calling")
-        system_prompt = state["system_prompt"]
-        if provider_config.native_tool_calling and not native_tool_calling:
-            fallback_config = replace(provider_config, native_tool_calling=False)
-            state["provider_config"] = fallback_config
-            system_prompt = build_system_prompt(
-                self.config_dir,
-                {**state, "provider_config": fallback_config},
-            )
-            state["system_prompt"] = system_prompt
         model_messages = self._bounded_messages(
             build_model_messages(
-                system_prompt,
+                state["system_prompt"],
                 state.get("conversation", []),
-                native_tool_calling=native_tool_calling,
             )
         )
-        invocation_model = model.bind_tools(state["tool_specs"]) if native_tool_calling else model
+        invocation_model = model.bind_tools(state["tool_specs"])
         prompt_chars = sum(len(message_text(message)) for message in model_messages)
         prompt_tokens = sum(message_tokens(message) for message in model_messages)
         started_at = time.monotonic()
         logger.info(
             (
                 "assistant.model_call.started request_id=%s round=%s provider=%s model=%s "
-                "message_count=%s prompt_chars=%s prompt_tokens=%s native_tools=%s"
+                "message_count=%s prompt_chars=%s prompt_tokens=%s"
             ),
             request_id,
             round_number,
@@ -149,7 +137,6 @@ class AssistantLoop:
             len(model_messages),
             prompt_chars,
             prompt_tokens,
-            native_tool_calling,
         )
         try:
             response = await self._invoke_model(invocation_model, model_messages, state, round_number)
@@ -157,118 +144,51 @@ class AssistantLoop:
             elapsed_ms = int((time.monotonic() - started_at) * 1000)
             logger.warning("assistant.model_call.cancelled request_id=%s round=%s elapsed_ms=%s", request_id, round_number, elapsed_ms)
             raise
-        except Exception as exc:
-            if native_tool_calling and settings.llm_tool_call_mode.strip().lower() == "auto":
-                logger.warning(
-                    "assistant.model_call.native_tools_fallback request_id=%s round=%s error=%s",
-                    request_id,
-                    round_number,
-                    exc,
-                )
-                native_tool_calling = False
-                fallback_config = replace(provider_config, native_tool_calling=False)
-                fallback_prompt = build_system_prompt(
-                    self.config_dir,
-                    {**state, "provider_config": fallback_config},
-                )
-                state["provider_config"] = fallback_config
-                state["system_prompt"] = fallback_prompt
-                model_messages = self._bounded_messages(
-                    build_model_messages(
-                        fallback_prompt,
-                        state.get("conversation", []),
-                        native_tool_calling=False,
-                    )
-                )
-                response = await model.ainvoke(model_messages)
-            else:
-                elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                logger.exception("assistant.model_call.failed request_id=%s round=%s elapsed_ms=%s", request_id, round_number, elapsed_ms)
-                raise
+        except Exception:
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            logger.exception("assistant.model_call.failed request_id=%s round=%s elapsed_ms=%s", request_id, round_number, elapsed_ms)
+            raise
 
         raw_text = response_text(response)
         model_elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info("assistant.model_call.completed request_id=%s round=%s elapsed_ms=%s raw_chars=%s", request_id, round_number, model_elapsed_ms, len(raw_text))
 
-        if native_tool_calling:
-            protocol_result = NativeToolProtocol.parse(response)
-            planned_calls = protocol_result.calls
-            assistant_message = protocol_result.assistant_message
-            reasoning_entry = await self._emit_native_progress(
-                state,
-                assistant_message=assistant_message,
-                reasoning=protocol_result.reasoning,
-                planned_calls=planned_calls,
-                round_number=round_number,
-            )
-            if not planned_calls:
-                if not protocol_result.final_content:
-                    raise HTTPException(status_code=502, detail="Assistant model returned neither content nor a tool call")
-                return {
-                    "round_count": round_number,
-                    "reasoning_entries": state.get("reasoning_entries", []) + ([reasoning_entry] if reasoning_entry else []),
-                    "final_response": protocol_result.final_content,
-                    "usage": protocol_result.usage,
-                    "status": "completed",
-                }
-            conversation = list(state.get("conversation", []))
-            conversation.append(
-                {
-                    "role": "assistant",
-                    "content": raw_text,
-                    "tool_calls": [
-                        {"id": call["call_id"], "name": call["name"], "args": call["arguments"], "type": "tool_call"}
-                        for call in planned_calls
-                    ],
-                }
-            )
-            if round_number > state["max_rounds"]:
-                return {"error": f"I used all {state['max_rounds']} steps without finishing the task.", "status": "failed"}
-            return {
-                "conversation": conversation,
-                "round_count": round_number,
-                "reasoning_entries": state.get("reasoning_entries", []) + ([reasoning_entry] if reasoning_entry else []),
-                "assistant_messages": list(state.get("assistant_messages", [])),
-                "pending_tool_calls": planned_calls,
-                "usage": protocol_result.usage,
-                "status": "running",
-            }
-
-        parse_started_at = time.monotonic()
-        protocol_result = await PromptedJsonToolProtocol.parse(model, model_messages, response)
-        parse_elapsed_ms = int((time.monotonic() - parse_started_at) * 1000)
-        logger.info(
-            "assistant.structured_response_parse.completed request_id=%s round=%s elapsed_ms=%s kind=%s tool_count=%s",
-            request_id,
-            round_number,
-            parse_elapsed_ms,
-            "tool_calls" if protocol_result.calls else "final",
-            len(protocol_result.calls),
-        )
-
+        protocol_result = NativeToolProtocol.parse(response)
+        planned_calls = protocol_result.calls
         assistant_message = protocol_result.assistant_message
         reasoning_entry = await self._emit_native_progress(
             state,
             assistant_message=assistant_message,
             reasoning=protocol_result.reasoning,
-            planned_calls=protocol_result.calls,
+            planned_calls=planned_calls,
             round_number=round_number,
         )
 
-        if protocol_result.final_content is not None:
+        if not planned_calls:
+            if not protocol_result.final_content:
+                raise HTTPException(status_code=502, detail="Assistant model returned neither content nor a tool call")
             return {
                 "round_count": round_number,
                 "reasoning_entries": state.get("reasoning_entries", []) + ([reasoning_entry] if reasoning_entry else []),
                 "final_response": protocol_result.final_content,
+                "usage": protocol_result.usage,
                 "status": "completed",
             }
 
-        planned_calls = protocol_result.calls
         conversation = list(state.get("conversation", []))
+        conversation.append(
+            {
+                "role": "assistant",
+                "content": raw_text,
+                "tool_calls": [
+                    {"id": call["call_id"], "name": call["name"], "args": call["arguments"], "type": "tool_call"}
+                    for call in planned_calls
+                ],
+            }
+        )
         assistant_messages = list(state.get("assistant_messages", []))
         if assistant_message:
             assistant_messages.append(assistant_message)
-            conversation.append({"role": "assistant", "content": assistant_message})
         if round_number > state["max_rounds"]:
             return {
                 "error": f"I used all {state['max_rounds']} steps without finishing the task.",
@@ -281,6 +201,7 @@ class AssistantLoop:
             "reasoning_entries": state.get("reasoning_entries", []) + ([reasoning_entry] if reasoning_entry else []),
             "assistant_messages": assistant_messages,
             "pending_tool_calls": planned_calls,
+            "usage": protocol_result.usage,
             "status": "running",
         }
 

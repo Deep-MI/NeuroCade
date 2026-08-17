@@ -22,7 +22,6 @@ class ModelConfig:
     base_url: str | None = None
     api_key: str | None = None
     vision: bool = False
-    native_tool_calling: bool = True
     available: bool = True
     availability_reason: str | None = None
 
@@ -125,13 +124,9 @@ class ProviderRegistry:
                 available=bool(config.base_url),
                 availability_reason=_openai_availability(config.base_url),
             )
-        tool_call_mode = settings.llm_tool_call_mode.strip().lower()
-        if tool_call_mode not in {"auto", "native", "json"}:
-            raise ValueError("LLM_TOOL_CALL_MODE must be one of: auto, native, json")
         return replace(
             config,
             model=model_override or config.model,
-            native_tool_calling=config.native_tool_calling and tool_call_mode != "json",
         )
 
     def build_chat_model(self, provider_override: str | None = None, model_override: str | None = None) -> Any:
