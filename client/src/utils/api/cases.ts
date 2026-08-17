@@ -14,6 +14,7 @@ import { configuredOutputLayerType } from '../artifactOutputs';
 
 interface CaseRunItem {
   status: string;
+  run_type: string;
 }
 
 interface ApiArtifactListItem {
@@ -56,7 +57,11 @@ export async function fetchAnalysisTools(): Promise<AnalysisToolSummary[]> {
 
 export async function fetchStatus(caseId: string): Promise<StatusResponse> {
   const runs = await appJson<CaseRunItem[]>(`/cases/${caseId}/runs`, 'Failed to fetch case status');
-  return { status: runs[0]?.status ?? 'uploaded' };
+  const latestRun = runs[0];
+  return {
+    status: latestRun?.status ?? 'uploaded',
+    workflowId: latestRun?.run_type,
+  };
 }
 
 export async function fetchLogs(caseId: string): Promise<string> {

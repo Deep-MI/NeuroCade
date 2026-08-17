@@ -105,6 +105,14 @@ export function useCaseWorkspaceController({
     }
   }, [isStaleWorkspaceAction]);
 
+  const fetchAnalysisTools = useCallback(async () => {
+    try {
+      setAnalysisTools(await api.fetchAnalysisTools());
+    } catch (error) {
+      console.error('Error fetching analysis tools:', error);
+    }
+  }, []);
+
   const runController = useAnalysisRunController({
     initialWorkspaceId,
     currentCaseId,
@@ -259,13 +267,8 @@ export function useCaseWorkspaceController({
   }, [fetchAvailableCases]);
 
   useEffect(() => {
-    void api.fetchAnalysisTools()
-      .then(setAnalysisTools)
-      .catch((error) => {
-        console.error('Error fetching analysis tools:', error);
-        setAnalysisTools([]);
-      });
-  }, []);
+    void fetchAnalysisTools();
+  }, [fetchAnalysisTools]);
 
   useEffect(() => {
     if (!currentCaseId) return;
@@ -295,8 +298,14 @@ export function useCaseWorkspaceController({
     fetchLogs,
     fetchOutputs: fetchCaseOutputs,
     onStatusChange: setRunStatus,
-    onTerminalStatus: (status) => {
-      setChatNotifications((previous) => [...previous, { role: 'info', content: `Run ${status}.` }]);
+    onTerminalStatus: (status, workflowId) => {
+      const workflowName = analysisTools.find((tool) => tool.id === workflowId)?.label
+        ?? workflowId
+        ?? 'Workflow';
+      setChatNotifications((previous) => [
+        ...previous,
+        { role: 'info', content: `${workflowName} ${status}.` },
+      ]);
     },
     onError: (error) => {
       console.error('Polling error:', error);
@@ -343,6 +352,7 @@ export function useCaseWorkspaceController({
     handleCancel: runController.handleCancel,
     confirmRun: runController.confirmRun,
     fetchAvailableCases,
+    fetchAnalysisTools,
     handleRenameCase,
     handleDeleteCase,
     openCase,

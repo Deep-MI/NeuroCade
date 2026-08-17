@@ -62,9 +62,10 @@ interface ChatProps {
     guiSessionId: string;
     clearRequestToken?: number;
     onClearStateChange?: (isClearing: boolean) => void;
+    onAssistantTurnComplete?: () => void;
 }
 
-export function Chat({ externalMessages = [], style, hideHeader = false, currentLocation, getMriSnapshots, workspaceId = null, caseId = null, guiSessionId, clearRequestToken, onClearStateChange }: ChatProps) {
+export function Chat({ externalMessages = [], style, hideHeader = false, currentLocation, getMriSnapshots, workspaceId = null, caseId = null, guiSessionId, clearRequestToken, onClearStateChange, onAssistantTurnComplete }: ChatProps) {
     const scope: AssistantScope = caseId ? 'case' : 'workspace';
     const [messages, setMessages] = useState<ChatMessage[]>(defaultMessages(scope));
     const [input, setInput] = useState('');
@@ -405,6 +406,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             window.clearTimeout(timeoutId);
             abortRef.current = null;
             setIsLoading(false);
+            onAssistantTurnComplete?.();
         }
     };
 

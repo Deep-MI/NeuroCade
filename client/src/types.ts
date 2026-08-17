@@ -137,6 +137,7 @@ export interface CaseListResponse {
 
 export interface StatusResponse {
   status: string;
+  workflowId?: string;
 }
 
 export interface OutputVolume {

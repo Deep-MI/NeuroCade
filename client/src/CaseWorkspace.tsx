@@ -373,6 +373,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
             isChatClearing={isChatClearing}
             onRequestChatClear={() => setChatClearRequestToken((token) => token + 1)}
             onChatClearStateChange={setIsChatClearing}
+            onAssistantTurnComplete={() => void controller.fetchAnalysisTools()}
           />
         )}
       </div>

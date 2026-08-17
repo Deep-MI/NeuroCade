@@ -33,6 +33,7 @@ interface CaseWorkspaceRightPanelProps {
   isChatClearing: boolean;
   onRequestChatClear: () => void;
   onChatClearStateChange: (isClearing: boolean) => void;
+  onAssistantTurnComplete: () => void;
 }
 
 export function CaseWorkspaceRightPanel(props: CaseWorkspaceRightPanelProps) {
@@ -48,7 +49,7 @@ export function CaseWorkspaceRightPanel(props: CaseWorkspaceRightPanelProps) {
       {props.panel === 'chat' ? (
         <ErrorBoundary label="Chat">
           <Suspense fallback={<div className="p-4 text-sm text-[var(--nc-tx-muted)]">Loading chat...</div>}>
-            <Chat externalMessages={props.chatMessages} style={{ flex: 1, minHeight: 0, marginTop: 0, borderRadius: 0 }} hideHeader currentLocation={props.currentLocation} getMriSnapshots={props.getMriSnapshots} workspaceId={props.workspaceId} caseId={props.caseId} guiSessionId={props.guiSessionId} clearRequestToken={props.chatClearRequestToken} onClearStateChange={props.onChatClearStateChange} />
+            <Chat externalMessages={props.chatMessages} style={{ flex: 1, minHeight: 0, marginTop: 0, borderRadius: 0 }} hideHeader currentLocation={props.currentLocation} getMriSnapshots={props.getMriSnapshots} workspaceId={props.workspaceId} caseId={props.caseId} guiSessionId={props.guiSessionId} clearRequestToken={props.chatClearRequestToken} onClearStateChange={props.onChatClearStateChange} onAssistantTurnComplete={props.onAssistantTurnComplete} />
           </Suspense>
         </ErrorBoundary>
       ) : (

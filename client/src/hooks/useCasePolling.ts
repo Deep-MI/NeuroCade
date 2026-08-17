@@ -1,15 +1,17 @@
 import { useEffect } from 'react'
 
+import type { StatusResponse } from '../types'
+
 interface UseCasePollingOptions {
   activeCaseId: string | null
   runStatus: string
   isRunActive: (status: string) => boolean
   isRunTerminal: (status: string) => boolean
-  fetchStatus: (caseId: string) => Promise<{ status?: string }>
+  fetchStatus: (caseId: string) => Promise<StatusResponse>
   fetchLogs: (caseId: string) => Promise<void>
   fetchOutputs: (caseId: string) => Promise<void>
   onStatusChange: (status: string) => void
-  onTerminalStatus?: (status: string) => void
+  onTerminalStatus?: (status: string, workflowId?: string) => void
   onError?: (error: unknown) => void
 }
 
@@ -39,7 +41,7 @@ export function useCasePolling({
           if (isRunTerminal(data.status)) {
             await fetchLogs(activeCaseId)
             await fetchOutputs(activeCaseId)
-            onTerminalStatus?.(data.status)
+            onTerminalStatus?.(data.status, data.workflowId)
           }
         } catch (error) {
           onError?.(error)
