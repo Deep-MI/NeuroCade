@@ -22,6 +22,7 @@ from api_service.assistant.prompts import build_model_messages, build_system_pro
 from api_service.assistant.runtime import AssistantRuntime  # noqa: E402
 from api_service.assistant.tools import probe_tools as probe_tools_module  # noqa: E402
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk  # noqa: E402
+from api_service.runtime import workflow_runs as workflow_runs_module  # noqa: E402
 from api_service.runtime.gui_runtime import GuiRuntime  # noqa: E402
 from api_service.runtime_tools.workflow_catalog import load_workflow_catalog, run_analysis_workflows_payload  # noqa: E402
 
@@ -556,7 +557,7 @@ def test_catalog_tool_call_waits_for_synchronous_workflow(monkeypatch, seeded_co
     from api_service.assistant.tools import catalog_execution as catalog_execution_module
 
     monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
-    monkeypatch.setattr(catalog_execution_module, "submit_neuroimaging_workflow", fake_submit)
+    monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
     payload = json.loads(
         asyncio.run(
@@ -746,7 +747,7 @@ def test_catalog_tool_call_reports_synchronous_workflow_failure_as_tool_error(
     from api_service.assistant.tools import catalog_execution as catalog_execution_module
 
     monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
-    monkeypatch.setattr(catalog_execution_module, "submit_neuroimaging_workflow", fake_submit)
+    monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
     result = asyncio.run(
         runtime.tools.catalog_tools.call(
@@ -844,7 +845,7 @@ def test_case_catalog_tool_call_passes_case_to_worker(monkeypatch, seeded_contex
     from api_service.assistant.tools import catalog_execution as catalog_execution_module
 
     monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
-    monkeypatch.setattr(catalog_execution_module, "submit_neuroimaging_workflow", fake_submit)
+    monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
     payload = json.loads(
         asyncio.run(

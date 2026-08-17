@@ -110,12 +110,12 @@ def page(services_up, browser):
             if target_case is None and case_payload:
                 target_case = case_payload[0]
             if target_case is not None:
-                workspace_id_value = target_case.get("workspace_id") or session_payload.get("active_workspace_id") or session_payload.get("default_workspace_id")
+                workspace_id_value = target_case.get("workspace_id") or session_payload.get("default_workspace_id")
                 target_case_id = str(target_case.get("id") or DEFAULT_CASE_ID)
                 workspace_id = str(workspace_id_value) if workspace_id_value else ""
                 target_url = f"{APP_URL}/workspaces/{workspace_id}/cases/{target_case_id}" if workspace_id else f"{APP_URL}/"
             else:
-                workspace_id = session_payload.get("active_workspace_id") or session_payload.get("default_workspace_id")
+                workspace_id = session_payload.get("default_workspace_id")
                 if workspace_id:
                     target_url = f"{APP_URL}/workspaces/{workspace_id}/cases"
         except requests.RequestException:

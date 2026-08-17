@@ -35,6 +35,7 @@ from api_service.routers.workspaces import (  # noqa: E402
     list_workspaces,
     update_workspace,
 )
+from api_service.runtime import workflow_runs as workflow_runs_module  # noqa: E402
 from api_service.schemas import (  # noqa: E402
     CaseUpdateRequest,
     StartRunRequest,
@@ -888,7 +889,7 @@ def test_start_run_persists_queued_run_before_runtime_handoff(
         assert kwargs["gpu_enabled"] is expected_gpu
         return kwargs["job_id"]
 
-    monkeypatch.setattr(run_operations_module, "submit_neuroimaging_workflow", fake_submit_workflow)
+    monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit_workflow)
 
     response = asyncio.run(
         start_run(

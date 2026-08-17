@@ -15,7 +15,6 @@ class Settings(BaseSettings):
 
     app_base_url: str = Field(default="http://localhost:8000", alias="APP_BASE_URL")
     deployment_profile: str = Field(default="local", alias="DEPLOYMENT_PROFILE")
-    app_public_url: str | None = Field(default=None, alias="APP_PUBLIC_URL")
     app_allowed_hosts: str = Field(default="", alias="APP_ALLOWED_HOSTS")
 
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
@@ -60,7 +59,6 @@ class Settings(BaseSettings):
     llm_backend_api_key: str | None = Field(default="", alias="LLM_BACKEND_API_KEY")
     llm_backend_model: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="LLM_BACKEND_MODEL")
     llm_provider_default: str = Field(default="openai-compatible", alias="LLM_PROVIDER_DEFAULT")
-    llm_chat_model: str | None = Field(default=None, alias="LLM_CHAT_MODEL")
     llm_disable_thinking: bool = Field(default=True, alias="LLM_DISABLE_THINKING")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     anthropic_model: str | None = Field(default=None, alias="ANTHROPIC_MODEL")

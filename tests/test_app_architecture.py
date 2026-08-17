@@ -213,6 +213,14 @@ def test_env_example_documents_monitoring_admin_allowlist():
     assert "MONITORING_ACTIVE_WINDOW_MINUTES=" in env_example
 
 
+def test_env_example_uses_canonical_url_and_model_settings():
+    env_example = Path(".env.example").read_text()
+    assert "APP_BASE_URL=" in env_example
+    assert "LLM_BACKEND_MODEL=" in env_example
+    assert "APP_PUBLIC_URL" not in env_example
+    assert "LLM_CHAT_MODEL" not in env_example
+
+
 def test_spa_mount_serves_vite_public_files(monkeypatch, tmp_path):
     from api_service.main import _mount_client
     from fastapi import FastAPI

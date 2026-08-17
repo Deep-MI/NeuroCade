@@ -50,7 +50,7 @@ class ProviderRegistry:
             ModelConfig(
                 provider="openai-compatible",
                 provider_family="openai_compatible",
-                model=settings.llm_chat_model or settings.llm_backend_model,
+                model=settings.llm_backend_model,
                 base_url=settings.llm_backend_url,
                 api_key=api_key,
                 vision=True,

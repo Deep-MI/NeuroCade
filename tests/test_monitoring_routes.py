@@ -14,7 +14,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.monitoring import events as monitoring_events_module  # noqa: E402
-from api_service.routers import auth as auth_module  # noqa: E402
 from api_service.routers import monitoring as monitoring_module  # noqa: E402
 from api_service.routers.monitoring import ingest_client_error, monitoring_health, monitoring_summary  # noqa: E402
 from api_service.schemas import MonitoringClientErrorRequest  # noqa: E402
@@ -233,12 +232,3 @@ def test_monitoring_retention_cleanup_runs_periodically(seeded_monitoring_contex
     )
 
     assert db_session.query(AppEvent).filter(AppEvent.event_type == "old.second").count() == 1
-
-
-def test_session_bootstrap_exposes_monitoring_feature_for_admin(seeded_monitoring_context, monkeypatch):
-    db_session, context, _member = seeded_monitoring_context
-    monkeypatch.setattr(auth_module.settings, "monitoring_admin_user_ids", "admin-user")
-
-    session = auth_module.session_bootstrap(db=db_session, context=context)
-
-    assert session.features["monitoring_dashboard"] is True

@@ -19,10 +19,8 @@ from api_service.cases.service import (
 )
 from api_service.cases.uploads import _require_run_analysis_input_artifact
 from api_service.helpers import get_case_for_user, log_event
-from api_service.jobs import job_manager
 from api_service.policies import require_case_write
-from api_service.runtime import settings
-from api_service.runtime.neuroimaging_tasks import submit_neuroimaging_workflow
+from api_service.runtime import settings, workflow_runs
 from api_service.runtime_tools.workflow_catalog import resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
 from api_service.schemas import RunSummary, StartRunRequest
@@ -101,8 +99,7 @@ async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: 
             "tool_id": tool.id,
             "input_artifact_ids": [artifact.id for artifact in input_artifacts],
             "output_name_overrides": output_name_overrides,
-            "workflow_definition": tool.model_dump(mode="json", by_alias=True, exclude_none=True),
-            "execution": {"device": "cuda" if gpu_enabled else "cpu"},
+            **workflow_runs.workflow_run_snapshot(tool, gpu_enabled=gpu_enabled),
         },
         result_json={"status": "queued", "tool_id": tool.id},
         job_id=job_id,
@@ -130,22 +127,17 @@ async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: 
         # otherwise the later audit insert can fail to upgrade the stale
         # SQLite snapshot with ``database is locked``.
         db.commit()
-        submitted_job_id = submit_neuroimaging_workflow(
-            run=run,
-            workflow=tool,
-            inputs=container_inputs,
+        workflow_runs.submit_workflow_run(
+            run,
+            tool,
+            container_inputs,
             bind_host_path=case_dir,
             bind_container_path="/case",
             job_id=job_id,
             gpu_enabled=gpu_enabled,
         )
-        if submitted_job_id != job_id:
-            raise RuntimeError("Background worker returned an unexpected job id")
     except Exception as exc:
-        run.status = RunStatus.failed
-        run.error_message = str(exc)
-        run.result_json = {"status": "failed", "run_id": run.id, "tool_id": tool.id}
-        db.commit()
+        workflow_runs.mark_workflow_run_failed(db, run.id, tool.id, exc)
         raise
 
     log_event(db, context, "run.started", case_id=case.id, details={"run_id": run.id, "tool_id": tool.id})
@@ -160,15 +152,6 @@ def cancel_active_case_run(db: Session, context: AuthContext, *, case_id: str) -
     latest_run = latest_case_run(db, case_id)
     if latest_run is None or latest_run.status in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="Case has no active run")
-    if latest_run.job_id:
-        job_manager.cancel(latest_run.job_id)
-    latest_run.status = RunStatus.canceled
-    latest_run.error_message = None
-    latest_run.result_json = {
-        "status": "canceled",
-        "run_id": latest_run.id,
-        "tool_id": latest_run.run_type,
-    }
-    db.commit()
+    workflow_runs.cancel_workflow_run(db, latest_run, cancel_job_first=True)
     log_event(db, context, "run.canceled", case_id=case_id)
     return {"status": "canceled", "case_id": case_id}

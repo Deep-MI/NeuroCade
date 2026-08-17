@@ -20,16 +20,9 @@ class FrontendConfig(BaseModel):
 
 class SessionBootstrap(BaseModel):
     user: UserSummary
-    role: str
-    auth_mode: str
-    deployment_profile: str
-    public_url: str
     features: dict[str, bool]
-    limits: dict[str, int] = Field(default_factory=dict)
-    sample_data: dict[str, Any] = Field(default_factory=dict)
     workspaces: list[dict[str, Any]] = Field(default_factory=list)
     default_workspace_id: str | None = None
-    active_workspace_id: str | None = None
 
 
 class WorkspaceSummary(BaseModel):

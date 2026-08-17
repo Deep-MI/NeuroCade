@@ -19,11 +19,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service import helpers as helpers_module  # noqa: E402
-from api_service.cases import run_operations as run_operations_module  # noqa: E402
 from api_service.cases import uploads as uploads_module  # noqa: E402
 from api_service.cases.run_operations import cancel_active_case_run  # noqa: E402
 from api_service.runtime import gui_state as gui_state_module  # noqa: E402
 from api_service.runtime import neuroimaging_tasks as neuroimaging_tasks_module  # noqa: E402
+from api_service.runtime import workflow_runs as workflow_runs_module  # noqa: E402
 from api_service.runtime.gui_state import GuiStateStore  # noqa: E402
 from api_service.schemas import AssistantTurnRequest  # noqa: E402
 
@@ -135,7 +135,7 @@ def test_cancel_uses_persisted_run_job_id(monkeypatch, tmp_path):
     db.commit()
     monkeypatch.setattr(helpers_module.settings, "fs_data_root", data_root)
     canceled: list[str] = []
-    monkeypatch.setattr(run_operations_module.job_manager, "cancel", lambda job_id: bool(canceled.append(job_id)))
+    monkeypatch.setattr(workflow_runs_module.job_manager, "cancel", lambda job_id: bool(canceled.append(job_id)))
 
     result = cancel_active_case_run(
         db,

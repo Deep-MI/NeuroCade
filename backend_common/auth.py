@@ -104,14 +104,19 @@ def _upsert_local_user(db: Session) -> AuthContext:
         user.external_auth_id = settings.local_auth_user_id
         user.email = settings.local_auth_email
         user.full_name = settings.local_auth_name
-        db.flush()
-        ensure_personal_workspace(db, settings, user)
-        if policy.sample_data_scope == "per_user":
-            ensure_sample_case(db, user)
-        elif policy.sample_data_scope == "global":
-            ensure_global_sample_workspace_membership(db, user)
-        _commit_auth_bootstrap(db)
+        _finish_user_bootstrap(db, user, sample_data_scope=policy.sample_data_scope)
         return AuthContext(user=user, role=RoleEnum.owner, auth_mode="local")
+
+
+def _finish_user_bootstrap(db: Session, user: User, *, sample_data_scope: str) -> None:
+    """Provision the common workspace and sample resources for an authenticated user."""
+    db.flush()
+    ensure_personal_workspace(db, settings, user)
+    if sample_data_scope == "per_user":
+        ensure_sample_case(db, user)
+    elif sample_data_scope == "global":
+        ensure_global_sample_workspace_membership(db, user)
+    _commit_auth_bootstrap(db)
 
 
 def _verify_clerk_token(token: str) -> dict:
@@ -173,25 +178,12 @@ def get_auth_context(
                     full_name=full_name,
                 )
                 db.add(user)
-                db.flush()
-                ensure_personal_workspace(db, settings, user)
-                if policy.sample_data_scope == "per_user":
-                    ensure_sample_case(db, user)
-                elif policy.sample_data_scope == "global":
-                    ensure_global_sample_workspace_membership(db, user)
-                _commit_auth_bootstrap(db)
-                return AuthContext(user=user, role=RoleEnum.owner, auth_mode="clerk")
-
-            if email and user.email != email:
-                user.email = email
-            if full_name and user.full_name != full_name:
-                user.full_name = full_name
-            ensure_personal_workspace(db, settings, user)
-            if policy.sample_data_scope == "per_user":
-                ensure_sample_case(db, user)
-            elif policy.sample_data_scope == "global":
-                ensure_global_sample_workspace_membership(db, user)
-            _commit_auth_bootstrap(db)
+            else:
+                if email and user.email != email:
+                    user.email = email
+                if full_name and user.full_name != full_name:
+                    user.full_name = full_name
+            _finish_user_bootstrap(db, user, sample_data_scope=policy.sample_data_scope)
             return AuthContext(user=user, role=RoleEnum.owner, auth_mode="clerk")
 
     if allow_local_auth():

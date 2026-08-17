@@ -284,16 +284,21 @@ def load_user_workflow_catalog(settings: Any, user_id: str) -> WorkflowCatalog:
     return _read_workflow_catalog(path)
 
 
+def _merge_workflow_catalogs(base: WorkflowCatalog, overlay: WorkflowCatalog) -> WorkflowCatalog:
+    """Apply private definitions over built-ins while preserving catalog order."""
+    overrides = {tool.id: tool for tool in overlay.tools}
+    merged = [overrides.pop(tool.id, tool) for tool in base.tools]
+    merged.extend(overrides.values())
+    return WorkflowCatalog(version=base.version, tools=merged)
+
+
 def effective_workflow_catalog(*, settings: Any | None = None, user_id: str | None = None) -> WorkflowCatalog:
     """Merge the built-in catalog with one user's private overrides."""
     base = load_workflow_catalog()
     if settings is None or not user_id:
         return base
     overlay = load_user_workflow_catalog(settings, user_id)
-    overrides = {tool.id: tool for tool in overlay.tools}
-    merged = [overrides.pop(tool.id, tool) for tool in base.tools]
-    merged.extend(overrides.values())
-    return WorkflowCatalog(version=1, tools=merged)
+    return _merge_workflow_catalogs(base, overlay)
 
 
 def _catalog_payload(catalog: WorkflowCatalog) -> dict[str, Any]:
@@ -334,11 +339,7 @@ def upsert_user_workflow(settings: Any, user_id: str, definition: dict[str, Any]
         tools.append(tool)
         updated = WorkflowCatalog(version=1, tools=tools)
         # Validate the merged view before changing the file.
-        base = load_workflow_catalog()
-        overrides = {item.id: item for item in updated.tools}
-        merged = [overrides.pop(item.id, item) for item in base.tools]
-        merged.extend(overrides.values())
-        WorkflowCatalog(version=1, tools=merged)
+        _merge_workflow_catalogs(load_workflow_catalog(), updated)
         _atomic_write_catalog(path, updated)
         return next(item for item in load_user_workflow_catalog(settings, user_id).tools if item.id == tool.id)
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -171,6 +170,12 @@ class AssistantCatalogTools:
         user_id = getattr(user, "id", None)
         return str(user_id) if user_id else None
 
+    @staticmethod
+    def case_id(state: dict[str, Any]) -> str | None:
+        """Return the active case only when the assistant is case-scoped."""
+        case_id = state.get("case_id")
+        return str(case_id) if state.get("scope") == AssistantScope.case.value and case_id else None
+
     async def call(
         self, state: dict[str, Any], execution_context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
@@ -218,7 +223,7 @@ class AssistantCatalogTools:
             db,
             run_id=run_id,
             workspace_id=state["workspace_id"],
-            case_id=state.get("case_id") if state.get("scope") == AssistantScope.case.value else None,
+            case_id=self.case_id(state),
         )
         return completed or result
 
@@ -246,7 +251,7 @@ class AssistantCatalogTools:
                 "score": score,
             }
             payload.append(row)
-        return ToolResult.success(json.dumps(payload, indent=2), details={"matches": payload})
+        return ToolResult.structured(payload, details={"matches": payload})
 
     def inspect(
         self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
@@ -264,7 +269,7 @@ class AssistantCatalogTools:
                 settings=self.catalog_executor.settings,
                 user_id=user_id,
             )
-            return ToolResult.success(json.dumps(payload, indent=2), details=payload)
+            return ToolResult.structured(payload)
         except Exception as exc:
             return ToolResult.error(f"Error inspecting workflow: {exc}")
 
@@ -282,14 +287,14 @@ class AssistantCatalogTools:
                 user_id=user_id,
             )
             payload = {
-                    "source": workflow_source(
-                        tool.id,
-                        settings=self.catalog_executor.settings,
-                        user_id=user_id,
-                    ),
-                    "definition": tool.model_dump(mode="json", by_alias=True, exclude_none=True),
-                }
-            return ToolResult.success(json.dumps(payload, indent=2), details=payload)
+                "source": workflow_source(
+                    tool.id,
+                    settings=self.catalog_executor.settings,
+                    user_id=user_id,
+                ),
+                "definition": tool.model_dump(mode="json", by_alias=True, exclude_none=True),
+            }
+            return ToolResult.structured(payload)
         except Exception as exc:
             return ToolResult.error(f"Error reading workflow configuration: {exc}")
 
@@ -303,15 +308,15 @@ class AssistantCatalogTools:
             parsed = CatalogConfigUpsertArgs.model_validate(arguments)
             tool = upsert_user_workflow(self.catalog_executor.settings, user_id, parsed.definition)
             payload = {
-                    "status": "reloaded",
-                    "source": workflow_source(
-                        tool.id,
-                        settings=self.catalog_executor.settings,
-                        user_id=user_id,
-                    ),
-                    "definition": tool.model_dump(mode="json", by_alias=True, exclude_none=True),
-                }
-            return ToolResult.success(json.dumps(payload, indent=2), details=payload)
+                "status": "reloaded",
+                "source": workflow_source(
+                    tool.id,
+                    settings=self.catalog_executor.settings,
+                    user_id=user_id,
+                ),
+                "definition": tool.model_dump(mode="json", by_alias=True, exclude_none=True),
+            }
+            return ToolResult.structured(payload)
         except Exception as exc:
             return ToolResult.error(f"Error updating workflow configuration: {exc}")
 
@@ -333,24 +338,24 @@ class AssistantCatalogTools:
             except ValueError:
                 effective = None
             payload = {
-                    "status": "reloaded",
-                    "deleted_tool_id": removed.id,
-                    "effective_definition": (
-                        effective.model_dump(mode="json", by_alias=True, exclude_none=True)
-                        if effective is not None
-                        else None
-                    ),
-                    "effective_source": (
-                        workflow_source(
-                            parsed.tool_id,
-                            settings=self.catalog_executor.settings,
-                            user_id=user_id,
-                        )
-                        if effective is not None
-                        else None
-                    ),
-                }
-            return ToolResult.success(json.dumps(payload, indent=2), details=payload)
+                "status": "reloaded",
+                "deleted_tool_id": removed.id,
+                "effective_definition": (
+                    effective.model_dump(mode="json", by_alias=True, exclude_none=True)
+                    if effective is not None
+                    else None
+                ),
+                "effective_source": (
+                    workflow_source(
+                        parsed.tool_id,
+                        settings=self.catalog_executor.settings,
+                        user_id=user_id,
+                    )
+                    if effective is not None
+                    else None
+                ),
+            }
+            return ToolResult.structured(payload)
         except Exception as exc:
             return ToolResult.error(f"Error deleting workflow configuration: {exc}")
 
@@ -364,7 +369,7 @@ class AssistantCatalogTools:
             state["db"],
             run_id=parsed.run_id,
             workspace_id=state["workspace_id"],
-            case_id=state.get("case_id") if state.get("scope") == AssistantScope.case.value else None,
+            case_id=self.case_id(state),
         )
 
     def list_runs(
@@ -377,7 +382,7 @@ class AssistantCatalogTools:
             state["db"],
             workspace_id=state["workspace_id"],
             limit=parsed.limit,
-            case_id=state.get("case_id") if state.get("scope") == AssistantScope.case.value else None,
+            case_id=self.case_id(state),
         )
 
     def cancel(
@@ -404,5 +409,5 @@ class AssistantCatalogTools:
             state["db"],
             run_id=parsed.run_id,
             workspace_id=state["workspace_id"],
-            case_id=state.get("case_id") if state.get("scope") == AssistantScope.case.value else None,
+            case_id=self.case_id(state),
         )

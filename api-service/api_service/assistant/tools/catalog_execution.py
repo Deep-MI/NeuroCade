@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import Any
 from uuid import uuid4
@@ -16,12 +15,12 @@ from sqlalchemy.exc import IntegrityError
 from api_service.assistant.tools.definition import ToolResult
 from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.policies import require_case_write, require_workspace_write
-from api_service.runtime.neuroimaging_tasks import submit_neuroimaging_workflow
+from api_service.runtime import workflow_runs
 from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT
 from api_service.runtime_tools.workflow_catalog import resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
 from backend_common.case_storage import workspace_storage_dir
-from backend_common.db import AssistantScope, Run, RunStatus, run_with_sqlite_lock_retry
+from backend_common.db import AssistantScope, Run, RunStatus
 from backend_common.run_statuses import TERMINAL_RUN_STATUSES
 
 RUN_STATUS_POLL_INTERVAL_SECONDS = 0.1
@@ -56,6 +55,27 @@ class AssistantCatalogExecutor:
 
     def __init__(self, *, settings) -> None:
         self.settings = settings
+
+    @staticmethod
+    def _queued_payload(
+        tool,
+        run: Run,
+        *,
+        status: str | None = None,
+        idempotent_replay: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "tool_id": tool.id,
+            "run_id": run.id,
+            "status": status or run.status.value,
+            "execution": workflow_runs.workflow_execution_details(
+                tool,
+                gpu_enabled=tool.execution.gpu,
+            ),
+        }
+        if idempotent_replay:
+            payload["idempotent_replay"] = True
+        return payload
 
     def catalog_runtime_binds(self, state: dict[str, Any]) -> list[RuntimeBind]:
         """Return the single authorized writable root for the assistant scope."""
@@ -126,22 +146,7 @@ class AssistantCatalogExecutor:
                 or expected_inputs != parsed.inputs
             ):
                 return ToolResult.error("Error submitting background workflow: idempotency key conflicts with another run.")
-            payload = {
-                    "tool_id": tool.id,
-                    "run_id": existing.id,
-                    "status": existing.status.value,
-                    "idempotent_replay": True,
-                    "execution": {
-                        "image": tool.image,
-                        "mode": tool.execution.mode,
-                        "gpu": tool.execution.gpu,
-                        "timeout_s": tool.execution.timeout_s,
-                    },
-                }
-            return ToolResult.success(
-                json.dumps(payload, indent=2),
-                details=payload,
-            )
+            return ToolResult.structured(self._queued_payload(tool, existing, idempotent_replay=True))
         job_id = str(uuid4())
         run = Run(
             id=prepared.run_id,
@@ -154,8 +159,7 @@ class AssistantCatalogExecutor:
             input_json={
                 "tool_id": tool.id,
                 "inputs": parsed.inputs,
-                "workflow_definition": tool.model_dump(mode="json", by_alias=True, exclude_none=True),
-                "execution": {"device": "cuda" if prepared.gpu_enabled else "cpu"},
+                **workflow_runs.workflow_run_snapshot(tool, gpu_enabled=prepared.gpu_enabled),
             },
             result_json={"status": "queued", "tool_id": tool.id, "run_id": prepared.run_id},
             job_id=job_id,
@@ -178,41 +182,20 @@ class AssistantCatalogExecutor:
                 )
             return ToolResult.error(f"Error submitting background workflow: {exc}")
         try:
-            submitted_job_id = submit_neuroimaging_workflow(
-                run=run,
-                workflow=tool,
-                inputs=parsed.inputs,
+            workflow_runs.submit_workflow_run(
+                run,
+                tool,
+                parsed.inputs,
                 bind_host_path=prepared.host_root,
                 bind_container_path=prepared.container_root,
                 job_id=job_id,
                 gpu_enabled=prepared.gpu_enabled,
             )
-            if submitted_job_id != job_id:
-                raise RuntimeError("Background worker returned an unexpected job id")
         except Exception as exc:
             db.rollback()
-            persisted = db.get(Run, prepared.run_id)
-            if persisted is not None:
-                persisted.status = RunStatus.failed
-                persisted.error_message = str(exc)
-                persisted.result_json = {"status": "failed", "tool_id": tool.id, "run_id": prepared.run_id}
-                db.commit()
+            workflow_runs.mark_workflow_run_failed(db, prepared.run_id, tool.id, exc)
             return ToolResult.error(f"Error submitting background workflow: {exc}")
-        payload = {
-                "tool_id": tool.id,
-                "run_id": run.id,
-                "status": "queued",
-                "execution": {
-                    "image": tool.image,
-                    "mode": tool.execution.mode,
-                    "gpu": tool.execution.gpu,
-                    "timeout_s": tool.execution.timeout_s,
-                },
-            }
-        return ToolResult.success(
-            json.dumps(payload, indent=2),
-            details=payload,
-        )
+        return ToolResult.structured(self._queued_payload(tool, run, status="queued"))
 
     @staticmethod
     def run_status(db, *, run_id: str, workspace_id: str, case_id: str | None = None) -> ToolResult:
@@ -221,16 +204,16 @@ class AssistantCatalogExecutor:
         if run is None or run.workspace_id != workspace_id or (case_id is not None and run.case_id != case_id):
             return ToolResult.error(f"Error: workflow run {run_id!r} was not found.")
         payload = {
-                "run_id": run.id,
-                "tool_id": run.run_type,
-                "status": run.status.value,
-                "result": run.result_json,
-                "error": run.error_message,
-            }
-        content = json.dumps(payload, indent=2)
-        if run.status in {RunStatus.failed, RunStatus.canceled}:
-            return ToolResult.error(content, details=payload)
-        return ToolResult.success(content, details=payload)
+            "run_id": run.id,
+            "tool_id": run.run_type,
+            "status": run.status.value,
+            "result": run.result_json,
+            "error": run.error_message,
+        }
+        return ToolResult.structured(
+            payload,
+            is_error=run.status in {RunStatus.failed, RunStatus.canceled},
+        )
 
     @staticmethod
     def list_runs(db, *, workspace_id: str, limit: int = 10, case_id: str | None = None) -> ToolResult:
@@ -251,10 +234,7 @@ class AssistantCatalogExecutor:
             }
             for run in runs
         ]
-        return ToolResult.success(
-            json.dumps(payload, indent=2),
-            details={"runs": payload, "limit": limit},
-        )
+        return ToolResult.structured(payload, details={"runs": payload, "limit": limit})
 
     async def wait_for_terminal_run(
         self,
@@ -286,30 +266,12 @@ class AssistantCatalogExecutor:
     @staticmethod
     def cancel_run(db, *, run_id: str, workspace_id: str, case_id: str | None = None) -> ToolResult:
         """Cancel a queued/running workflow in the active workspace."""
-        from api_service.jobs import job_manager
-
         run = db.get(Run, run_id)
         if run is None or run.workspace_id != workspace_id or (case_id is not None and run.case_id != case_id):
             return ToolResult.error(f"Error: workflow run {run_id!r} was not found.")
         if run.status in TERMINAL_RUN_STATUSES:
             payload = {"run_id": run.id, "status": run.status.value}
-            return ToolResult.success(json.dumps(payload, indent=2), details=payload)
-        job_id = run.job_id
-        tool_id = run.run_type
-
-        def mark_run_canceled() -> None:
-            current = db.get(Run, run_id)
-            if current is None:
-                raise ValueError(f"Workflow run {run_id!r} no longer exists")
-            current.status = RunStatus.canceled
-            current.error_message = None
-            current.result_json = {"status": "canceled", "tool_id": tool_id, "run_id": run_id}
-            db.commit()
-
-        # Release the request session's SQLite write lock before the job manager
-        # persists its own cancellation and terminates the subprocess.
-        run_with_sqlite_lock_retry(db, mark_run_canceled)
-        if job_id:
-            job_manager.cancel(job_id)
+            return ToolResult.structured(payload)
+        workflow_runs.cancel_workflow_run(db, run)
         payload = {"run_id": run_id, "status": "canceled"}
-        return ToolResult.success(json.dumps(payload, indent=2), details=payload)
+        return ToolResult.structured(payload)

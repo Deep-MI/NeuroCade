@@ -119,8 +119,19 @@ def test_deployment_policy_profiles_expose_expected_flags(monkeypatch):
     assert policy.profile == "demo"
     assert policy.uploads_enabled is False
     assert policy.destructive_actions_enabled is False
-    assert policy.sample_data()["scope"] == "global"
-    assert policy.feature_flags(clerk_configured=True)["demo_mode"] is True
+    assert policy.sample_data_scope == "global"
+    assert policy.feature_flags() == {"uploads": False, "destructive_actions": False}
+
+    monkeypatch.setattr(active_settings, "deployment_profile", "internal")
+    monkeypatch.setattr(active_settings, "app_base_url", "https://neurocade.internal.example.org")
+    policy = get_deployment_policy(active_settings)
+
+    assert policy.profile == "internal"
+    assert policy.public_url == "https://neurocade.internal.example.org"
+    assert policy.sample_data_scope == "per_user"
+    assert policy.feature_flags() == {"uploads": True, "destructive_actions": True}
+
+
 def test_validate_auth_configuration_rejects_local_auth_outside_local_profile(monkeypatch):
     from backend_common import auth as auth_module
 

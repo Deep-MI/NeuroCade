@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -59,6 +60,19 @@ class ToolResult:
             details=dict(details or {}),
             terminal=terminal,
         )
+
+    @classmethod
+    def structured(
+        cls,
+        payload: Any,
+        *,
+        details: dict[str, Any] | None = None,
+        is_error: bool = False,
+    ) -> ToolResult:
+        """Render a JSON tool result while retaining its structured details."""
+        resolved_details = payload if details is None and isinstance(payload, dict) else details
+        factory = cls.error if is_error else cls.success
+        return factory(json.dumps(payload, indent=2), details=resolved_details)
 
     def as_dict(self) -> dict[str, Any]:
         return {

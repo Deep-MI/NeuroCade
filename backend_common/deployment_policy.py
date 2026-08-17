@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from backend_common.settings import Settings, get_settings
 
@@ -15,47 +15,15 @@ VALID_DEPLOYMENT_PROFILES: set[str] = {"local", "internal", "demo"}
 class DeploymentPolicy:
     profile: DeploymentProfile
     public_url: str
-    auth_required: bool
     uploads_enabled: bool
     destructive_actions_enabled: bool
-    monitoring_visible: bool
-    sample_data_enabled: bool
     sample_data_scope: Literal["per_user", "global"]
-    runtime_network_disabled: bool = True
 
-    @property
-    def demo_mode(self) -> bool:
-        """Whether this policy uses the public demo profile."""
-        return self.profile == "demo"
-
-    def feature_flags(self, *, clerk_configured: bool, monitoring_admin: bool = False) -> dict[str, bool]:
-        """Return client-visible feature flags for this deployment."""
+    def feature_flags(self) -> dict[str, bool]:
+        """Return the deployment controls consumed by the client."""
         return {
-            "clerk": clerk_configured,
-            "workflows": True,
             "uploads": self.uploads_enabled,
             "destructive_actions": self.destructive_actions_enabled,
-            "sample_data": self.sample_data_enabled,
-            "demo_mode": self.demo_mode,
-            "monitoring_dashboard": self.monitoring_visible and monitoring_admin,
-        }
-
-    def limits(self, settings: Settings) -> dict[str, int]:
-        """Return upload and DICOM ingestion limits from settings."""
-        return {
-            "max_upload_file_size_bytes": settings.max_upload_file_size_bytes,
-            "dicom_zip_max_entries": settings.dicom_zip_max_entries,
-            "dicom_zip_max_expanded_bytes": settings.dicom_zip_max_expanded_bytes,
-        }
-
-    def sample_data(self) -> dict[str, Any]:
-        """Return sample dataset availability and provenance metadata."""
-        return {
-            "enabled": self.sample_data_enabled,
-            "scope": self.sample_data_scope,
-            "label": "Sample/de-identified data",
-            "provenance": "Rhineland T1-weighted sample processed with FastSurfer and seeded by NeuroCade.",
-            "modifiable_copy": self.sample_data_scope == "per_user",
         }
 
     def validate_auth_configuration(self, settings: Settings) -> None:
@@ -86,36 +54,27 @@ def get_deployment_policy(settings: Settings | None = None) -> DeploymentPolicy:
     """Build the deployment policy for the active settings."""
     active_settings = settings or get_settings()
     profile = deployment_profile(active_settings)
-    public_url = active_settings.app_public_url or active_settings.app_base_url
+    public_url = active_settings.app_base_url
     if profile == "local":
         return DeploymentPolicy(
             profile="local",
             public_url=public_url,
-            auth_required=False,
             uploads_enabled=True,
             destructive_actions_enabled=True,
-            monitoring_visible=True,
-            sample_data_enabled=True,
             sample_data_scope="per_user",
         )
     if profile == "internal":
         return DeploymentPolicy(
             profile="internal",
             public_url=public_url,
-            auth_required=True,
             uploads_enabled=True,
             destructive_actions_enabled=True,
-            monitoring_visible=True,
-            sample_data_enabled=True,
             sample_data_scope="per_user",
         )
     return DeploymentPolicy(
         profile="demo",
         public_url=public_url,
-        auth_required=True,
         uploads_enabled=False,
         destructive_actions_enabled=False,
-        monitoring_visible=False,
-        sample_data_enabled=True,
         sample_data_scope="global",
     )

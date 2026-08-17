@@ -83,7 +83,6 @@ async def lifespan(_app: FastAPI):
             logger.warning("Local auth fallback is enabled; do not use this configuration outside local deployments.")
         browser_url = (
             os.environ.get("NEUROCADE_ACCESS_URL")
-            or settings.app_public_url
             or settings.app_base_url
         )
         startup_logger.info(

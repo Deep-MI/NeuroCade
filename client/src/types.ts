@@ -207,22 +207,9 @@ export interface SessionBootstrap {
     email: string;
     full_name: string;
   };
-  role: string;
-  auth_mode: string;
-  deployment_profile: 'local' | 'internal' | 'demo';
-  public_url: string;
   features: Record<string, boolean>;
-  limits: Record<string, number>;
-  sample_data: {
-    enabled?: boolean;
-    scope?: 'per_user' | 'global';
-    label?: string;
-    provenance?: string;
-    modifiable_copy?: boolean;
-  };
   workspaces: WorkspaceSummary[];
   default_workspace_id: string | null;
-  active_workspace_id: string | null;
 }
 
 export interface WorkspaceSummary {

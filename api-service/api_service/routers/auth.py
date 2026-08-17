@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from api_service.deps import get_context, get_db
 from api_service.helpers import log_event
-from api_service.monitoring.security import is_monitoring_admin
 from api_service.runtime import settings
 from api_service.schemas import FrontendConfig, SessionBootstrap, UserSummary
 from backend_common.auth import AuthContext
@@ -79,23 +78,7 @@ def session_bootstrap(
         default_workspace_id = next((workspace["id"] for workspace in workspaces if workspace["is_default"]), None)
     return SessionBootstrap(
         user=UserSummary(id=context.user.id, email=context.user.email, full_name=context.user.full_name),
-        role=context.role.value,
-        auth_mode=context.auth_mode,
-        deployment_profile=policy.profile,
-        public_url=policy.public_url,
-        features=policy.feature_flags(
-            clerk_configured=bool(settings.clerk_publishable_key),
-            monitoring_admin=is_monitoring_admin(context),
-        ),
-        limits=policy.limits(settings),
-        sample_data=policy.sample_data(),
+        features=policy.feature_flags(),
         workspaces=workspaces,
         default_workspace_id=default_workspace_id,
-        active_workspace_id=default_workspace_id,
     )
-
-
-@router.get("/me", response_model=dict)
-def current_user(context: AuthContext = Depends(get_context)) -> dict:
-    """Return the authenticated user's public profile fields."""
-    return {"id": context.user.id, "email": context.user.email, "full_name": context.user.full_name}
