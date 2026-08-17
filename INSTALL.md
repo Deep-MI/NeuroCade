@@ -58,9 +58,7 @@ NEUROCADE_IMAGE=ghcr.io/deep-mi/neurocade:latest
 HOST_DATA_DIR=/path/to/NeuroCade/neurocade-data
 NEUROCADE_DB_DIR=/path/on/local-disk/neurocade-db
 DATABASE_URL=sqlite+pysqlite:////path/on/local-disk/neurocade-db/neurocade.db
-NEUROCADE_RUNTIME_BACKEND=apptainer
 NEUROCADE_GPU_MODE=auto
-NEUROCADE_PREPARE_TOOLS=true
 ```
 
 Use `ghcr.io/deep-mi/neurocade:beta` for the current prerelease channel, or an
@@ -133,12 +131,12 @@ rejected at startup so misspelled settings cannot silently fall back to defaults
 Workflow terminal logs are retained per run under each case's
 `scripts/runs/<run-id>/` directory.
 
-By default, startup prepares the Run Analysis images as architecture-specific
-SIF files in the persistent `neurocade-data/sif/` directory. Later jobs reuse
-those files instead of converting OCI layers again. Prepare them independently
-with `./scripts/run.sh prepare-tools`, or set `NEUROCADE_PREPARE_TOOLS=false` to
-defer downloading until the first run. Apptainer's routine progress output is
-suppressed in job logs; tool output and failures are still recorded.
+Startup prepares the pinned FastSurfer and dcm2niix images as verified,
+architecture-specific SIF files in `neurocade-data/sif/`. Downloads run in
+parallel, resume when supported, and are reused after checksum validation.
+Prepare them independently with `./scripts/run.sh prepare-tools`. Run
+`./scripts/run.sh doctor` to validate Docker, FUSE, storage, images, GPU, and LLM
+configuration.
 
 ## LLM Providers
 
@@ -149,6 +147,9 @@ Supported installer choices:
 - `google`
 - `ollama`
 - `no-llm`
+
+Unattended installation (`--yes` or redirected input) defaults to `no-llm`
+unless `--llm-provider` is supplied explicitly.
 
 For host-local Ollama, use `http://host.docker.internal:11434`; the run script
 adds the Docker host gateway mapping.

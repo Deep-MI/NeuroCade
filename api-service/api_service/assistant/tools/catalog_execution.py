@@ -7,8 +7,8 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from neurocade_runtime_tools.apptainer_runtime import require_network_disabled_image
 from neurocade_runtime_tools.container_request import RuntimeBind
-from neurocade_runtime_tools.runtime_backends import require_network_disabled_image
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 

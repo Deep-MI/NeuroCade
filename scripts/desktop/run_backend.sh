@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch the NeuroCade monolith backend natively for the desktop app.
 # Serves the API + built SPA from one uvicorn process; tools run via the
-# configured runtime backend (Apptainer by default, Docker for dev).
+# Apptainer runtime.
 # Keep this a SINGLE uvicorn worker: the in-process JobManager and SQLite's
 # single-writer model assume one process (do not add --workers).
 set -euo pipefail

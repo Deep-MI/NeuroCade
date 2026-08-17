@@ -16,6 +16,11 @@ def _exists(artifact: Artifact) -> bool:
         return False
 
 
+def existing_artifacts(artifacts: list[Artifact]) -> list[Artifact]:
+    """Return rows whose files exist without changing database state."""
+    return [artifact for artifact in artifacts if _exists(artifact)]
+
+
 def reconcile_artifacts(db: Session, artifacts: list[Artifact]) -> list[Artifact]:
     """Return existing artifacts and remove stable rows whose files are gone."""
     case_ids = {artifact.case_id for artifact in artifacts if artifact.case_id}

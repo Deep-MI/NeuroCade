@@ -46,7 +46,7 @@ Current coverage is organized around these areas:
 - Backend architecture, settings, auth, security, monitoring, and install policy: `test_app_architecture.py`, `test_security_hardening.py`, `test_monitoring_routes.py`, `test_install_scripts.py`, `test_chat_limits.py`
 - Assistant orchestration, streamed turns, persisted history, file tools, runtime tools, LUT lookup, and container runtime handoff: `test_assistant_runtime.py`, `test_assistant_turn_streaming_routes.py`, `test_assistant_history.py`, `test_assistant_file_tools.py`, `test_gui_runtime_tools.py`, `test_lut_lookup.py`, `test_monolith_runtime.py`, `test_runtime_execution.py`
 - Workspaces, cases, artifacts, filesystem reconciliation, sample seeding, admin reset, and app runtime routes: `test_workspace_routes.py`, `test_artifact_routes.py`, `test_case_resolver.py`, `test_bootstrap_seed.py`, `test_admin_reset.py`, `test_app_runtime_routes.py`
-- API E2E tests against the running app: `test_agent_run_e2e.py`, `test_fastsurfer_run_e2e.py`, and `test_mri_info_e2e.py`.
+- API E2E tests against the running app: `test_agent_run_e2e.py` and `test_fastsurfer_run_e2e.py`.
 - Browser E2E tests with Playwright: `test_gui_upload_run.py`, `test_gui_agent_run.py`, `test_gui_focus_label.py`, `test_gui_dicom_upload.py`, `test_gui_surface_commands.py`, and `test_gui_mri_vision.py`
 
 ## Running Tests

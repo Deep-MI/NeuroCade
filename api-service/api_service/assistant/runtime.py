@@ -31,7 +31,7 @@ CONFIG_DIR = ROOT_DIR / "config"
 def provider_unavailable_message(config: ModelConfig) -> str:
     if config.provider_family == "none":
         return "Assistant is disabled because no LLM provider is configured."
-    reason = config.availability_reason or f"Provider {config.provider} is not available"
+    reason = config.configuration_reason or f"Provider {config.provider} is not configured"
     return f"Model provider '{config.provider}' is not configured: {reason}"
 
 
@@ -205,7 +205,7 @@ class AssistantRuntime:
         persist: bool = True,
     ) -> dict[str, Any]:
         provider_config = provider_registry.get(provider_override=provider, model_override=model)
-        if not provider_config.available:
+        if not provider_config.configured:
             raise HTTPException(status_code=502, detail=provider_unavailable_message(provider_config))
         if persist and db is not None and context is not None and workspace_id is not None:
             _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)

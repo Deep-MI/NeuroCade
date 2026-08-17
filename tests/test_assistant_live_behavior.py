@@ -88,10 +88,10 @@ def test_tool_discovery_does_not_execute_workflow(live_cases):
     live_case = live_cases[3]
     content, calls = evaluate(
         live_case,
-        "Use tool_search to find the configured workflow that reports voxel resolution. Do not execute it.",
+        "Use tool_search to find the configured fast segmentation workflow. Do not execute it.",
     )
     assert calls
     assert calls[0]["name"] == "tool_search"
     assert all(call["name"] != "tool_call" for call in calls)
-    assert "mri_info_resolution" in "\n".join(call["result"] for call in calls)
-    assert "mri_info" in content.lower() or "voxel" in content.lower()
+    assert "fastsurfer_segmentation" in "\n".join(call["result"] for call in calls)
+    assert "fastsurfer" in content.lower() or "segmentation" in content.lower()

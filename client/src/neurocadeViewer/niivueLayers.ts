@@ -10,7 +10,6 @@ import {
   type NiivueVolumeInterop,
 } from '../utils/niivueInterop.js';
 import { compileNiivueLabelColorMap } from '../utils/niivueColorMap.js';
-import { prepareNiivueVolume } from '../utils/niivueMgh.js';
 import {
   applyBrightnessContrast,
   resolveVolumeColormap,
@@ -187,11 +186,9 @@ async function prepareVolumeLayer(volume: Volume, signal: AbortSignal): Promise<
     resolveVolumeLabelColorMap(volume),
   ]);
   if (signal.aborted) throw new DOMException('Volume preparation aborted', 'AbortError');
-  const prepared = await prepareNiivueVolume(buffer, filename);
-  if (signal.aborted) throw new DOMException('Volume preparation aborted', 'AbortError');
   return {
     source: volume,
-    file: new File([prepared.buffer], prepared.filename),
+    file: new File([buffer], filename),
     labelMap,
   };
 }

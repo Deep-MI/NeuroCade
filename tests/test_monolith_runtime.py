@@ -1,4 +1,4 @@
-"""In-process tests for the monolith runtime: backends, JobWorker, execution.
+"""In-process tests for the monolith runtime: Apptainer, JobWorker, execution.
 
 These exercise the in-process runtime components used by the monolith,
 and Redis. They run fully in-process (no Docker/Apptainer/stack required).
@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
+from neurocade_runtime_tools import apptainer_runtime as rb
 from neurocade_runtime_tools import execution as execution_module
-from neurocade_runtime_tools import runtime_backends as rb
 from neurocade_runtime_tools.execution import (
     RuntimeBind,
     RuntimeContainerRunRequest,
@@ -30,7 +30,7 @@ from neurocade_runtime_tools.execution import (
     process_observer,
 )
 
-# --- runtime backends -----------------------------------------------------
+# --- Apptainer runtime ---------------------------------------------------
 
 def _sample_request() -> RuntimeContainerRunRequest:
     return RuntimeContainerRunRequest(
@@ -42,47 +42,11 @@ def _sample_request() -> RuntimeContainerRunRequest:
     )
 
 
-def test_docker_backend_builds_expected_argv():
-    argv = rb.DockerBackend().build_argv(_sample_request())
-    assert argv[:2] == ["docker", "run"]
-    assert "--rm" in argv and "--gpus" in argv
-    assert "--network" in argv and "none" in argv
-    assert "type=bind,src=/host/data,dst=/data,readonly" in argv
-    assert "type=bind,src=/host/out,dst=/output" in argv
-    assert "--env" in argv and "TOOL_ENV=enabled" in argv
-    # image precedes the in-container command
-    image_idx = argv.index("vnmd/fastsurfer_2.4.2:20260115")
-    assert argv[image_idx + 1] == "/fastsurfer/run_fastsurfer.sh"
-
-
-def test_docker_backend_isolates_probe_container():
-    request = RuntimeContainerRunRequest(
-        image="antsx/ants:v2.6.5",
-        command=["bash", "-lc", "DenoiseImage --help"],
-        isolated=True,
-    )
-
-    argv = rb.DockerBackend().build_argv(request)
-
-    assert argv[argv.index("--network") + 1] == "none"
-    assert argv[argv.index("--pull") + 1] == "never"
-    assert "--read-only" in argv
-    assert argv[argv.index("--user") + 1] == "65534:65534"
-    assert argv[argv.index("--cap-drop") + 1] == "ALL"
-    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
-    assert argv[argv.index("--pids-limit") + 1] == "64"
-    assert argv[argv.index("--memory") + 1] == "512m"
-    assert argv[argv.index("--cpus") + 1] == "1"
-    assert argv[argv.index("--tmpfs") + 1].startswith("/tmp:rw,")
-    assert "HOME=/tmp" in argv
-    assert "--mount" not in argv
-
-
-def test_apptainer_backend_builds_expected_argv(monkeypatch, tmp_path):
+def test_apptainer_builds_expected_argv(monkeypatch, tmp_path):
     sif = tmp_path / "fastsurfer.sif"
     sif.write_bytes(b"sif")
     monkeypatch.setattr(rb, "resolve_apptainer_image", lambda _image: str(sif))
-    argv = rb.ApptainerBackend().build_argv(_sample_request())
+    argv = rb.build_container_argv(_sample_request())
     assert argv[:3] == ["apptainer", "--quiet", "exec"]
     assert "--net" in argv
     assert argv[argv.index("--network") + 1] == "none"
@@ -93,7 +57,7 @@ def test_apptainer_backend_builds_expected_argv(monkeypatch, tmp_path):
     assert str(sif) in argv
 
 
-def test_apptainer_backend_disables_implicit_host_mounts_for_probe(monkeypatch, tmp_path):
+def test_apptainer_disables_implicit_host_mounts_for_probe(monkeypatch, tmp_path):
     sif = tmp_path / "ants.sif"
     sif.write_bytes(b"sif")
     monkeypatch.setattr(rb, "resolve_apptainer_image", lambda _image: str(sif))
@@ -103,7 +67,7 @@ def test_apptainer_backend_disables_implicit_host_mounts_for_probe(monkeypatch, 
         isolated=True,
     )
 
-    argv = rb.ApptainerBackend().build_argv(request)
+    argv = rb.build_container_argv(request)
 
     assert "--contain" in argv
     assert argv[argv.index("--no-mount") + 1] == "hostfs,cwd,proc,sys"
@@ -112,7 +76,7 @@ def test_apptainer_backend_disables_implicit_host_mounts_for_probe(monkeypatch, 
 
 def test_isolated_container_rejects_binds_and_gpu():
     with pytest.raises(ValueError, match="cannot use bind mounts"):
-        rb.DockerBackend().build_argv(
+        rb.build_container_argv(
             RuntimeContainerRunRequest(
                 image="antsx/ants:v2.6.5",
                 command=["true"],
@@ -121,7 +85,7 @@ def test_isolated_container_rejects_binds_and_gpu():
             )
         )
     with pytest.raises(ValueError, match="cannot request a GPU"):
-        rb.DockerBackend().build_argv(
+        rb.build_container_argv(
             RuntimeContainerRunRequest(
                 image="antsx/ants:v2.6.5",
                 command=["true"],
@@ -131,18 +95,18 @@ def test_isolated_container_rejects_binds_and_gpu():
         )
 
 
-def test_apptainer_backend_rejects_unprepared_image_without_network(monkeypatch):
+def test_apptainer_rejects_unprepared_image_without_network(monkeypatch):
     monkeypatch.setattr(rb, "resolve_apptainer_image", lambda image: f"docker://{image}")
 
     with pytest.raises(RuntimeError, match="prepare-tools"):
-        rb.ApptainerBackend().build_argv(_sample_request())
+        rb.build_container_argv(_sample_request())
 
 
-def test_apptainer_backend_allows_requested_network():
+def test_apptainer_allows_requested_network():
     request = _sample_request()
     request.network_disabled = False
 
-    argv = rb.ApptainerBackend().build_argv(request)
+    argv = rb.build_container_argv(request)
 
     assert "--net" not in argv
     assert "--network" not in argv
@@ -245,17 +209,7 @@ def test_apptainer_resolves_generic_prebuilt_sif_name(tmp_path, monkeypatch):
 def test_rootless_validation_rejects_fakeroot():
     bad = RuntimeContainerRunRequest(image="alpine", command=["--fakeroot", "sh"])
     with pytest.raises(ValueError):
-        rb.ApptainerBackend().build_argv(bad)
-
-
-def test_select_backend_honours_env(monkeypatch):
-    monkeypatch.setenv(rb.RUNTIME_BACKEND_ENV, "docker")
-    assert rb.select_runtime_backend().name == "docker"
-    monkeypatch.setenv(rb.RUNTIME_BACKEND_ENV, "apptainer")
-    assert rb.select_runtime_backend().name == "apptainer"
-    monkeypatch.setenv(rb.RUNTIME_BACKEND_ENV, "nonsense")
-    with pytest.raises(ValueError):
-        rb.select_runtime_backend()
+        rb.build_container_argv(bad)
 
 
 def test_arch_normalisation():
@@ -337,7 +291,7 @@ def test_observer_cancellation_kills_process_group():
 
 
 def test_container_request_routes_through_backend(monkeypatch):
-    # execute_runtime_request imports build_container_argv from runtime_backends
+    # execute_runtime_request imports build_container_argv from apptainer_runtime
     # at call time, so stubbing the module attribute redirects container runs to
     # a harmless echo and proves container_run is wired into local execution.
     monkeypatch.setattr(rb, "build_container_argv", lambda req: ["sh", "-c", "echo wired"])

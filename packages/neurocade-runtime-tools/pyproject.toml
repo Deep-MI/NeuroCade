@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neurocade-runtime-tools"
 version = "0.1.0"
-description = "NeuroCade Apptainer and Docker runtime helpers"
+description = "NeuroCade Apptainer runtime helpers"
 requires-python = ">=3.12,<3.13"
 
 [tool.setuptools.packages.find]

@@ -21,7 +21,7 @@ Options:
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
   --image IMAGE                   Published image tag or digest. Default: ghcr.io/deep-mi/neurocade:latest.
-  --no-start                      Write .env and build nothing.
+  --no-start                      Prepare required images without launching the app.
   --yes                           Accept defaults for omitted prompts.
   --help                          Show this help.
 EOF
@@ -107,6 +107,37 @@ configured_or_default() {
   fi
 }
 
+detect_configured_provider() {
+  local root="$1" configured candidate value
+  configured="$(configured_or_default "$root" LLM_PROVIDER_DEFAULT "")"
+  if [[ -n "$configured" ]]; then
+    printf '%s\n' "$configured"
+    return
+  fi
+
+  local -a candidates=()
+  value="$(configured_or_default "$root" LLM_BACKEND_URL "")"
+  [[ -n "$value" ]] && candidates+=(openai-compatible)
+  value="$(configured_or_default "$root" LLM_BACKEND_API_KEY "")"
+  [[ -n "$value" ]] && candidates+=(openai-compatible)
+  value="$(configured_or_default "$root" ANTHROPIC_API_KEY "")"
+  [[ -n "$value" ]] && candidates+=(anthropic)
+  value="$(configured_or_default "$root" GOOGLE_API_KEY "")"
+  [[ -n "$value" ]] && candidates+=(google)
+  value="$(configured_or_default "$root" OLLAMA_BASE_URL "")"
+  [[ -n "$value" ]] && candidates+=(ollama)
+
+  local -a unique=()
+  for candidate in "${candidates[@]}"; do
+    [[ " ${unique[*]} " == *" $candidate "* ]] || unique+=("$candidate")
+  done
+  if (( ${#unique[@]} > 1 )); then
+    echo "Multiple LLM provider configurations were found; pass --llm-provider explicitly." >&2
+    return 2
+  fi
+  (( ${#unique[@]} == 0 )) || printf '%s\n' "${unique[0]}"
+}
+
 normalize_mode() {
   case "$1" in
     local|internal|demo) printf '%s\n' "$1" ;;
@@ -128,17 +159,6 @@ default_docker_platform() {
   if [[ "$os" == "Darwin" && "$arch" =~ ^(arm64|aarch64)$ ]]; then
     printf 'linux/amd64\n'
   fi
-}
-
-require_docker() {
-  command -v docker >/dev/null 2>&1 || {
-    echo "Docker is required. Install Docker Engine or Docker Desktop, then rerun this installer." >&2
-    exit 1
-  }
-  docker info >/dev/null 2>&1 || {
-    echo "Docker is installed but not running or not accessible to this user." >&2
-    exit 1
-  }
 }
 
 require_value() {
@@ -200,14 +220,17 @@ write_env() {
       llm_url="$(prompt "OpenAI-compatible base URL" "$(configured_or_default "$root" LLM_BACKEND_URL "")")"
       llm_key="$(prompt "OpenAI-compatible API key (optional)" "$(configured_or_default "$root" LLM_BACKEND_API_KEY "")" true)"
       llm_model="$(prompt "OpenAI-compatible model" "$(configured_or_default "$root" LLM_BACKEND_MODEL "$llm_model")")"
+      require_value "OpenAI-compatible base URL" "$llm_url"
       ;;
     anthropic)
       anthropic_key="$(prompt "Anthropic API key" "$(configured_or_default "$root" ANTHROPIC_API_KEY "")" true)"
       anthropic_model="$(prompt "Anthropic model" "$(configured_or_default "$root" ANTHROPIC_MODEL "claude-3-5-sonnet-latest")")"
+      require_value "Anthropic API key" "$anthropic_key"
       ;;
     google)
       google_key="$(prompt "Google API key" "$(configured_or_default "$root" GOOGLE_API_KEY "")" true)"
       google_model="$(prompt "Google model" "$(configured_or_default "$root" GOOGLE_MODEL "gemini-2.0-flash")")"
+      require_value "Google API key" "$google_key"
       ;;
     ollama)
       ollama_model="$(prompt "Ollama model" "$(configured_or_default "$root" OLLAMA_MODEL "gemma4:e2b")")"
@@ -258,9 +281,7 @@ write_env() {
     env_line NEUROCADE_IMAGE "$image"
     env_line NEUROCADE_DOCKER_PLATFORM "$docker_platform"
     env_line DATABASE_URL "sqlite+pysqlite:///$db_dir/neurocade.db"
-    env_line NEUROCADE_RUNTIME_BACKEND "apptainer"
     env_line NEUROCADE_GPU_MODE "$(configured_or_default "$root" NEUROCADE_GPU_MODE "auto")"
-    env_line NEUROCADE_PREPARE_TOOLS "$(configured_or_default "$root" NEUROCADE_PREPARE_TOOLS "true")"
     env_line LOCAL_AUTH_ENABLED "$local_auth"
     env_line LOCAL_AUTH_USER_ID "local-user"
     env_line LOCAL_AUTH_EMAIL "local@example.com"
@@ -288,7 +309,7 @@ write_env() {
 bootstrap_checkout "$@"
 
 MODE="local"
-LLM_PROVIDER="openai-compatible"
+LLM_PROVIDER=""
 IMAGE_OVERRIDE=""
 START=1
 ASSUME_YES=0
@@ -320,13 +341,24 @@ done
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 MODE="$(normalize_mode "$MODE")"
+if [[ -z "$LLM_PROVIDER" ]]; then
+  LLM_PROVIDER="$(detect_configured_provider "$ROOT_DIR")"
+  if [[ -n "$LLM_PROVIDER" ]]; then
+    :
+  elif [[ "$ASSUME_YES" -eq 1 ]] || ! is_tty; then
+    LLM_PROVIDER="no-llm"
+  else
+    LLM_PROVIDER="$(prompt "LLM provider (openai-compatible, anthropic, google, ollama, or no-llm)" "no-llm")"
+  fi
+fi
 LLM_PROVIDER="$(normalize_provider "$LLM_PROVIDER")"
 
 write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$IMAGE_OVERRIDE"
 
 if [[ "$START" -eq 1 ]]; then
-  require_docker
   "$ROOT_DIR/scripts/run.sh" start -d
+else
+  "$ROOT_DIR/scripts/run.sh" prepare-tools
 fi
 
 echo

@@ -166,7 +166,7 @@ def execute_runtime_request(request: RuntimeExecutionRequest) -> RuntimeExecutio
     run directly.
     """
     if request.container_run is not None:
-        from .runtime_backends import build_container_argv
+        from .apptainer_runtime import build_container_argv
 
         request.argv = build_container_argv(request.container_run)
         request.container_run = None

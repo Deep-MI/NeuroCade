@@ -11,7 +11,7 @@ from api_service.helpers import get_case_for_user, get_workspace_for_user, log_e
 from api_service.policies import require_case_read
 from api_service.runtime import settings
 from api_service.schemas import CaseDetail, CaseSummary, RunSummary
-from backend_common.artifact_reconciliation import reconcile_artifacts
+from backend_common.artifact_reconciliation import existing_artifacts
 from backend_common.auth import AuthContext
 from backend_common.case_storage import resolve_case_storage
 from backend_common.db import Artifact, AssistantScope, AssistantThread, Case, Run, Workspace, WorkspaceMembership
@@ -82,10 +82,7 @@ def list_visible_cases(
         ):
             if run.case_id is not None:
                 runs_by_case.setdefault(run.case_id, run)
-        for artifact in reconcile_artifacts(
-            db,
-            db.query(Artifact).filter(Artifact.case_id.in_(case_ids)).all()
-        ):
+        for artifact in existing_artifacts(db.query(Artifact).filter(Artifact.case_id.in_(case_ids)).all()):
             if artifact.case_id is not None:
                 artifact_counts[artifact.case_id] = artifact_counts.get(artifact.case_id, 0) + 1
 
@@ -99,7 +96,6 @@ def list_visible_cases(
         )
         for case, role in case_rows
     ]
-    db.commit()
     return summaries
 
 
@@ -122,7 +118,7 @@ def get_case_detail_for_user(db: Session, context: AuthContext, *, case_id: str)
         case,
         role,
         thread=thread,
-        artifacts=reconcile_artifacts(db, artifacts),
+        artifacts=existing_artifacts(artifacts),
         runs=runs,
     )
 

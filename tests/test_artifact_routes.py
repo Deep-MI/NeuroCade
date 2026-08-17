@@ -19,7 +19,12 @@ from api_service.routers import artifacts as artifacts_module  # noqa: E402
 from api_service.routers.artifacts import download_case_archive, list_case_artifacts  # noqa: E402
 from api_service.routers.cases import case_logs, case_runs, list_cases  # noqa: E402
 from api_service.runtime_tools.workflow_catalog import resolve_workflow  # noqa: E402
-from api_service.runtime_tools.workflow_outputs import snapshot_workflow_outputs, write_output_baseline  # noqa: E402
+from api_service.runtime_tools.workflow_outputs import (  # noqa: E402
+    index_all_case_workflow_outputs,
+    index_latest_case_workflow_outputs,
+    snapshot_workflow_outputs,
+    write_output_baseline,
+)
 
 from backend_common import storage as storage_module  # noqa: E402
 from backend_common.case_storage import case_storage_dir, ensure_case_storage_layout  # noqa: E402
@@ -47,7 +52,6 @@ def seeded_case(db_session, monkeypatch, tmp_path):
     """Create a case with existing, missing, and queued-run artifacts."""
     monkeypatch.setattr(storage_module.settings, "fs_data_root", tmp_path)
     monkeypatch.setattr(cases_module.settings, "fs_data_root", tmp_path)
-    monkeypatch.setattr(artifacts_module.settings, "fs_data_root", tmp_path)
 
     context, workspace, cases = seed_workspace_context(
         db_session,
@@ -114,7 +118,7 @@ def test_list_case_artifacts_skips_missing_files(seeded_case):
     assert db_session.get(Artifact, "artifact-missing") is not None
 
 
-def test_list_case_artifacts_prunes_stable_missing_rows_and_preserves_events(seeded_case):
+def test_list_case_artifacts_does_not_mutate_missing_rows_or_events(seeded_case):
     db_session, context = seeded_case
     run = db_session.get(Run, "run-1")
     assert run is not None
@@ -140,11 +144,11 @@ def test_list_case_artifacts_prunes_stable_missing_rows_and_preserves_events(see
     artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
 
     assert [artifact.name for artifact in artifacts] == ["existing.mgz"]
-    assert db_session.get(Artifact, "artifact-missing") is None
+    assert db_session.get(Artifact, "artifact-missing") is not None
     db_session.refresh(audit_event)
     db_session.refresh(case_event)
-    assert audit_event.artifact_id is None
-    assert case_event.artifact_id is None
+    assert audit_event.artifact_id == "artifact-missing"
+    assert case_event.artifact_id == "artifact-missing"
 
 
 def test_artifact_download_path_for_readable_output_case(seeded_case):
@@ -184,7 +188,7 @@ def test_list_case_artifacts_does_not_index_unregistered_files(seeded_case):
     db_session.query(Artifact).filter(Artifact.case_id == CASE_ID).delete()
     db_session.commit()
 
-    restored_path = case_storage_dir(artifacts_module.settings, workspace.id, case.id) / "restored.nii.gz"
+    restored_path = case_storage_dir(storage_module.settings, workspace.id, case.id) / "restored.nii.gz"
     restored_path.write_bytes(b"nii")
 
     artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
@@ -198,6 +202,26 @@ def test_list_case_artifacts_does_not_index_unregistered_files(seeded_case):
     assert restored_artifact is None
 
 
+def test_startup_recovery_indexes_catalog_outputs_before_artifact_reads(seeded_case):
+    db_session, context = seeded_case
+    case = db_session.get(Case, CASE_ID)
+    workspace = db_session.get(Workspace, "workspace-1")
+    assert case is not None
+    assert workspace is not None
+    db_session.query(Artifact).filter(Artifact.case_id == CASE_ID).delete()
+    segmentation = case_storage_dir(storage_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    segmentation.parent.mkdir(parents=True, exist_ok=True)
+    segmentation.write_bytes(b"recovered segmentation")
+    db_session.commit()
+
+    indexed = index_all_case_workflow_outputs(db_session, storage_module.settings)
+    db_session.commit()
+    artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
+
+    assert any(artifact.relative_path == "mri/aparc.DKTatlas+aseg.deep.mgz" for artifact in indexed)
+    assert [artifact.name for artifact in artifacts] == ["aparc.DKTatlas+aseg.deep.mgz"]
+
+
 def test_list_case_artifacts_preserves_stored_volume_role(seeded_case):
     db_session, context = seeded_case
     case = db_session.get(Case, CASE_ID)
@@ -206,7 +230,7 @@ def test_list_case_artifacts_preserves_stored_volume_role(seeded_case):
     assert workspace is not None
 
     mask_rel = "mask.mgz"
-    mask_path = case_storage_dir(artifacts_module.settings, workspace.id, case.id) / mask_rel
+    mask_path = case_storage_dir(storage_module.settings, workspace.id, case.id) / mask_rel
     mask_path.write_bytes(b"mask")
     db_session.add(Artifact(
         id="artifact-mask-upload",
@@ -239,7 +263,7 @@ def test_list_case_artifacts_indexes_typed_catalog_outputs_while_run_is_active(s
     run.run_type = "fastsurfer_full"
     db_session.commit()
 
-    case_dir = case_storage_dir(artifacts_module.settings, workspace.id, case.id)
+    case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
     workflow = resolve_workflow(run.run_type)
     segmentation = case_dir / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     surface = case_dir / "surf" / "lh.white"
@@ -261,6 +285,7 @@ def test_list_case_artifacts_indexes_typed_catalog_outputs_while_run_is_active(s
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(contents)
 
+    index_latest_case_workflow_outputs(db_session, storage_module.settings, case)
     artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
     by_name = {artifact.name: artifact for artifact in artifacts}
 
@@ -288,6 +313,7 @@ def test_list_case_artifacts_indexes_typed_catalog_outputs_while_run_is_active(s
     final_callosum.write_bytes(b"callosum")
     db_session.commit()
 
+    index_latest_case_workflow_outputs(db_session, storage_module.settings, case)
     completed_artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
     callosum = next(artifact for artifact in completed_artifacts if artifact.name == final_callosum.name)
     assert callosum.metadata["output_type"] == "segmentation_volume"
@@ -310,11 +336,12 @@ def test_manual_output_name_override_sets_display_metadata_without_renaming_file
     run.result_json = {
         "outputs": [{"name": "whole_brain_segmentation", "state": "created"}],
     }
-    segmentation = case_storage_dir(artifacts_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    segmentation = case_storage_dir(storage_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     segmentation.parent.mkdir(parents=True, exist_ok=True)
     segmentation.write_bytes(b"segmentation")
     db_session.commit()
 
+    index_latest_case_workflow_outputs(db_session, storage_module.settings, case)
     first = list_case_artifacts(CASE_ID, db=db_session, context=context)
     second = list_case_artifacts(CASE_ID, db=db_session, context=context)
 
@@ -335,12 +362,13 @@ def test_catalog_retypes_existing_outputs_not_declared_by_latest_workflow(seeded
     run.run_type = "fastsurfer_fast"
     run.status = RunStatus.completed
 
-    case_dir = case_storage_dir(artifacts_module.settings, workspace.id, case.id)
+    case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
     callosum_path = case_dir / "mri" / "callosum.CC.upright.mgz"
     callosum_path.parent.mkdir(parents=True, exist_ok=True)
     callosum_path.write_bytes(b"callosum")
     db_session.commit()
 
+    index_latest_case_workflow_outputs(db_session, storage_module.settings, case)
     artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
     callosum = next(artifact for artifact in artifacts if artifact.name == callosum_path.name)
 
@@ -361,7 +389,7 @@ def test_catalog_refresh_preserves_original_output_producer(seeded_case):
     run.run_type = "fastsurfer_fast"
     run.status = RunStatus.completed
 
-    case_dir = case_storage_dir(artifacts_module.settings, workspace.id, case.id)
+    case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
     callosum_path = case_dir / "mri" / "callosum.CC.orig.mgz"
     callosum_path.parent.mkdir(parents=True, exist_ok=True)
     callosum_path.write_bytes(b"callosum")
@@ -404,10 +432,11 @@ def test_list_case_artifacts_indexes_only_config_declared_new_volumes(seeded_cas
     assert case is not None
     assert workspace is not None
 
-    seg_path = case_storage_dir(artifacts_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    seg_path = case_storage_dir(storage_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     seg_path.parent.mkdir(parents=True, exist_ok=True)
     seg_path.write_bytes(b"seg")
 
+    index_latest_case_workflow_outputs(db_session, storage_module.settings, case)
     artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
     seg_artifact = (
         db_session.query(Artifact)
@@ -428,7 +457,7 @@ def test_download_case_archive_returns_zip_with_case_contents(seeded_case):
     assert case is not None
     assert workspace is not None
 
-    scripts_dir = case_storage_dir(artifacts_module.settings, workspace.id, case.id) / "scripts" / "runs" / "run-1"
+    scripts_dir = case_storage_dir(storage_module.settings, workspace.id, case.id) / "scripts" / "runs" / "run-1"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     (scripts_dir / "stdout.log").write_text("step 1\n", encoding="utf-8")
 
@@ -452,7 +481,7 @@ def test_download_case_archive_skips_symlinked_files_outside_case(seeded_case, t
 
     outside_file = tmp_path / "outside-secret.txt"
     outside_file.write_text("secret\n", encoding="utf-8")
-    case_dir = case_storage_dir(artifacts_module.settings, workspace.id, case.id)
+    case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
     (case_dir / "leaked.txt").symlink_to(outside_file)
 
     response = download_case_archive(CASE_ID, db=db_session, context=context)
@@ -474,7 +503,7 @@ def test_artifact_download_rejects_case_row_pointing_outside_case(seeded_case):
     other_case = Case(id="case-2-id", workspace_id=workspace.id, owner_user_id=context.user.id, title="case-2")
     db_session.add(other_case)
     db_session.flush()
-    other_dir = ensure_case_storage_layout(artifacts_module.settings, other_case, workspace)
+    other_dir = ensure_case_storage_layout(storage_module.settings, other_case, workspace)
     secret_path = other_dir / "secret.mgz"
     secret_path.write_bytes(b"secret")
     db_session.add(

@@ -5,8 +5,8 @@ from __future__ import annotations
 from uuid import uuid4
 
 from fastapi import HTTPException
+from neurocade_runtime_tools.apptainer_runtime import RuntimeGpuUnavailableError, resolve_gpu_enabled
 from neurocade_runtime_tools.container_request import RuntimeBind
-from neurocade_runtime_tools.runtime_backends import RuntimeGpuUnavailableError, resolve_gpu_enabled
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 

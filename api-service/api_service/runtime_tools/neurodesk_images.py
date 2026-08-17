@@ -16,11 +16,10 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from neurocade_runtime_tools.runtime_backends import (
+from neurocade_runtime_tools.apptainer_runtime import (
     SIF_DIR_ENV,
     apptainer_sif_path,
     require_network_disabled_image,
-    select_runtime_backend,
 )
 from pydantic import BaseModel, Field
 
@@ -275,7 +274,7 @@ def ensure_image_prepared(
     force: bool = False,
 ) -> Path | None:
     """Prepare a cataloged NeuroDesk image on first use; ignore other registries."""
-    if select_runtime_backend().name != "apptainer" or not image.startswith("vnmd/"):
+    if not image.startswith("vnmd/"):
         return None
     loaded = load_image_catalog(settings=settings)
     record = find_image_by_reference(loaded.catalog, image)

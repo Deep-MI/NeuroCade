@@ -339,7 +339,7 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
             turn_id=workflow_turn.id,
             tool=workflow_tool,
             call_id="call-workflow",
-            arguments={"tool_id": "mri_info", "inputs": ["/workspace/input.mgz"]},
+            arguments={"tool_id": "fastsurfer_fast", "inputs": ["/workspace/input.mgz"]},
             approved=True,
         )
         assert workflow_execution is not None
@@ -352,7 +352,7 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
             case_id=None,
             created_by_user_id=user.id,
             status=RunStatus.queued,
-            run_type="mri_info",
+            run_type="fastsurfer_fast",
             input_json={"inputs": ["/workspace/input.mgz"]},
             result_json={"status": "queued"},
         ))
@@ -434,7 +434,7 @@ def test_runtime_approval_continues_without_replanning(monkeypatch, tmp_path):
         monkeypatch.setattr(
             provider_registry,
             "get",
-            lambda **_kwargs: ModelConfig("test", "openai_compatible", "model", available=True),
+            lambda **_kwargs: ModelConfig("test", "openai_compatible", "model", configured=True),
         )
         monkeypatch.setattr(provider_registry, "build_chat_model", lambda **_kwargs: model)
         runtime = AssistantRuntime(object())  # type: ignore[arg-type]

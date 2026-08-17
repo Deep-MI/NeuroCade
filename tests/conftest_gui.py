@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import shutil
 
 import pytest
 import requests
@@ -47,12 +46,7 @@ def _check_playwright():
 def browser(_check_playwright):
     """Launch one Chromium browser per GUI test module."""
     assert sync_playwright is not None
-    executable_path = (
-        os.environ.get("CHROMIUM_EXECUTABLE_PATH")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or shutil.which("google-chrome")
-    )
+    executable_path = os.environ.get("CHROMIUM_EXECUTABLE_PATH")
     launch_options: dict[str, object] = {
         "headless": os.environ.get("HEADED", "").lower() not in ("1", "true"),
     }

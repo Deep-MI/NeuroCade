@@ -31,13 +31,8 @@ image. Use `cuda` to require both checks and fail early, or `cpu` to skip them.
 
 Run Analysis images are prepared as persistent, architecture-specific SIF files
 under `neurocade-data/sif/` during startup. Use
-`./scripts/run.sh prepare-tools` to populate them without starting the app, or
-set `NEUROCADE_PREPARE_TOOLS=false` to defer conversion until first use.
-
-On Apple Silicon, the installer selects `linux/amd64` for the outer Docker
-image so the amd64 NeuroDesk tools and Apptainer runtime execute consistently
-under Docker Desktop emulation. Enable Docker Desktop Rosetta support before
-installing; this mode is slower and does not support GPU execution.
+`./scripts/run.sh prepare-tools` to populate them without starting the app.
+The beta installation is qualified on Linux amd64.
 
 Workflow definitions are loaded from `config/neuroimaging_tools.yaml` by
 `tool_search` and `tool_call`.

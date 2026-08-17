@@ -8,6 +8,7 @@ ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/lib/env.sh"
 load_env_file
+source "$ROOT_DIR/scripts/lib/doctor.sh"
 
 CONTAINER_NAME="${NEUROCADE_CONTAINER_NAME:-neurocade}"
 IMAGE="${NEUROCADE_IMAGE:-ghcr.io/deep-mi/neurocade:latest}"
@@ -31,18 +32,18 @@ SAMPLE_CASE_SHA256="${NEUROCADE_SAMPLE_CASE_SHA256:-71814b4687180e10543523bb0729
 GPU_MODE="${NEUROCADE_GPU_MODE:-auto}"
 RUNTIME_UID="${NEUROCADE_UID:-$(id -u)}"
 RUNTIME_GID="${NEUROCADE_GID:-$(id -g)}"
-PREPARE_TOOLS="${NEUROCADE_PREPARE_TOOLS:-true}"
 STARTUP_TIMEOUT_SECONDS="${NEUROCADE_STARTUP_TIMEOUT_SECONDS:-120}"
 GPU_ARGS=()
 RUNTIME_CONTAINER_ARGS=()
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/run.sh [start|stop|status|logs|pull|build|prepare-tools] [options]
+Usage: ./scripts/run.sh [start|stop|status|logs|pull|build|prepare-tools|doctor] [options]
 
 Default command is `start`. The script requires Docker only.
 `start` pulls the published image when it is missing; `--build` builds locally.
 `prepare-tools` downloads all catalog workflow images into the persistent SIF directory.
+`doctor` checks the host, container runtime, storage, images, GPU, and LLM setup.
 
 Start options:
   -d, --detach       Run the container in the background.
@@ -109,6 +110,11 @@ validate_runtime_settings() {
 wait_for_backend() {
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
+    if ! docker ps --filter "name=^/${CONTAINER_NAME}$" --filter "status=running" --quiet | grep -q .; then
+      echo "NeuroCade exited before becoming ready." >&2
+      docker logs --tail 100 "$CONTAINER_NAME" >&2 || true
+      return 1
+    fi
     if docker exec "$CONTAINER_NAME" python -c \
       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/app/healthz", timeout=2).read()' \
       >/dev/null 2>&1; then
@@ -185,6 +191,15 @@ prepare_tool_images() {
     python -m api_service.runtime_tools.prepare_images "$@"
 }
 
+run_container_doctor() {
+  runtime_container_args
+  docker run --rm "${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}" \
+    "${GPU_ARGS[@]+"${GPU_ARGS[@]}"}" \
+    "${RUNTIME_CONTAINER_ARGS[@]}" \
+    "$IMAGE" \
+    python -m api_service.runtime_tools.doctor "$@"
+}
+
 docker_gpu_available() {
   docker run --rm "${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}" \
     --gpus all \
@@ -258,44 +273,12 @@ ensure_sample_case() {
     -e "SAMPLE_CASE_SHA256=$SAMPLE_CASE_SHA256" \
     -v "${SAMPLE_CASE_DIR}:/sample_case" \
     "$IMAGE" \
-    python -c '
-from pathlib import Path
-import hashlib
-import os
-import sys
-import tarfile
-import tempfile
-import urllib.request
-
-url = os.environ["SAMPLE_CASE_URL"]
-name = os.environ["SAMPLE_CASE_NAME"]
-expected_sha256 = os.environ["SAMPLE_CASE_SHA256"]
-root = Path("/sample_case").resolve()
-target = root / name
-if target.exists() and any(target.rglob("*")):
-    sys.exit(0)
-
-with tempfile.NamedTemporaryFile(suffix=".tar.gz") as archive:
-    urllib.request.urlretrieve(url, archive.name)
-    with open(archive.name, "rb") as sample_file:
-        digest = hashlib.file_digest(sample_file, "sha256").hexdigest()
-    if digest != expected_sha256:
-        raise RuntimeError(f"Sample archive checksum mismatch: expected {expected_sha256}, got {digest}")
-    with tarfile.open(archive.name, "r:gz") as tar:
-        for member in tar.getmembers():
-            destination = (root / member.name).resolve()
-            if root != destination and root not in destination.parents:
-                raise RuntimeError(f"Unsafe sample archive path: {member.name}")
-        tar.extractall(root)
-
-if not target.exists() or not any(target.rglob("*")):
-    raise RuntimeError(f"Sample archive did not create {target}")
-'
+    python -m api_service.runtime_tools.prepare_sample_case
 }
 
 command="${1:-start}"
 case "$command" in
-  start|stop|status|logs|pull|build|prepare-tools)
+  start|stop|status|logs|pull|build|prepare-tools|doctor)
     shift || true
     ;;
   -h|--help)
@@ -359,11 +342,35 @@ case "$command" in
     ;;
   prepare-tools)
     validate_runtime_settings
+    run_host_doctor
     ensure_app_image
     configure_gpu
     ensure_runtime_directories
     ensure_runtime_ownership
+    run_container_doctor --pre-download
     prepare_tool_images
+    ;;
+  doctor)
+    validate_runtime_settings
+    ensure_runtime_directories
+    run_host_doctor
+    if docker_image_exists; then
+      doctor_ok "Application image metadata is readable"
+      if docker_image_matches_platform; then
+        doctor_ok "Application image matches the configured platform"
+      else
+        doctor_fail "Application image does not match ${DOCKER_PLATFORM}"
+      fi
+      ensure_runtime_ownership
+      configure_gpu
+      run_container_doctor
+    else
+      doctor_fail "Application image $IMAGE is not installed; Apptainer and image-integrity checks cannot run"
+    fi
+    if (( DOCTOR_FAILURES > 0 )); then
+      printf 'Doctor found %d fatal problem(s).\n' "$DOCTOR_FAILURES" >&2
+      exit 1
+    fi
     ;;
   stop)
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -376,6 +383,8 @@ case "$command" in
     ;;
   start)
     validate_runtime_settings
+    ensure_runtime_directories
+    run_host_doctor
     display_host="$HTTP_BIND"
     [[ "$display_host" == "0.0.0.0" || "$display_host" == "::" ]] && display_host="localhost"
     if [[ "$build" -eq 1 ]]; then
@@ -400,9 +409,8 @@ case "$command" in
     configure_gpu
     ensure_runtime_directories
     ensure_runtime_ownership
-    if truthy "$PREPARE_TOOLS"; then
-      prepare_tool_images
-    fi
+    run_container_doctor --pre-download
+    prepare_tool_images
 
     run_args=(docker run --name "$CONTAINER_NAME")
     run_args+=("${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}")
@@ -422,7 +430,6 @@ case "$command" in
     [[ -f "$ENV_FILE" ]] && run_args+=(--env-file "$ENV_FILE")
     run_args+=(
       -e "NEUROCADE_ACCESS_URL=http://${display_host}:${HTTP_PORT}"
-      -e "NEUROCADE_RUNTIME_BACKEND=${NEUROCADE_RUNTIME_BACKEND:-apptainer}"
       -e "OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       "$IMAGE"
     )

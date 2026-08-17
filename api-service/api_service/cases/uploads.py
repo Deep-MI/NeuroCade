@@ -235,7 +235,7 @@ def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
             )
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail="Docker is not installed or not on PATH") from exc
+        raise HTTPException(status_code=500, detail="Apptainer is not installed or not on PATH") from exc
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail="DICOM conversion timed out") from exc
     if result.returncode != 0:

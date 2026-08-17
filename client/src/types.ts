@@ -380,8 +380,10 @@ export interface ProviderSummary {
   model: string;
   is_default: boolean;
   vision: boolean;
-  available: boolean;
-  availability_reason?: string | null;
+  configured: boolean;
+  reachable: boolean;
+  configuration_reason?: string | null;
+  reachability_reason?: string | null;
 }
 
 export interface ArtifactListItem {

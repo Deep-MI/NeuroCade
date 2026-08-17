@@ -19,6 +19,7 @@ from api_service.runtime_tools import prepare_images as prepare_images_module  #
 from api_service.runtime_tools import workflow_execution as execution_module  # noqa: E402
 from api_service.runtime_tools.workflow_catalog import (  # noqa: E402
     WorkflowExecution,
+    WorkflowReturn,
     delete_user_workflow,
     inspect_workflow,
     load_workflow_catalog,
@@ -40,25 +41,23 @@ def clear_catalog_cache():
     load_workflow_catalog.cache_clear()
 
 
+def header_probe_workflow():
+    """Build a small private workflow used to test generic execution behavior."""
+    return resolve_workflow("fastsurfer_fast").model_copy(
+        update={
+            "id": "header_probe",
+            "outputs": [],
+            "script": 'probe_volume --resolution "${INPUTS[0]}"',
+            "execution": WorkflowExecution(gpu=False),
+            "return_policy": WorkflowReturn(max_stream_chars=4096),
+        }
+    )
 def test_default_catalog_has_fixed_workflows_and_defaults():
     catalog = load_workflow_catalog()
     tools = {tool.id: tool for tool in catalog.tools}
     defaults = WorkflowExecution()
 
-    assert set(tools) == {
-        "mri_info",
-        "mri_info_resolution",
-        "fsqc",
-        "fastsurfer_full",
-        "fastsurfer_segmentation",
-        "fastsurfer_fast",
-    }
-    assert tools["mri_info"].execution.timeout_s is None
-    assert tools["mri_info"].execution.mode == "synchronous"
-    assert tools["mri_info"].execution.gpu is False
-    assert tools["fsqc"].image == "fsqc_2.1.4:20251126"
-    assert tools["fsqc"].execution.mode == "synchronous"
-    assert tools["fsqc"].execution.gpu is False
+    assert set(tools) == {"fastsurfer_full", "fastsurfer_segmentation", "fastsurfer_fast"}
     assert tools["fastsurfer_full"].neurodesk_image == "deepmi/fastsurfer:cu128-v2.5.4"
     assert tools["fastsurfer_full"].execution.gpu is True
     assert tools["fastsurfer_full"].execution.mode == "background"
@@ -100,47 +99,44 @@ def test_default_catalog_has_fixed_workflows_and_defaults():
 def test_search_payload_is_compact_and_inspect_is_lazy():
     payload = run_analysis_workflows_payload()
     assert [tool["id"] for tool in payload] == [
-        "mri_info",
-        "mri_info_resolution",
-        "fsqc",
         "fastsurfer_full",
         "fastsurfer_segmentation",
         "fastsurfer_fast",
     ]
     assert {tool["input_artifact_kind"] for tool in payload} == {"intensity_volume"}
-    inspected = inspect_workflow("mri_info")
+    inspected = inspect_workflow("fastsurfer_full")
     assert "details" in inspected
-    assert inspected["image"] == "freesurfer_8.1.0:20260311"
-    assert inspected["inputs"][0]["name"] == "volume"
+    assert inspected["image"] == "deepmi/fastsurfer:cu128-v2.5.4"
+    assert inspected["inputs"][0]["name"] == "t1"
     assert "script" not in inspected
 
 
 def test_user_workflow_overlays_are_isolated_and_reload_immediately(tmp_path):
     settings = SimpleNamespace(outputs_dir=tmp_path / "output")
-    base = resolve_workflow("mri_info").model_dump(mode="json", by_alias=True, exclude_none=True)
+    base = resolve_workflow("fastsurfer_fast").model_dump(mode="json", by_alias=True, exclude_none=True)
     first = {**base, "description": "First user's private MRI information workflow."}
     second = {**base, "description": "Second user's private MRI information workflow."}
 
     upsert_user_workflow(settings, "user/one", first)
     upsert_user_workflow(settings, "user:two", second)
 
-    assert resolve_workflow("mri_info").description == base["description"]
-    assert resolve_workflow("mri_info", settings=settings, user_id="user/one").description == first["description"]
-    assert resolve_workflow("mri_info", settings=settings, user_id="user:two").description == second["description"]
-    assert workflow_source("mri_info", settings=settings, user_id="user/one") == "user_override"
+    assert resolve_workflow("fastsurfer_fast").description == base["description"]
+    assert resolve_workflow("fastsurfer_fast", settings=settings, user_id="user/one").description == first["description"]
+    assert resolve_workflow("fastsurfer_fast", settings=settings, user_id="user:two").description == second["description"]
+    assert workflow_source("fastsurfer_fast", settings=settings, user_id="user/one") == "user_override"
     assert user_workflow_catalog_path(settings, "user/one").parent == settings.outputs_dir / ".user-tool-configs"
     assert "user/one" not in str(user_workflow_catalog_path(settings, "user/one"))
 
-    delete_user_workflow(settings, "user/one", "mri_info")
+    delete_user_workflow(settings, "user/one", "fastsurfer_fast")
 
-    assert resolve_workflow("mri_info", settings=settings, user_id="user/one").description == base["description"]
-    assert workflow_source("mri_info", settings=settings, user_id="user/one") == "built_in"
-    assert resolve_workflow("mri_info", settings=settings, user_id="user:two").description == second["description"]
+    assert resolve_workflow("fastsurfer_fast", settings=settings, user_id="user/one").description == base["description"]
+    assert workflow_source("fastsurfer_fast", settings=settings, user_id="user/one") == "built_in"
+    assert resolve_workflow("fastsurfer_fast", settings=settings, user_id="user:two").description == second["description"]
 
 
 def test_user_workflow_upsert_rejects_invalid_definition_without_changing_overlay(tmp_path):
     settings = SimpleNamespace(outputs_dir=tmp_path / "output")
-    definition = resolve_workflow("mri_info").model_dump(mode="json", by_alias=True, exclude_none=True)
+    definition = resolve_workflow("fastsurfer_fast").model_dump(mode="json", by_alias=True, exclude_none=True)
     definition["description"] = "Valid private definition."
     upsert_user_workflow(settings, "user-1", definition)
     path = user_workflow_catalog_path(settings, "user-1")
@@ -151,12 +147,12 @@ def test_user_workflow_upsert_rejects_invalid_definition_without_changing_overla
         upsert_user_workflow(settings, "user-1", invalid)
 
     assert path.read_bytes() == original
-    assert resolve_workflow("mri_info", settings=settings, user_id="user-1").description == definition["description"]
+    assert resolve_workflow("fastsurfer_fast", settings=settings, user_id="user-1").description == definition["description"]
 
 
 def test_user_created_workflow_appears_only_in_its_owner_search(tmp_path):
     settings = SimpleNamespace(outputs_dir=tmp_path / "output")
-    definition = resolve_workflow("mri_info_resolution").model_dump(mode="json", by_alias=True, exclude_none=True)
+    definition = resolve_workflow("fastsurfer_fast").model_dump(mode="json", by_alias=True, exclude_none=True)
     definition.update(
         id="private_voxel_report",
         description="Private voxel report for a single user.",
@@ -179,7 +175,7 @@ def test_user_created_workflow_appears_only_in_its_owner_search(tmp_path):
 
 def test_background_submission_captures_effective_workflow_definition(monkeypatch, tmp_path):
     captured: dict = {}
-    workflow = resolve_workflow("mri_info").model_copy(
+    workflow = resolve_workflow("fastsurfer_fast").model_copy(
         update={"description": "Captured private workflow definition."}
     )
 
@@ -206,11 +202,10 @@ def test_background_submission_captures_effective_workflow_definition(monkeypatc
     assert captured["kwargs"]["tool_id"] == workflow.id
 
 
-def test_prepare_images_selects_every_unique_catalog_image():
-    assert prepare_images_module.workflow_images() == [
+def test_default_image_manifest_contains_workflows_and_dicom_conversion():
+    assert [spec.image for spec in prepare_images_module.image_manifest()] == [
         "deepmi/fastsurfer:cu128-v2.5.4",
-        "vnmd/freesurfer_8.1.0:20260311",
-        "vnmd/fsqc_2.1.4:20251126",
+        "vnmd/dcm2niix_v1.0.20240202:20260512",
     ]
 
 
@@ -232,24 +227,27 @@ def test_warm_gpu_capabilities_probes_each_gpu_workflow_image_once(monkeypatch):
 def test_prepare_image_uses_persistent_arch_specific_sif(monkeypatch, tmp_path):
     monkeypatch.setenv("NEUROCADE_SIF_DIR", str(tmp_path))
     calls: list[list[str]] = []
+    spec = prepare_images_module.image_manifest()[0]
 
     def fake_run(argv, **_kwargs):
         calls.append(argv)
         Path(argv[-2]).write_bytes(b"sif")
 
     monkeypatch.setattr(prepare_images_module.subprocess, "run", fake_run)
-    target = prepare_images_module.prepare_image("deepmi/fastsurfer:cu128-v2.5.4")
+    monkeypatch.setattr(prepare_images_module, "_sha256", lambda _path: spec.sha256)
+    target = prepare_images_module.prepare_image(spec)
 
     assert target.is_file()
     assert target.name.startswith("deepmi_fastsurfer_cu128-v2.5.4-")
-    assert calls[0][:4] == ["apptainer", "--quiet", "pull", "--force"]
+    assert calls[0][:3] == ["apptainer", "pull", "--force"]
     assert calls[0][-1] == "docker://deepmi/fastsurfer:cu128-v2.5.4"
 
 
 def test_prepare_images_reports_required_cuda_failure_without_traceback(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["prepare-images"])
-    monkeypatch.setattr(prepare_images_module, "workflow_images", lambda **_kwargs: ["vnmd/fastsurfer:tag"])
-    monkeypatch.setattr(prepare_images_module, "prepare_image", lambda _image, **_kwargs: Path("tool.sif"))
+    spec = prepare_images_module.image_manifest()[0]
+    monkeypatch.setattr(prepare_images_module, "prepare_images", lambda **_kwargs: [Path("tool.sif")])
+    monkeypatch.setattr(prepare_images_module, "image_manifest", lambda: [spec])
 
     def unavailable(_preferred, **_kwargs):
         raise prepare_images_module.RuntimeGpuUnavailableError("tool image is CPU-only")
@@ -260,21 +258,6 @@ def test_prepare_images_reports_required_cuda_failure_without_traceback(monkeypa
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "ERROR: tool image is CPU-only\n"
-
-
-def test_fsqc_has_fixed_fastsurfer_contract():
-    workflow = resolve_workflow("fsqc")
-
-    assert [item.name for item in workflow.inputs] == ["processed_orig"]
-    assert [item.name for item in workflow.outputs] == ["metrics", "results_archive"]
-    assert {item.type for item in workflow.outputs} == {"other"}
-    assert "--fastsurfer" in workflow.script
-    assert "--exit-on-error" in workflow.script
-    assert "--no-group" not in workflow.script
-    assert "${INPUTS[0]}" in workflow.script
-    assert "${OUTPUTS[0]}" in workflow.script
-    assert "${OUTPUTS[1]}" in workflow.script
-    assert workflow.return_policy.include == ["return_code", "stdout", "stderr", "outputs"]
 
 
 @pytest.mark.parametrize(
@@ -374,7 +357,7 @@ tools:
     inputs:
       - name: volume
         description: input
-    script: mri_info ${INPUTS[0]}
+    script: probe_volume ${INPUTS[0]}
 """,
             "double-quote runtime path reference",
         ),
@@ -409,19 +392,21 @@ def test_prepare_workflow_validates_ordered_paths_and_symlink_escape(tmp_path):
     outside.write_bytes(b"outside")
     (case_root / "escape.mgz").symlink_to(outside)
     bind = RuntimeBind(case_root, "/case", "rw")
+    workflow = header_probe_workflow()
 
     prepared = execution_module.prepare_workflow(
-        "mri_info_resolution",
+        workflow.id,
         ["/case/input volume.mgz"],
         bind,
+        workflow=workflow,
         run_id="run-1",
     )
     assert prepared.container_inputs == ("/case/input volume.mgz",)
 
     with pytest.raises(ValueError, match="escapes"):
-        execution_module.prepare_workflow("mri_info", ["/case/escape.mgz"], bind)
+        execution_module.prepare_workflow(workflow.id, ["/case/escape.mgz"], bind, workflow=workflow)
     with pytest.raises(ValueError, match="exactly 1"):
-        execution_module.prepare_workflow("mri_info", [], bind)
+        execution_module.prepare_workflow(workflow.id, [], bind, workflow=workflow)
 
 
 def test_typed_output_maps_to_declared_case_file_and_is_reported(tmp_path):
@@ -476,20 +461,22 @@ def test_fixed_command_is_quoted_and_streams_are_truncated(monkeypatch, tmp_path
         )
 
     monkeypatch.setattr(execution_module, "execute_runtime_request", fake_execute)
+    workflow = header_probe_workflow()
     result = execution_module.execute_workflow(
-        "mri_info_resolution",
+        workflow.id,
         [f"/case/{filename}"],
         RuntimeBind(case_root, "/case", "rw"),
+        workflow=workflow,
         run_id="run-1",
     )
 
     container_run = captured["request"].container_run
     assert container_run is not None
     script = container_run.command[-1]
-    assert "mri_info --res" in script
+    assert "probe_volume --resolution" in script
     assert "'/case/input $(touch should-not-run).mgz'" in script
     assert "[truncated" in result["stdout"]
-    assert len(result["stdout"]) <= resolve_workflow("mri_info_resolution").return_policy.max_stream_chars
+    assert len(result["stdout"]) <= workflow.return_policy.max_stream_chars
     assert not (case_root / ".runs" / "run-1").exists()
 
 
@@ -502,10 +489,12 @@ def test_failed_workflow_returns_code_and_stderr(monkeypatch, tmp_path):
         return RuntimeExecutionResult(request=request, returncode=7, stdout="", stderr="invalid header")
 
     monkeypatch.setattr(execution_module, "execute_runtime_request", fake_execute)
+    workflow = header_probe_workflow()
     result = execution_module.execute_workflow(
-        "mri_info",
+        workflow.id,
         ["/case/input.mgz"],
         RuntimeBind(case_root, "/case", "rw"),
+        workflow=workflow,
     )
 
     assert result["status"] == "failed"

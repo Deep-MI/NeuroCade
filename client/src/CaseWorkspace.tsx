@@ -35,6 +35,7 @@ const WEBGPU_FALLBACK_WARNING = [
   'Viewer warning: WebGPU initialization failed; using WebGL2, so layer visibility and windowing may be significantly slower.',
   'For sandboxed Chromium on Linux with NVIDIA graphics, enable "Default ANGLE Vulkan" at chrome://flags/#default-angle-vulkan or launch Chromium with --use-angle=vulkan.',
 ].join(' ');
+const WEBGPU_WARNING_STORAGE_PREFIX = 'neurocade.webgpu-warning.v1.';
 
 interface SavedNativeDrawing {
   filename: string;
@@ -114,12 +115,19 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   const handleViewerBackendChange = useCallback((backend: 'webgpu' | 'webgl2' | null) => {
     if (backend !== 'webgl2') return;
     console.warn(`[NeuroCade viewer] ${WEBGPU_FALLBACK_WARNING}`);
+    const storageKey = `${WEBGPU_WARNING_STORAGE_PREFIX}${session?.user.id ?? 'anonymous'}`;
+    try {
+      if (window.localStorage.getItem(storageKey)) return;
+      window.localStorage.setItem(storageKey, 'shown');
+    } catch (error) {
+      console.warn('[NeuroCade viewer] Could not persist the performance warning state:', error);
+    }
     setViewerDiagnostics((current) => (
       current.some((message) => message.content === WEBGPU_FALLBACK_WARNING)
         ? current
         : [...current, { role: 'info', severity: 'warning', content: WEBGPU_FALLBACK_WARNING }]
     ));
-  }, []);
+  }, [session?.user.id]);
 
   const volumeState = useWorkspaceVolumeState({
     activeCaseId: controller.activeCaseId,

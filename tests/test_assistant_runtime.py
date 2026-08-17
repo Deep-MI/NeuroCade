@@ -167,7 +167,7 @@ def available_provider(monkeypatch):
             provider_family="openai_compatible",
             model=model_override or "qwen",
             base_url="https://api.example.invalid",
-            available=True,
+            configured=True,
         )
 
     monkeypatch.setattr(provider_module.provider_registry, "get", fake_get)
@@ -529,7 +529,7 @@ def test_catalog_tool_search_returns_configured_tool_payload():
     ]
 
 
-def test_catalog_tool_call_waits_for_synchronous_workflow(monkeypatch, seeded_context):
+def test_catalog_tool_call_returns_background_run_immediately(monkeypatch, seeded_context):
     db_session, context, workspace, case_a, _case_b = seeded_context
     runtime = AssistantRuntime(FakeGuiRuntime())
     captured = {}
@@ -565,16 +565,15 @@ def test_catalog_tool_call_waits_for_synchronous_workflow(monkeypatch, seeded_co
                 state,
                 ToolExecutionContext("call-1", external_run_id="stable-assistant-run"),
                 {
-                    "tool_id": "mri_info_resolution",
+                    "tool_id": "fastsurfer_segmentation",
                     "inputs": ["/case/input.mgz"],
                 },
             )
         ).content
     )
 
-    assert payload["status"] == "completed"
-    assert payload["tool_id"] == "mri_info_resolution"
-    assert payload["result"]["stdout"] == "1.0 1.0 1.0\n"
+    assert payload["status"] == "queued"
+    assert payload["tool_id"] == "fastsurfer_segmentation"
     assert captured["run"].case_id == case_a.id
     assert db_session.get(Run, payload["run_id"]).status is RunStatus.completed
 
@@ -584,7 +583,7 @@ def test_catalog_tool_call_waits_for_synchronous_workflow(monkeypatch, seeded_co
                 state,
                 ToolExecutionContext("call-1", external_run_id="stable-assistant-run"),
                 {
-                    "tool_id": "mri_info_resolution",
+                    "tool_id": "fastsurfer_segmentation",
                     "inputs": ["/case/input.mgz"],
                 },
             )
@@ -604,7 +603,7 @@ def test_catalog_run_wait_timeout_returns_none(monkeypatch, seeded_context):
         workspace_id=workspace.id,
         created_by_user_id=context.user.id,
         status=RunStatus.queued,
-        run_type="mri_info",
+        run_type="fastsurfer_fast",
     )
     db_session.add(run)
     db_session.commit()
@@ -633,7 +632,7 @@ def test_catalog_run_list_defaults_to_ten_and_honors_case_scope(seeded_context):
                 workspace_id=workspace.id,
                 created_by_user_id=context.user.id,
                 status=RunStatus.completed,
-                run_type="mri_info",
+                run_type="fastsurfer_fast",
             )
         )
     db_session.add(
@@ -691,7 +690,7 @@ def test_catalog_run_list_uses_workspace_scope_without_case_filter(seeded_contex
                 workspace_id=workspace.id,
                 created_by_user_id=context.user.id,
                 status=RunStatus.completed,
-                run_type="mri_info",
+                run_type="fastsurfer_fast",
             )
         )
     db_session.commit()
@@ -717,7 +716,7 @@ def test_catalog_run_list_uses_workspace_scope_without_case_filter(seeded_contex
     }
 
 
-def test_catalog_tool_call_reports_synchronous_workflow_failure_as_tool_error(
+def test_catalog_tool_call_does_not_wait_for_background_failure(
     monkeypatch, seeded_context
 ):
     db_session, context, workspace, case_a, _case_b = seeded_context
@@ -753,13 +752,12 @@ def test_catalog_tool_call_reports_synchronous_workflow_failure_as_tool_error(
         runtime.tools.catalog_tools.call(
             state,
             ToolExecutionContext("call-failed", external_run_id="failed-assistant-run"),
-            {"tool_id": "mri_info_resolution", "inputs": ["/case/input.mgz"]},
+            {"tool_id": "fastsurfer_segmentation", "inputs": ["/case/input.mgz"]},
         )
     )
 
-    assert result.is_error is True
-    assert result.details["status"] == "failed"
-    assert result.details["error"] == "invalid command flag"
+    assert result.is_error is False
+    assert result.details["status"] == "queued"
 
 
 def test_catalog_cancel_persists_run_before_canceling_job(monkeypatch, seeded_context):
@@ -771,7 +769,7 @@ def test_catalog_cancel_persists_run_before_canceling_job(monkeypatch, seeded_co
         workspace_id=workspace.id,
         created_by_user_id=context.user.id,
         status=RunStatus.running,
-        run_type="mri_info_resolution",
+        run_type="fastsurfer_segmentation",
         job_id="job-to-cancel",
     )
     db_session.add(run)
@@ -806,14 +804,11 @@ def test_run_analysis_tools_come_from_workflow_catalog():
 
     payload = run_analysis_workflows_payload()
     assert [tool["id"] for tool in payload] == [
-        "mri_info",
-        "mri_info_resolution",
-        "fsqc",
         "fastsurfer_full",
         "fastsurfer_segmentation",
         "fastsurfer_fast",
     ]
-    assert {tool["execution"]["mode"] for tool in payload} == {"synchronous", "background"}
+    assert {tool["execution"]["mode"] for tool in payload} == {"background"}
     fastsurfer = next(tool for tool in payload if tool["id"] == "fastsurfer_fast")
     assert fastsurfer["outputs"][0]["name"] == "whole_brain_segmentation"
     assert fastsurfer["outputs"][0]["path"] == "mri/aparc.DKTatlas+aseg.deep.mgz"
@@ -853,14 +848,14 @@ def test_case_catalog_tool_call_passes_case_to_worker(monkeypatch, seeded_contex
                 state,
                 ToolExecutionContext("call-2", external_run_id="case-run-1"),
                 {
-                    "tool_id": "mri_info",
+                    "tool_id": "fastsurfer_fast",
                     "inputs": ["/case/input.mgz"],
                 },
             )
         ).content
     )
 
-    assert payload["status"] == "completed"
+    assert payload["status"] == "queued"
     assert captured["run"].case_id == case_a.id
 
 
@@ -908,7 +903,7 @@ def test_catalog_tool_call_rejects_unprepared_image_before_creating_run(monkeypa
 
     monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", reject_image)
     result = runtime.tools.catalog_executor.catalog_tool_call(
-        {"tool_id": "mri_info_resolution", "inputs": ["/case/input.mgz"]},
+        {"tool_id": "fastsurfer_segmentation", "inputs": ["/case/input.mgz"]},
         [bind],
         db=db_session,
         user_id=context.user.id,
@@ -1207,7 +1202,7 @@ def test_execute_tools_finishes_turn_when_workflow_is_queued():
     runtime = AssistantRuntime(FakeGuiRuntime())
 
     async def execute(_context, _arguments):
-        payload = {"tool_id": "mri_info_resolution", "run_id": "run-1", "status": "queued"}
+        payload = {"tool_id": "fastsurfer_segmentation", "run_id": "run-1", "status": "queued"}
         return ToolResult.success(json.dumps(payload), details=payload)
 
     result = asyncio.run(
@@ -1232,7 +1227,7 @@ def test_execute_tools_finishes_turn_when_workflow_is_queued():
 
     assert result["status"] == "completed"
     assert result["pending_tool_calls"] == []
-    assert "mri_info_resolution" in result["final_response"]
+    assert "fastsurfer_segmentation" in result["final_response"]
     assert "run-1" in result["final_response"]
 
 
@@ -1790,12 +1785,13 @@ def test_catalog_config_get_returns_complete_effective_definition(monkeypatch, t
         runtime.tools.catalog_tools.config_get(
             {"context": context},
             ToolExecutionContext("config-get-1"),
-            {"tool_id": "mri_info"},
+            {"tool_id": "fastsurfer_fast"},
         ).content
     )
 
     assert payload["source"] == "built_in"
-    assert payload["definition"]["script"] == 'mri_info "${INPUTS[0]}"\n'
+    assert "run_fastsurfer.sh" in payload["definition"]["script"]
+    assert "--seg_only" in payload["definition"]["script"]
 
 
 def test_catalog_tool_binds_active_case_without_output_alias(seeded_context):
@@ -1836,12 +1832,12 @@ def test_catalog_tool_binds_workspace_output_for_workspace_scope(seeded_context)
 def test_tool_inspect_returns_image_but_hides_script():
     runtime = AssistantRuntime(FakeGuiRuntime())
     inspected = json.loads(runtime.tools.catalog_tools.inspect(
-        {}, ToolExecutionContext("inspect-1"), {"tool_id": "mri_info"}
+        {}, ToolExecutionContext("inspect-1"), {"tool_id": "fastsurfer_fast"}
     ).content)
 
-    assert inspected["image"] == "freesurfer_8.1.0:20260311"
+    assert inspected["image"] == "deepmi/fastsurfer:cu128-v2.5.4"
     assert "script" not in inspected
-    assert inspected["tool_id"] == "mri_info"
+    assert inspected["tool_id"] == "fastsurfer_fast"
 
 
 def test_workspace_list_cases_tool_uses_filesystem_names(monkeypatch, seeded_context):
@@ -1965,8 +1961,8 @@ def test_run_chat_reports_unconfigured_provider_before_model_call(monkeypatch):
         provider_family="openai_compatible",
         model="qwen",
         base_url="https://api.example.invalid",
-        available=False,
-        availability_reason="LLM_BACKEND_API_KEY is not configured",
+        configured=False,
+        configuration_reason="LLM_BACKEND_API_KEY is not configured",
     )
     monkeypatch.setattr(provider_module.provider_registry, "get", lambda *args, **kwargs: unavailable)
     runtime = AssistantRuntime(FakeGuiRuntime())

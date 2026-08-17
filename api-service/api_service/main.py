@@ -19,6 +19,7 @@ from api_service.runtime import logger
 from api_service.runtime.neuroimaging_tasks import register_neuroimaging_tasks
 from api_service.runtime_tools.workflow_catalog import load_workflow_catalog
 from api_service.runtime_tools.workflow_execution import warm_workflow_gpu_capabilities
+from api_service.runtime_tools.workflow_outputs import index_all_case_workflow_outputs
 from backend_common.artifact_reconciliation import reconcile_all_artifacts
 from backend_common.auth import allow_local_auth, validate_auth_configuration
 from backend_common.db import SessionLocal, engine
@@ -74,6 +75,7 @@ async def lifespan(_app: FastAPI):
                     "Marked %s interrupted assistant turn(s) as failed.",
                     interrupted_turn_count,
                 )
+            index_all_case_workflow_outputs(startup_db, settings)
             reconcile_all_artifacts(startup_db)
             startup_db.commit()
         if not os.environ.get("PYTEST_CURRENT_TEST"):
@@ -151,7 +153,13 @@ def _mount_client(application: FastAPI) -> None:
     if not index_file.is_file():
         return
 
-    application.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
+    class ImmutableStaticFiles(StaticFiles):
+        async def get_response(self, path, scope):  # noqa: ANN001
+            response = await super().get_response(path, scope)
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return response
+
+    application.mount("/assets", ImmutableStaticFiles(directory=dist_dir / "assets"), name="assets")
 
     def dist_file_for_path(path: str) -> Path | None:
         requested = (dist_dir / path.lstrip("/")).resolve()
@@ -171,8 +179,8 @@ def _mount_client(application: FastAPI) -> None:
         ):
             dist_file = dist_file_for_path(request.url.path)
             if dist_file is not None:
-                return FileResponse(dist_file)
-            return FileResponse(index_file)
+                return FileResponse(dist_file, headers={"Cache-Control": "no-cache"})
+            return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
         # Match Starlette's default HTTP exception handler: preserve any headers
         # the exception carries (e.g. WWW-Authenticate on 401, Retry-After on 429).
         return JSONResponse(
@@ -183,7 +191,7 @@ def _mount_client(application: FastAPI) -> None:
 
     @application.get("/", include_in_schema=False)
     async def _serve_index() -> FileResponse:
-        return FileResponse(index_file)
+        return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
 
 
 _mount_client(app)

@@ -20,10 +20,8 @@ from api_service.helpers import (
     log_event,
 )
 from api_service.policies import require_case_read, require_workspace_read
-from api_service.runtime import settings
-from api_service.runtime_tools.workflow_outputs import index_latest_case_workflow_outputs
 from api_service.schemas import ArtifactSummary
-from backend_common.artifact_reconciliation import reconcile_artifacts
+from backend_common.artifact_reconciliation import existing_artifacts
 from backend_common.auth import AuthContext
 from backend_common.db import Artifact
 
@@ -57,12 +55,8 @@ def list_case_artifacts(
     """Return existing artifacts for a readable case."""
     case, _workspace, role, _case_dir = get_case_for_user(db, case_id, context.user.id)
     require_case_read(role)
-    index_latest_case_workflow_outputs(db, settings, case)
-    db.commit()
     artifacts = db.query(Artifact).filter(Artifact.case_id == case_id).order_by(Artifact.created_at.desc()).all()
-    existing_artifacts = reconcile_artifacts(db, artifacts)
-    db.commit()
-    return [serialize_artifact(artifact) for artifact in existing_artifacts]
+    return [serialize_artifact(artifact) for artifact in existing_artifacts(artifacts)]
 
 
 @router.get("/workspaces/{workspace_id}/artifacts", response_model=list[ArtifactSummary])
@@ -80,9 +74,7 @@ def list_workspace_artifacts(
         .order_by(Artifact.created_at.desc())
         .all()
     )
-    existing_artifacts = reconcile_artifacts(db, artifacts)
-    db.commit()
-    return [serialize_artifact(artifact) for artifact in existing_artifacts]
+    return [serialize_artifact(artifact) for artifact in existing_artifacts(artifacts)]
 
 
 @router.get("/artifacts/{artifact_id}/download")

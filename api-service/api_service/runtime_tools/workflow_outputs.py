@@ -306,3 +306,11 @@ def index_latest_case_workflow_outputs(db: Session, settings: Settings, case: Ca
             )
         )
     return indexed
+
+
+def index_all_case_workflow_outputs(db: Session, settings: Settings) -> list[Artifact]:
+    """Index catalog-declared outputs for every case during startup recovery."""
+    indexed: list[Artifact] = []
+    for case in db.query(Case).order_by(Case.created_at.asc(), Case.id.asc()).all():
+        indexed.extend(index_latest_case_workflow_outputs(db, settings, case))
+    return indexed

@@ -1,4 +1,4 @@
-"""Build structured, backend-agnostic container runtime requests for NeuroCade tools."""
+"""Build structured container runtime requests for NeuroCade tools."""
 
 from __future__ import annotations
 
@@ -37,10 +37,10 @@ def build_container_request(
     disable_network: bool = True,
     gpu: bool = False,
 ) -> RuntimeContainerRunRequest:
-    """Build a structured, backend-agnostic container execution request.
+    """Build a structured container execution request.
 
     Callers provide structured bind/env/cwd values; the selected runtime backend
-    (``runtime_backends.py``) turns this request into the final ``argv``.
+    (``apptainer_runtime.py``) turns this request into the final ``argv``.
     """
     if not command:
         raise ValueError("Container command cannot be empty")

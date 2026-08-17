@@ -19,6 +19,8 @@ dependencies = [
   "PyYAML==6.0.3",
   "nibabel==5.2.1",
   "numpy==1.26.4",
+  "requests>=2.31,<3",
+  "tqdm>=4.67,<5",
   "neurocade-runtime-tools",
 ]
 

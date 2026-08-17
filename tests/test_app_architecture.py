@@ -48,7 +48,7 @@ def test_openai_compatible_provider_allows_blank_api_key(monkeypatch):
     registry = provider_module.ProviderRegistry()
     cfg = registry.get()
 
-    assert cfg.available is True
+    assert cfg.configured is True
     assert cfg.api_key is None
 
 
@@ -63,7 +63,7 @@ def test_openai_compatible_provider_disables_qwen_thinking_by_default(monkeypatc
     assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
-def test_no_llm_provider_is_registered_but_unavailable(monkeypatch):
+def test_no_llm_provider_is_registered_but_unconfigured(monkeypatch):
     monkeypatch.setattr(provider_module.settings, "llm_provider_default", "no-llm")
     registry = provider_module.ProviderRegistry()
 
@@ -71,8 +71,8 @@ def test_no_llm_provider_is_registered_but_unavailable(monkeypatch):
 
     assert cfg.provider == "no-llm"
     assert cfg.provider_family == "none"
-    assert cfg.available is False
-    assert cfg.availability_reason == "LLM setup was skipped during install"
+    assert cfg.configured is False
+    assert cfg.configuration_reason == "LLM setup was skipped during install"
     assert registry.default_provider == "no-llm"
 
 
@@ -82,6 +82,27 @@ def test_no_llm_provider_does_not_build_chat_model(monkeypatch):
 
     with pytest.raises(ValueError, match="LLM setup was skipped during install"):
         registry.build_chat_model()
+
+
+def test_provider_reachability_is_separate_from_configuration(monkeypatch):
+    config = provider_module.ModelConfig(
+        provider="test-provider",
+        provider_family="openai_compatible",
+        model="model",
+        base_url="https://provider-status.example.invalid",
+        configured=True,
+    )
+    provider_module._probe_provider.cache_clear()
+    monkeypatch.setattr(
+        provider_module.requests,
+        "get",
+        lambda *_args, **_kwargs: type("Response", (), {"ok": True})(),
+    )
+
+    reachable, reason = provider_module.provider_reachability(config)
+
+    assert reachable is True
+    assert reason is None
 
 
 def test_settings_default_to_sqlite(monkeypatch):
@@ -233,6 +254,7 @@ def test_spa_mount_serves_vite_public_files(monkeypatch, tmp_path):
     assets_dir.mkdir(parents=True)
     (dist_dir / "index.html").write_text("<html>spa</html>", encoding="utf-8")
     (dist_dir / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+    (assets_dir / "index-abc123.js").write_text("export {};", encoding="utf-8")
     monkeypatch.setattr(settings_module, "ROOT_DIR", tmp_path)
 
     application = FastAPI()
@@ -242,4 +264,8 @@ def test_spa_mount_serves_vite_public_files(monkeypatch, tmp_path):
     public_response = client.get("/favicon.svg?v=4")
     assert public_response.status_code == 200
     assert public_response.text == "<svg></svg>"
-    assert client.get("/workspace/demo").text == "<html>spa</html>"
+    assert public_response.headers["cache-control"] == "no-cache"
+    spa_response = client.get("/workspace/demo")
+    assert spa_response.text == "<html>spa</html>"
+    assert spa_response.headers["cache-control"] == "no-cache"
+    assert client.get("/assets/index-abc123.js").headers["cache-control"] == "public, max-age=31536000, immutable"

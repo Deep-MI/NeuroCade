@@ -9,9 +9,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
+from neurocade_runtime_tools.apptainer_runtime import resolve_gpu_enabled
 from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request
 from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest, execute_runtime_request
-from neurocade_runtime_tools.runtime_backends import resolve_gpu_enabled
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings

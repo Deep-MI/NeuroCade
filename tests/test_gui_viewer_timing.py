@@ -421,7 +421,9 @@ def test_viewer_interaction_timing_report(browser, services_up):
         api_5xx = [event for event in network_events if event.get("status", 0) >= 500 and "/api/" in event.get("url", "")]
         console_errors = [
             message for message in console_messages
-            if message["type"] == "error" and "WebGL" not in message["text"]
+            if message["type"] == "error"
+            and "WebGL" not in message["text"]
+            and "Failed to initialize webgpu view" not in message["text"]
         ]
         slow_api = [
             event for event in network_events

@@ -138,8 +138,10 @@ class ProviderSummary(BaseModel):
     model: str
     is_default: bool = False
     vision: bool = False
-    available: bool = True
-    availability_reason: str | None = None
+    configured: bool
+    reachable: bool
+    configuration_reason: str | None = None
+    reachability_reason: str | None = None
 
 
 class ChatToolCallEntry(BaseModel):

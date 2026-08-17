@@ -72,6 +72,8 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     const [loadingMessage, setLoadingMessage] = useState<string>(STATUS_MESSAGES[1]);
     const [isClearing, setIsClearing] = useState(false);
     const [assistantDisabledMessage, setAssistantDisabledMessage] = useState<string | null>(null);
+    const [providerRetryable, setProviderRetryable] = useState(false);
+    const [providerRefreshKey, setProviderRefreshKey] = useState(0);
     const [pendingApproval, setPendingApproval] = useState<AssistantApprovalRequest | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const abortRef = useRef<AbortController | null>(null);
@@ -123,13 +125,21 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 const defaultChatProvider = chatProviders.find((provider) => provider.is_default);
                 if (defaultChatProvider?.provider === 'no-llm' || defaultChatProvider?.provider_family === 'none') {
                     setAssistantDisabledMessage('Assistant is disabled because LLM setup was skipped. You can still upload, view, and process cases.');
+                    setProviderRetryable(false);
                     return;
                 }
-                if (!defaultChatProvider && chatProviders.length > 0 && chatProviders.every((provider) => !provider.available)) {
+                if (!defaultChatProvider?.configured) {
                     setAssistantDisabledMessage('Assistant is disabled because no LLM provider is configured. You can still upload, view, and process cases.');
+                    setProviderRetryable(false);
+                    return;
+                }
+                if (!defaultChatProvider.reachable) {
+                    setAssistantDisabledMessage('The configured model provider is temporarily unreachable. Check the provider and try again.');
+                    setProviderRetryable(true);
                     return;
                 }
                 setAssistantDisabledMessage(null);
+                setProviderRetryable(false);
             })
             .catch((error) => {
                 if (cancelled) return;
@@ -139,7 +149,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [providerRefreshKey]);
 
     useEffect(() => {
         if (isLoading) {
@@ -497,6 +507,15 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 {assistantDisabledMessage && (
                     <div className="chat-message info">
                         {assistantDisabledMessage}
+                        {providerRetryable && (
+                            <button
+                                type="button"
+                                className="nc-btn ml-3 px-2 py-1"
+                                onClick={() => setProviderRefreshKey((value) => value + 1)}
+                            >
+                                Retry
+                            </button>
+                        )}
                     </div>
                 )}
             </div>

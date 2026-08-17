@@ -30,7 +30,7 @@ from api_service.runtime_tools.neurodesk_images import (  # noqa: E402
     resolve_or_prepare_image,
     search_images,
 )
-from neurocade_runtime_tools.runtime_backends import apptainer_sif_path  # noqa: E402
+from neurocade_runtime_tools.apptainer_runtime import apptainer_sif_path  # noqa: E402
 
 MANIFEST = """\
 ants_2.9.0_20250101 categories:image registration,image segmentation,structural imaging

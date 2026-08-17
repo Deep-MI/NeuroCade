@@ -1,22 +1,12 @@
-"""Pluggable in-process runtime backends.
+"""Apptainer execution for NeuroCade workflow containers.
 
 The monolith launches analysis tools (including FastSurfer and dcm2niix) by
-turning a backend-agnostic :class:`RuntimeContainerRunRequest` into a concrete
+turning a structured :class:`RuntimeContainerRunRequest` into a concrete
 ``argv`` that is run as a local subprocess.
 
-Two backends are provided:
-
-* :class:`ApptainerBackend` -- the default/production runtime. ``apptainer exec``
-  needs no daemon or socket and runs in both the native and (privileged)
-  container app deployments. Images are resolved to a prebuilt, arch-matched SIF
-  when one is available, otherwise an ``docker://`` URI is handed to Apptainer to
-  pull/convert on the fly.
-* :class:`DockerBackend` -- a native-only developer convenience selected with
-  ``NEUROCADE_RUNTIME_BACKEND=docker``. Useful on hosts that have Docker but not
-  Apptainer (e.g. local macOS development).
-
-The backend is chosen once per process from ``NEUROCADE_RUNTIME_BACKEND``
-(defaulting to ``apptainer``).
+``apptainer exec`` needs no daemon or socket and runs in both native and
+privileged-container deployments. Images resolve to a prepared, arch-matched SIF
+when available, otherwise Apptainer receives the corresponding ``docker://`` URI.
 """
 
 from __future__ import annotations
@@ -29,13 +19,11 @@ import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Protocol
 
 from .container_request import _validate_container_path as _validate_path
 from .container_request import container_image_name
 from .execution import RuntimeContainerRunRequest
 
-RUNTIME_BACKEND_ENV = "NEUROCADE_RUNTIME_BACKEND"
 SIF_DIR_ENV = "NEUROCADE_SIF_DIR"
 GPU_MODE_ENV = "NEUROCADE_GPU_MODE"
 
@@ -217,8 +205,6 @@ def resolve_apptainer_image(image: str) -> str:
 
 def require_network_disabled_image(image: str) -> str:
     """Resolve an image or reject an unprepared Apptainer workflow immediately."""
-    if select_runtime_backend().name != "apptainer":
-        return image
     resolved = resolve_apptainer_image(image)
     if resolved.startswith("docker://"):
         raise RuntimeError(
@@ -245,118 +231,28 @@ def assert_rootless_runtime(request: RuntimeContainerRunRequest) -> None:
         raise ValueError("Isolated container execution cannot request a GPU")
 
 
-class RuntimeBackend(Protocol):
-    """Turn a structured container request into a concrete subprocess ``argv``."""
-
-    name: str
-
-    def build_argv(self, request: RuntimeContainerRunRequest) -> list[str]:
-        """Return the executable ``argv`` for the container request."""
-        ...
-
-
-class DockerBackend:
-    """Run a tool container with ``docker run`` (native-only dev convenience)."""
-
-    name = "docker"
-
-    def build_argv(self, request: RuntimeContainerRunRequest) -> list[str]:
-        assert_rootless_runtime(request)
-        argv: list[str] = ["docker", "run"]
-        if request.remove:
-            argv.append("--rm")
-        if request.network_disabled:
-            argv.extend(["--network", "none"])
-        if request.isolated:
-            argv.extend(
-                [
-                    "--pull",
-                    "never",
-                    "--read-only",
-                    "--user",
-                    "65534:65534",
-                    "--cap-drop",
-                    "ALL",
-                    "--security-opt",
-                    "no-new-privileges",
-                    "--pids-limit",
-                    "64",
-                    "--memory",
-                    "512m",
-                    "--cpus",
-                    "1",
-                    "--tmpfs",
-                    "/tmp:rw,nosuid,nodev,size=64m",
-                    "--env",
-                    "HOME=/tmp",
-                ]
-            )
-        if request.gpu_enabled:
-            argv.extend(["--gpus", "all"])
-        for key, value in sorted(_validate_env(dict(request.env or {})).items()):
-            argv.extend(["--env", f"{key}={value}"])
-        for bind in request.binds:
-            host_path = _validate_path(str(Path(bind.host_path).expanduser()), label="Bind host path")
-            container_path = _validate_path(bind.container_path, label="Container bind path")
-            mount = f"type=bind,src={host_path},dst={container_path}"
-            if bind.mode == "ro":
-                mount += ",readonly"
-            argv.extend(["--mount", mount])
-        if request.cwd:
-            argv.extend(["--workdir", _validate_path(request.cwd, label="Container working directory")])
-        argv.append(container_image_name(request.image))
-        argv.extend(str(part) for part in request.command)
-        return argv
-
-
-class ApptainerBackend:
-    """Run a tool container with ``apptainer exec`` (default/production)."""
-
-    name = "apptainer"
-
-    def build_argv(self, request: RuntimeContainerRunRequest) -> list[str]:
-        assert_rootless_runtime(request)
-        image = require_network_disabled_image(request.image) if request.network_disabled else resolve_apptainer_image(request.image)
-        argv: list[str] = ["apptainer", "--quiet", "exec", "--cleanenv", "--no-home"]
-        if request.isolated:
-            argv.extend(["--contain", "--no-mount", "hostfs,cwd,proc,sys"])
-        if request.network_disabled:
-            argv.extend(["--net", "--network", "none"])
-        if request.gpu_enabled:
-            argv.append("--nv")
-        for bind in request.binds:
-            host_path = _validate_path(str(Path(bind.host_path).expanduser()), label="Bind host path")
-            container_path = _validate_path(bind.container_path, label="Container bind path")
-            spec = f"{host_path}:{container_path}"
-            if bind.mode == "ro":
-                spec += ":ro"
-            argv.extend(["--bind", spec])
-        if request.cwd:
-            argv.extend(["--pwd", _validate_path(request.cwd, label="Container working directory")])
-        for key, value in sorted(_validate_env(dict(request.env or {})).items()):
-            argv.extend(["--env", f"{key}={value}"])
-        argv.append(image)
-        argv.extend(str(part) for part in request.command)
-        return argv
-
-
-_BACKENDS: dict[str, RuntimeBackend] = {
-    "apptainer": ApptainerBackend(),
-    "docker": DockerBackend(),
-}
-
-
-def select_runtime_backend() -> RuntimeBackend:
-    """Return the runtime backend configured for this process."""
-    requested = (os.environ.get(RUNTIME_BACKEND_ENV) or "apptainer").strip().lower()
-    try:
-        return _BACKENDS[requested]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown {RUNTIME_BACKEND_ENV}={requested!r}; expected one of {sorted(_BACKENDS)}"
-        ) from exc
-
-
 def build_container_argv(request: RuntimeContainerRunRequest) -> list[str]:
-    """Build the ``argv`` for a container request using the selected backend."""
-    return select_runtime_backend().build_argv(request)
+    """Build an ``apptainer exec`` command for a structured container request."""
+    assert_rootless_runtime(request)
+    image = require_network_disabled_image(request.image) if request.network_disabled else resolve_apptainer_image(request.image)
+    argv: list[str] = ["apptainer", "--quiet", "exec", "--cleanenv", "--no-home"]
+    if request.isolated:
+        argv.extend(["--contain", "--no-mount", "hostfs,cwd,proc,sys"])
+    if request.network_disabled:
+        argv.extend(["--net", "--network", "none"])
+    if request.gpu_enabled:
+        argv.append("--nv")
+    for bind in request.binds:
+        host_path = _validate_path(str(Path(bind.host_path).expanduser()), label="Bind host path")
+        container_path = _validate_path(bind.container_path, label="Container bind path")
+        spec = f"{host_path}:{container_path}"
+        if bind.mode == "ro":
+            spec += ":ro"
+        argv.extend(["--bind", spec])
+    if request.cwd:
+        argv.extend(["--pwd", _validate_path(request.cwd, label="Container working directory")])
+    for key, value in sorted(_validate_env(dict(request.env or {})).items()):
+        argv.extend(["--env", f"{key}={value}"])
+    argv.append(image)
+    argv.extend(str(part) for part in request.command)
+    return argv
