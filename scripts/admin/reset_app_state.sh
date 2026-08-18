@@ -35,12 +35,34 @@ if [[ "$CONFIRMED" -ne 1 ]]; then
   exit 2
 fi
 
+canonical_path() {
+  local path="$1" name resolved suffix=""
+  [[ "$path" == /* ]] || path="$PWD/$path"
+
+  # GNU realpath supports -m for missing paths; macOS realpath does not. Resolve
+  # the deepest existing ancestor and append safe missing components instead.
+  while [[ ! -e "$path" ]]; do
+    name="${path##*/}"
+    case "$name" in
+      ""|.|..)
+        echo "Cannot safely resolve path: $1" >&2
+        return 1
+        ;;
+    esac
+    suffix="/$name$suffix"
+    path="${path%/*}"
+    [[ -n "$path" ]] || path="/"
+  done
+  resolved="$(realpath "$path")"
+  printf '%s%s\n' "$resolved" "$suffix"
+}
+
 require_repo_local_path() {
   local label="$1"
   local path="$2"
   local root_real path_real
-  root_real="$(realpath -m "$ROOT_DIR")"
-  path_real="$(realpath -m "$path")"
+  root_real="$(canonical_path "$ROOT_DIR")"
+  path_real="$(canonical_path "$path")"
   case "$path_real" in
     "$root_real"|"$root_real"/*)
       ;;
@@ -60,7 +82,7 @@ require_repo_local_path "HOST_DATA_DIR" "$HOST_DATA_DIR"
 if [[ "$NEUROCADE_DB_DIR" != /* ]]; then
   NEUROCADE_DB_DIR="$ROOT_DIR/$NEUROCADE_DB_DIR"
 fi
-if [[ "$(realpath -m "$NEUROCADE_DB_DIR")" == "/" ]]; then
+if [[ "$(canonical_path "$NEUROCADE_DB_DIR")" == "/" ]]; then
   echo "Refusing to use the filesystem root as NEUROCADE_DB_DIR." >&2
   exit 1
 fi

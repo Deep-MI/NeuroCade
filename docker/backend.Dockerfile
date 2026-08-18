@@ -1,6 +1,6 @@
 # NeuroCade monolith image: one process serves the API + built SPA and launches
-# analysis tools via Apptainer. Running Apptainer inside Docker requires
-# `--privileged --device /dev/fuse` at runtime.
+# analysis tools via Apptainer. Native Linux uses privileged FUSE execution;
+# Docker Desktop uses Apptainer's extraction mode on its Linux writable layer.
 
 FROM node:22-alpine AS client-build
 WORKDIR /app/client

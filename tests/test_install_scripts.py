@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import os
 import pty
+import select
 import shutil
+import signal
 import subprocess
+import time
+from contextlib import suppress
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +49,7 @@ def _write_fake_docker(bin_dir: Path, log_file: Path) -> Path:
         "  rm:-f) exit 0 ;;\n"
         '  run:*)\n'
         '    if [[ "$*" == *"--gpus all"* && "${FAKE_DOCKER_GPU_AVAILABLE:-true}" != "true" ]]; then exit 1; fi\n'
+        '    if [[ "$*" == *"os.open(\\\"/dev/fuse\\\""* && "${FAKE_DOCKER_FUSE_AVAILABLE:-true}" != "true" ]]; then exit 1; fi\n'
         '    [[ "$*" == *"--name neurocade"* ]] && touch "${DOCKER_RUN_LOG}.container"\n'
         '    exit 0 ;;\n'
         "esac\n"
@@ -69,6 +74,7 @@ def _launcher_env(env_file: Path, bin_dir: Path, log_file: Path, **overrides: st
         "NEUROCADE_STARTUP_TIMEOUT_SECONDS",
         "NEUROCADE_UID",
         "NEUROCADE_GID",
+        "NEUROCADE_HOST_SYSTEM",
         "FREESURFER_LICENSE",
     ):
         env.pop(key, None)
@@ -76,8 +82,8 @@ def _launcher_env(env_file: Path, bin_dir: Path, log_file: Path, **overrides: st
         {
             "DOCKER_RUN_LOG": str(log_file),
             "ENV_FILE": str(env_file),
-            "NEUROCADE_FUSE_DEVICE": "/dev/null",
             "NEUROCADE_MIN_FREE_KB": "1",
+            "NEUROCADE_HOST_SYSTEM": "Linux",
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             **overrides,
         }
@@ -97,6 +103,36 @@ def test_shell_entrypoints_parse() -> None:
     ]
     for script in scripts:
         subprocess.run(["bash", "-n", str(REPO_ROOT / script)], check=True)
+
+
+def test_reset_script_supports_macos_realpath(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    (scripts_dir / "admin").mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "admin" / "reset_app_state.sh", scripts_dir / "admin" / "reset_app_state.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+    run_script = scripts_dir / "run.sh"
+    run_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    run_script.chmod(0o755)
+
+    data_dir = checkout / "data"
+    (data_dir / "output").mkdir(parents=True)
+    (data_dir / "output" / "case.txt").write_text("case", encoding="utf-8")
+    (data_dir / "neurocade.db").write_text("database", encoding="utf-8")
+    (checkout / ".env").write_text(
+        f"HOST_DATA_DIR={data_dir}\nNEUROCADE_DB_DIR={data_dir}\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["bash", str(scripts_dir / "admin" / "reset_app_state.sh"), "--yes", "--keep-stack-down"],
+        check=True,
+        cwd=checkout,
+    )
+
+    assert (data_dir / "output").is_dir()
+    assert not (data_dir / "output" / "case.txt").exists()
+    assert not (data_dir / "neurocade.db").exists()
 
 
 def test_install_scripts_drop_legacy_sidecar_config() -> None:
@@ -162,6 +198,8 @@ def test_docker_launcher_accepts_explicit_port(tmp_path) -> None:
     assert f"--user {os.getuid()}:{os.getgid()}" in log_text
     assert "/.neurocade/passwd:/etc/passwd:ro" in log_text
     assert "/.neurocade/group:/etc/group:ro" in log_text
+    assert "/.neurocade/apptainer-tmp:/apptainer-tmp" in log_text
+    assert "APPTAINER_TMPDIR=/apptainer-tmp" in log_text
     assert "--gpus all" in log_text
     assert "python -m api_service.runtime_tools.prepare_images" in log_text
     assert "Starting NeuroCade at http://127.0.0.1:9123" in result.stdout
@@ -297,7 +335,7 @@ def test_doctor_fails_when_application_image_is_missing(tmp_path) -> None:
     assert "Apptainer and image-integrity checks cannot run" in result.stderr
 
 
-def test_doctor_rejects_a_non_device_fuse_path(tmp_path) -> None:
+def test_doctor_fails_when_docker_cannot_expose_fuse(tmp_path) -> None:
     checkout = tmp_path / "checkout"
     scripts_dir = checkout / "scripts"
     scripts_dir.mkdir(parents=True)
@@ -308,8 +346,6 @@ def test_doctor_rejects_a_non_device_fuse_path(tmp_path) -> None:
     bin_dir.mkdir()
     log_file = tmp_path / "docker.log"
     _write_fake_docker(bin_dir, log_file)
-    fake_fuse = tmp_path / "fuse"
-    fake_fuse.touch()
     (checkout / ".env").write_text("NEUROCADE_SKIP_SAMPLE_CASE=true\n", encoding="utf-8")
 
     result = subprocess.run(
@@ -319,14 +355,51 @@ def test_doctor_rejects_a_non_device_fuse_path(tmp_path) -> None:
             checkout / ".env",
             bin_dir,
             log_file,
-            NEUROCADE_FUSE_DEVICE=str(fake_fuse),
+            FAKE_DOCKER_FUSE_AVAILABLE="false",
         ),
         text=True,
         capture_output=True,
     )
 
     assert result.returncode == 1
-    assert "FUSE character device is missing" in result.stderr
+    assert "Docker cannot provide a working Apptainer runtime workspace" in result.stderr
+    assert '--entrypoint python' in log_file.read_text(encoding="utf-8")
+    assert '--device /dev/fuse' in log_file.read_text(encoding="utf-8")
+    assert '/.neurocade/apptainer-tmp:/apptainer-tmp' in log_file.read_text(encoding="utf-8")
+
+
+def test_docker_launcher_uses_apptainer_extraction_mode_on_macos(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    scripts_dir = checkout / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "run.sh", scripts_dir / "run.sh")
+    shutil.copy2(REPO_ROOT / "scripts" / "build_image.sh", scripts_dir / "build_image.sh")
+    shutil.copytree(REPO_ROOT / "scripts" / "lib", scripts_dir / "lib")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "docker.log"
+    _write_fake_docker(bin_dir, log_file)
+    (checkout / ".env").write_text("NEUROCADE_SKIP_SAMPLE_CASE=true\n", encoding="utf-8")
+
+    subprocess.run(
+        ["bash", str(scripts_dir / "run.sh"), "start"],
+        check=True,
+        cwd=checkout,
+        env=_launcher_env(
+            checkout / ".env",
+            bin_dir,
+            log_file,
+            NEUROCADE_HOST_SYSTEM="Darwin",
+        ),
+    )
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "APPTAINER_TMPDIR=/tmp" in log_text
+    assert "APPTAINER_UNSQUASH=true" in log_text
+    # Retained for compatibility with released images whose container doctor
+    # predates extraction mode; APPTAINER_UNSQUASH prevents runtime use of it.
+    assert "--device /dev/fuse" in log_text
+    assert "/.neurocade/apptainer-tmp:/apptainer-tmp" not in log_text
 
 
 def test_docker_launcher_selects_next_available_port(tmp_path) -> None:
@@ -592,9 +665,11 @@ def test_install_hides_existing_secret_in_interactive_prompt(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    master_fd, slave_fd = pty.openpty()
-    try:
-        process = subprocess.Popen(
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        os.chdir(checkout)
+        os.execv(
+            "/bin/bash",
             [
                 "bash",
                 str(scripts_dir / "install.sh"),
@@ -604,34 +679,51 @@ def test_install_hides_existing_secret_in_interactive_prompt(tmp_path) -> None:
                 "openai-compatible",
                 "--no-start",
             ],
-            cwd=checkout,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            close_fds=True,
         )
-        os.close(slave_fd)
-        slave_fd = -1
-        os.write(master_fd, b"\n" * 8)
-        assert process.wait(timeout=10) == 0
 
-        output_chunks: list[bytes] = []
-        while True:
-            try:
-                chunk = os.read(master_fd, 4096)
-            except OSError:
+    output = bytearray()
+    status: int | None = None
+
+    def read_until(expected: bytes, timeout: float = 5) -> None:
+        deadline = time.monotonic() + timeout
+        while expected not in output:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, f"Timed out waiting for prompt: {expected!r}"
+            readable, _, _ = select.select([master_fd], [], [], remaining)
+            assert readable, f"Timed out waiting for prompt: {expected!r}"
+            output.extend(os.read(master_fd, 4096))
+
+    try:
+        for expected_prompt in (
+            b"OpenAI-compatible base URL [https://llm.example.test]:",
+            b"OpenAI-compatible API key (optional) [**existing key**]:",
+            b"OpenAI-compatible model [model-from-env]:",
+        ):
+            read_until(expected_prompt)
+            os.write(master_fd, b"\n")
+
+        deadline = time.monotonic() + 10
+        while status is None:
+            waited_pid, waited_status = os.waitpid(pid, os.WNOHANG)
+            if waited_pid == pid:
+                status = waited_status
                 break
-            if not chunk:
-                break
-            output_chunks.append(chunk)
-        output = b"".join(output_chunks).decode(errors="replace")
+            assert time.monotonic() < deadline, "Installer did not exit within ten seconds"
+            readable, _, _ = select.select([master_fd], [], [], 0.05)
+            if not readable:
+                continue
+            with suppress(OSError):
+                output.extend(os.read(master_fd, 4096))
     finally:
         os.close(master_fd)
-        if slave_fd >= 0:
-            os.close(slave_fd)
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            _, status = os.waitpid(pid, 0)
 
-    assert "OpenAI-compatible API key (optional) [**existing key**]:" in output
-    assert existing_key not in output
+    rendered_output = output.decode(errors="replace")
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert "OpenAI-compatible API key (optional) [**existing key**]:" in rendered_output
+    assert existing_key not in rendered_output
     assert f"LLM_BACKEND_API_KEY={existing_key}" in (checkout / ".env").read_text(encoding="utf-8")
 
 
@@ -860,7 +952,7 @@ def test_docker_launcher_forwards_configured_platform_to_every_container(tmp_pat
     subprocess.run(["bash", str(scripts_dir / "run.sh"), "start"], check=True, env=env, cwd=checkout)
 
     log_text = log_file.read_text(encoding="utf-8")
-    assert log_text.count("--platform linux/amd64") == 6
+    assert log_text.count("--platform linux/amd64") == 7
 
 
 def test_docker_launcher_pulls_mismatched_platform_image(tmp_path) -> None:

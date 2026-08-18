@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -39,7 +40,18 @@ def main() -> int:
     else:
         _report("FAIL", "Apptainer is not installed")
         failures += 1
-    if Path("/dev/fuse").is_char_device():
+    unsquash = os.environ.get("APPTAINER_UNSQUASH", "").strip().lower() in {"1", "true", "yes", "on"}
+    if unsquash:
+        tmpdir = Path(os.environ.get("APPTAINER_TMPDIR", "/tmp"))
+        try:
+            probe = tmpdir / ".doctor-apptainer-tmp-probe"
+            probe.touch()
+            probe.unlink()
+            _report("OK", f"Apptainer extraction workspace {tmpdir} is writable")
+        except OSError as exc:
+            _report("FAIL", f"Apptainer extraction workspace {tmpdir} is not writable: {exc}")
+            failures += 1
+    elif Path("/dev/fuse").is_char_device():
         _report("OK", "/dev/fuse is a character device inside the application container")
     else:
         _report("FAIL", "/dev/fuse is not a character device inside the application container")

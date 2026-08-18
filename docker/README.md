@@ -19,11 +19,14 @@ Run:
 ./scripts/run.sh start -d
 ```
 
-The container needs `--privileged --device /dev/fuse` so Apptainer can execute
-tool images inside Docker. `scripts/run.sh` supplies those flags, mounts
-`neurocade-data/` at `/data`, and runs the application with the invoking host
-UID/GID. The launcher performs a one-time ownership migration for its writable
-data, SIF, cache, and database mounts.
+On native Linux the container uses `--privileged --device /dev/fuse` so
+Apptainer can execute tool images inside Docker. On Docker Desktop for macOS,
+the launcher instead uses container-local temporary storage and Apptainer's
+extraction mode because macOS bind mounts cannot host Apptainer build or
+executable FUSE mounts. `scripts/run.sh` configures the appropriate mode,
+mounts `neurocade-data/` at `/data`, and runs the application with the invoking
+host UID/GID. The launcher performs a one-time ownership migration for its
+writable data, SIF, cache, and database mounts.
 
 `NEUROCADE_GPU_MODE=auto` probes Docker's NVIDIA passthrough, adds `--gpus all`
 when it works, and verifies that CUDA initializes inside the prepared tool

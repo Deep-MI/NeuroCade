@@ -109,6 +109,11 @@ The app launches neuroimaging tools with Apptainer inside the Docker container.
 as the invoking host UID/GID, so newly created database, cache, and analysis
 files remain writable by the host user. Set `NEUROCADE_UID` and
 `NEUROCADE_GID` only when the mounted data should belong to a different user.
+On native Linux, the Apptainer build workspace is mounted separately at
+`/apptainer-tmp` and SIF files use FUSE execution. Docker Desktop exposes macOS
+bind mounts through a `fakeowner` filesystem that cannot host Apptainer builds
+or executable FUSE mounts, so the launcher automatically uses container-local
+temporary storage and Apptainer's extraction-based SIF execution on macOS.
 
 GPU-capable workflows use `NEUROCADE_GPU_MODE`:
 
@@ -135,8 +140,8 @@ Startup prepares the pinned FastSurfer and dcm2niix images as verified,
 architecture-specific SIF files in `neurocade-data/sif/`. Downloads run in
 parallel, resume when supported, and are reused after checksum validation.
 Prepare them independently with `./scripts/run.sh prepare-tools`. Run
-`./scripts/run.sh doctor` to validate Docker, FUSE, storage, images, GPU, and LLM
-configuration.
+`./scripts/run.sh doctor` to validate Docker, FUSE passthrough inside the Docker
+Linux environment, storage, images, GPU, and LLM configuration.
 
 ## LLM Providers
 

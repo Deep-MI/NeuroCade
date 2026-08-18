@@ -15,7 +15,6 @@ doctor_fail() {
 
 run_host_doctor() {
   DOCTOR_FAILURES=0
-  local fuse_device="${NEUROCADE_FUSE_DEVICE:-/dev/fuse}"
   local minimum_free_kb="${NEUROCADE_MIN_FREE_KB:-2097152}"
   local application_image_kb="${NEUROCADE_APP_IMAGE_SIZE_KB:-4194304}"
   if [[ ! "$application_image_kb" =~ ^[0-9]+$ ]]; then
@@ -37,11 +36,6 @@ run_host_doctor() {
     doctor_ok "Docker daemon is reachable"
   else
     doctor_fail "Docker daemon is not reachable by this user"
-  fi
-  if [[ -c "$fuse_device" ]]; then
-    doctor_ok "FUSE character device is available at $fuse_device"
-  else
-    doctor_fail "FUSE character device is missing at $fuse_device"
   fi
   if [[ "$(uname -m)" =~ ^(x86_64|amd64)$ ]]; then
     doctor_ok "Host architecture is amd64"

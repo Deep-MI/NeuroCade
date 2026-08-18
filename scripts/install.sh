@@ -61,7 +61,9 @@ bootstrap_checkout() {
 }
 
 is_tty() {
-  [[ -t 0 && -t 1 ]]
+  # Prompts are invoked through command substitutions, so stdout is a pipe even
+  # when the installer is attached to an interactive terminal.
+  [[ -t 0 ]]
 }
 
 prompt() {
@@ -108,7 +110,7 @@ configured_or_default() {
 }
 
 detect_configured_provider() {
-  local root="$1" configured candidate value
+  local root="$1" configured candidate existing value
   configured="$(configured_or_default "$root" LLM_PROVIDER_DEFAULT "")"
   if [[ -n "$configured" ]]; then
     printf '%s\n' "$configured"
@@ -128,8 +130,15 @@ detect_configured_provider() {
   [[ -n "$value" ]] && candidates+=(ollama)
 
   local -a unique=()
-  for candidate in "${candidates[@]}"; do
-    [[ " ${unique[*]} " == *" $candidate "* ]] || unique+=("$candidate")
+  for candidate in "${candidates[@]+"${candidates[@]}"}"; do
+    local found=0
+    for existing in "${unique[@]+"${unique[@]}"}"; do
+      if [[ "$existing" == "$candidate" ]]; then
+        found=1
+        break
+      fi
+    done
+    (( found == 1 )) || unique+=("$candidate")
   done
   if (( ${#unique[@]} > 1 )); then
     echo "Multiple LLM provider configurations were found; pass --llm-provider explicitly." >&2

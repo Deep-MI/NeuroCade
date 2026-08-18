@@ -35,6 +35,19 @@ RUNTIME_GID="${NEUROCADE_GID:-$(id -g)}"
 STARTUP_TIMEOUT_SECONDS="${NEUROCADE_STARTUP_TIMEOUT_SECONDS:-120}"
 GPU_ARGS=()
 RUNTIME_CONTAINER_ARGS=()
+HOST_SYSTEM="${NEUROCADE_HOST_SYSTEM:-$(uname -s)}"
+APPTAINER_TMPDIR_CONTAINER=/apptainer-tmp
+APPTAINER_UNSQUASH=false
+FUSE_DEVICE_ARGS=(--device /dev/fuse)
+APPTAINER_TMP_MOUNT_ARGS=(-v "${HOST_DATA_DIR}/.neurocade/apptainer-tmp:/apptainer-tmp")
+if [[ "$HOST_SYSTEM" == "Darwin" ]]; then
+  # Docker Desktop exposes macOS bind mounts as `fakeowner`, which Apptainer
+  # cannot use for OCI builds or executable FUSE mounts. Use its native Linux
+  # writable layer and extraction-based SIF execution instead.
+  APPTAINER_TMPDIR_CONTAINER=/tmp
+  APPTAINER_UNSQUASH=true
+  APPTAINER_TMP_MOUNT_ARGS=()
+fi
 
 usage() {
   cat <<'EOF'
@@ -166,20 +179,44 @@ ensure_runtime_ownership() {
 runtime_container_args() {
   RUNTIME_CONTAINER_ARGS=(
     --privileged
-    --device /dev/fuse
+    "${FUSE_DEVICE_ARGS[@]+"${FUSE_DEVICE_ARGS[@]}"}"
     --user "${RUNTIME_UID}:${RUNTIME_GID}"
     -v "${HOST_DATA_DIR}:/data"
     -v "${NEUROCADE_DB_DIR}:/database"
+    "${APPTAINER_TMP_MOUNT_ARGS[@]+"${APPTAINER_TMP_MOUNT_ARGS[@]}"}"
     -v "${HOST_DATA_DIR}/.neurocade/passwd:/etc/passwd:ro"
     -v "${HOST_DATA_DIR}/.neurocade/group:/etc/group:ro"
     -e HOME=/data/.neurocade/home
     -e APPTAINER_CACHEDIR=/data/.neurocade/apptainer-cache
-    -e APPTAINER_TMPDIR=/data/.neurocade/apptainer-tmp
+    -e "APPTAINER_TMPDIR=${APPTAINER_TMPDIR_CONTAINER}"
+    -e "APPTAINER_UNSQUASH=${APPTAINER_UNSQUASH}"
     -e HOST_DATA_DIR=/data
     -e NEUROCADE_SIF_DIR=/data/sif
     -e "NEUROCADE_GPU_MODE=${GPU_MODE}"
     -e DATABASE_URL=sqlite+pysqlite:////database/neurocade.db
   )
+}
+
+check_docker_apptainer() {
+  if docker run --rm "${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}" \
+    --privileged \
+    "${FUSE_DEVICE_ARGS[@]+"${FUSE_DEVICE_ARGS[@]}"}" \
+    --user "${RUNTIME_UID}:${RUNTIME_GID}" \
+    "${APPTAINER_TMP_MOUNT_ARGS[@]+"${APPTAINER_TMP_MOUNT_ARGS[@]}"}" \
+    -e "APPTAINER_TMPDIR=${APPTAINER_TMPDIR_CONTAINER}" \
+    -e "APPTAINER_UNSQUASH=${APPTAINER_UNSQUASH}" \
+    --entrypoint python \
+    "$IMAGE" \
+    -c 'import os, tempfile; tmpdir = os.environ["APPTAINER_TMPDIR"]; unsquash = os.environ["APPTAINER_UNSQUASH"] == "true"; unsquash or os.close(os.open("/dev/fuse", os.O_RDWR)); tempfile.NamedTemporaryFile(dir=tmpdir).close()'; then
+    if [[ "$APPTAINER_UNSQUASH" == "true" ]]; then
+      doctor_ok "Docker supports the macOS Apptainer extraction workspace"
+    else
+      doctor_ok "Docker can expose /dev/fuse and the Apptainer temporary mount"
+    fi
+    return 0
+  fi
+  doctor_fail "Docker cannot provide a working Apptainer runtime workspace"
+  return 1
 }
 
 prepare_tool_images() {
@@ -342,10 +379,11 @@ case "$command" in
     ;;
   prepare-tools)
     validate_runtime_settings
+    ensure_runtime_directories
     run_host_doctor
     ensure_app_image
+    check_docker_apptainer
     configure_gpu
-    ensure_runtime_directories
     ensure_runtime_ownership
     run_container_doctor --pre-download
     prepare_tool_images
@@ -361,9 +399,11 @@ case "$command" in
       else
         doctor_fail "Application image does not match ${DOCKER_PLATFORM}"
       fi
-      ensure_runtime_ownership
-      configure_gpu
-      run_container_doctor
+      if check_docker_apptainer; then
+        ensure_runtime_ownership
+        configure_gpu
+        run_container_doctor
+      fi
     else
       doctor_fail "Application image $IMAGE is not installed; Apptainer and image-integrity checks cannot run"
     fi
@@ -393,6 +433,7 @@ case "$command" in
     else
       ensure_app_image
     fi
+    check_docker_apptainer
     ensure_sample_case
     if docker ps --filter "name=^/${CONTAINER_NAME}$" --filter "status=running" --quiet | grep -q .; then
       running_port="$HTTP_PORT"
