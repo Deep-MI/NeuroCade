@@ -15,7 +15,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.runtime import neuroimaging_tasks as neuroimaging_tasks_module  # noqa: E402
-from api_service.runtime_tools import prepare_images as prepare_images_module  # noqa: E402
 from api_service.runtime_tools import workflow_execution as execution_module  # noqa: E402
 from api_service.runtime_tools.workflow_catalog import (  # noqa: E402
     WorkflowExecution,
@@ -30,6 +29,7 @@ from api_service.runtime_tools.workflow_catalog import (  # noqa: E402
     user_workflow_catalog_path,
     workflow_source,
 )
+from neurocade_runtime_tools.images import load_image_manifest  # noqa: E402
 
 from backend_common.db import Run  # noqa: E402
 
@@ -203,10 +203,12 @@ def test_background_submission_captures_effective_workflow_definition(monkeypatc
 
 
 def test_default_image_manifest_contains_workflows_and_dicom_conversion():
-    assert [spec.image for spec in prepare_images_module.image_manifest()] == [
+    manifest = load_image_manifest(ROOT / "config" / "tool_images.json")
+    assert [spec.image for spec in manifest] == [
         "deepmi/fastsurfer:cu128-v2.5.4",
         "vnmd/dcm2niix_v1.0.20240202:20260512",
     ]
+    assert all(spec.converted_sif_sha256 for spec in manifest)
 
 
 def test_warm_gpu_capabilities_probes_each_gpu_workflow_image_once(monkeypatch):
@@ -221,43 +223,8 @@ def test_warm_gpu_capabilities_probes_each_gpu_workflow_image_once(monkeypatch):
     assert execution_module.warm_workflow_gpu_capabilities() == {
         "deepmi/fastsurfer:cu128-v2.5.4": True,
     }
-    assert calls == [(True, "deepmi/fastsurfer:cu128-v2.5.4")]
-
-
-def test_prepare_image_uses_persistent_arch_specific_sif(monkeypatch, tmp_path):
-    monkeypatch.setenv("NEUROCADE_SIF_DIR", str(tmp_path))
-    calls: list[list[str]] = []
-    spec = prepare_images_module.image_manifest()[0]
-
-    def fake_run(argv, **_kwargs):
-        calls.append(argv)
-        Path(argv[-2]).write_bytes(b"sif")
-
-    monkeypatch.setattr(prepare_images_module.subprocess, "run", fake_run)
-    monkeypatch.setattr(prepare_images_module, "_sha256", lambda _path: spec.sha256)
-    target = prepare_images_module.prepare_image(spec)
-
-    assert target.is_file()
-    assert target.name.startswith("deepmi_fastsurfer_cu128-v2.5.4-")
-    assert calls[0][:3] == ["apptainer", "pull", "--force"]
-    assert calls[0][-1] == "docker://deepmi/fastsurfer:cu128-v2.5.4"
-
-
-def test_prepare_images_reports_required_cuda_failure_without_traceback(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["prepare-images"])
-    spec = prepare_images_module.image_manifest()[0]
-    monkeypatch.setattr(prepare_images_module, "prepare_images", lambda **_kwargs: [Path("tool.sif")])
-    monkeypatch.setattr(prepare_images_module, "image_manifest", lambda: [spec])
-
-    def unavailable(_preferred, **_kwargs):
-        raise prepare_images_module.RuntimeGpuUnavailableError("tool image is CPU-only")
-
-    monkeypatch.setattr(prepare_images_module, "resolve_gpu_enabled", unavailable)
-
-    assert prepare_images_module.main() == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == "ERROR: tool image is CPU-only\n"
+    assert calls[0][0] is True
+    assert getattr(calls[0][1], "oci_reference", None) == "deepmi/fastsurfer:cu128-v2.5.4"
 
 
 @pytest.mark.parametrize(
@@ -419,6 +386,7 @@ def test_typed_output_maps_to_declared_case_file_and_is_reported(tmp_path):
         ["/case/input.mgz"],
         RuntimeBind(case_root, "/case", "rw"),
         run_id="run-1",
+        gpu_enabled=False,
     )
 
     output_path = case_root / "mri" / "aparc.DKTatlas+aseg.deep.mgz"

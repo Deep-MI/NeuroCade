@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
@@ -16,7 +17,12 @@ from api_service.assistant.compaction import (
     estimate_messages_tokens,
     select_recent_messages,
 )
-from api_service.schemas import ChatMessageSummary, ChatToolCallEntry, ReasoningEntry
+from api_service.schemas import (
+    AssistantApprovalRequestResponse,
+    ChatMessageSummary,
+    ChatToolCallEntry,
+    ReasoningEntry,
+)
 from backend_common.auth import AuthContext
 from backend_common.db import AssistantMessage, AssistantScope, AssistantThread, AssistantTurn, run_with_sqlite_lock_retry
 from backend_common.providers import ModelConfig
@@ -30,6 +36,15 @@ HISTORY_OMISSION_NOTICE = (
     "budget. The newest history was prioritized.]"
 )
 CONTEXT_SUMMARY_ROLE = "context-summary"
+
+
+@dataclass(frozen=True)
+class AssistantHistoryState:
+    """Displayable state for one private assistant thread."""
+
+    thread_key: str | None
+    messages: list[ChatMessageSummary]
+    pending_approval: AssistantApprovalRequestResponse | None
 
 
 def _context_message_size(message: dict[str, Any]) -> int:
@@ -471,6 +486,49 @@ class AssistantHistoryStore:
         thread = find_thread(db, user_id=user_id, scope=scope, workspace_id=workspace_id, case_id=case_id)
         if thread is None:
             return []
+        return self._list_thread_messages(db, thread)
+
+    def history_state(
+        self,
+        db: Session,
+        *,
+        user_id: str,
+        scope: str,
+        workspace_id: str,
+        case_id: str | None = None,
+    ) -> AssistantHistoryState:
+        """Return messages and resumable approval state from one thread lookup."""
+        thread = find_thread(db, user_id=user_id, scope=scope, workspace_id=workspace_id, case_id=case_id)
+        if thread is None:
+            return AssistantHistoryState(thread_key=None, messages=[], pending_approval=None)
+        awaiting_turn = (
+            db.query(AssistantTurn)
+            .filter(
+                AssistantTurn.thread_id == thread.id,
+                AssistantTurn.status == "awaiting_approval",
+            )
+            .order_by(AssistantTurn.updated_at.desc())
+            .first()
+        )
+        pending_approval_payload = (
+            (awaiting_turn.result_json or {}).get("approval_request")
+            if awaiting_turn is not None
+            else None
+        )
+        pending_approval = (
+            AssistantApprovalRequestResponse.model_validate(pending_approval_payload)
+            if pending_approval_payload is not None
+            else None
+        )
+        return AssistantHistoryState(
+            thread_key=thread.thread_key,
+            messages=self._list_thread_messages(db, thread),
+            pending_approval=pending_approval,
+        )
+
+    @staticmethod
+    def _list_thread_messages(db: Session, thread: AssistantThread) -> list[ChatMessageSummary]:
+        """Load bounded display messages for an already resolved thread."""
         rows = (
             db.query(AssistantMessage)
             .filter(AssistantMessage.thread_id == thread.id, AssistantMessage.role != CONTEXT_SUMMARY_ROLE)

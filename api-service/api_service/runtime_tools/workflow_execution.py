@@ -9,12 +9,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from neurocade_runtime_tools.apptainer_runtime import resolve_gpu_enabled
+from neurocade_runtime_tools.bridge_client import resolve_gpu_enabled
 from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request
-from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest, execute_runtime_request
+from neurocade_runtime_tools.execution import RuntimeExecutionRequest, execute_runtime_request
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
+from api_service.runtime_tools.runtime_images import runtime_image_spec
 from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, resolve_workflow, workflows
 from api_service.runtime_tools.workflow_outputs import (
     OutputBaseline,
@@ -36,7 +37,7 @@ def warm_workflow_gpu_capabilities() -> dict[str, bool]:
             if tool.execution.gpu
         }
     )
-    return {image: resolve_gpu_enabled(True, image=image) for image in images}
+    return {image: resolve_gpu_enabled(True, image=runtime_image_spec(image)) for image in images}
 
 
 @dataclass(frozen=True)
@@ -133,7 +134,7 @@ def prepare_workflow(
         container_run_dir=container_run_dir,
         host_run_dir=host_run_dir,
         gpu_enabled=(
-            resolve_gpu_enabled(tool.execution.gpu, image=tool.neurodesk_image)
+            resolve_gpu_enabled(tool.execution.gpu, image=runtime_image_spec(tool.neurodesk_image))
             if gpu_enabled is None
             else gpu_enabled
         ),
@@ -257,15 +258,15 @@ def execute_prepared_workflow(
     baseline = snapshot_workflow_outputs(prepared.tool, prepared.host_outputs)
     write_output_baseline(prepared.host_run_dir, baseline)
     command = build_container_request(
-        image=prepared.tool.neurodesk_image,
+        image=runtime_image_spec(prepared.tool.neurodesk_image),
         command=["/bin/bash", "-euo", "pipefail", "-c", workflow_script(prepared)],
         binds=[prepared.bind],
         cwd=prepared.container_root,
         disable_network=True,
         gpu=prepared.gpu_enabled,
+        run_id=prepared.run_id,
     )
     request = RuntimeExecutionRequest(
-        argv=[],
         cwd=prepared.host_root,
         timeout_s=prepared.tool.execution.timeout_s,
         execution_mode="container",
@@ -274,7 +275,6 @@ def execute_prepared_workflow(
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         capture_output=stdout_path is None and stderr_path is None,
-        runtime_policy=RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=prepared.gpu_enabled),
         log_lines=[
             f"NeuroCade workflow: {prepared.tool.label}",
             f"Image: {prepared.tool.image}",

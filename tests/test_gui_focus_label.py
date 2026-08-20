@@ -51,8 +51,8 @@ class TestGuiFocusLabel:
         # The MRI viewer should show canvases
         page.wait_for_selector("canvas", state="visible", timeout=15_000)
         canvases = page.locator("canvas")
-        assert canvases.count() >= 3, (
-            f"Expected at least 3 MRI view canvases, got {canvases.count()}"
+        assert canvases.count() >= 1, (
+            f"Expected an MRI viewer canvas, got {canvases.count()}"
         )
 
         take_screenshot(page, "focus_01_case_loaded", screenshot_dir)

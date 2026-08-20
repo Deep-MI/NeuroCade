@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .execution import RuntimeBind, RuntimeContainerRunRequest
+from .protocol import RuntimeImageSpec
 
 DCM2NIIX_IMAGE = "vnmd/dcm2niix_v1.0.20240202:20260512"
 
@@ -29,18 +30,19 @@ def _validate_container_path(value: str, *, label: str) -> str:
 
 def build_container_request(
     *,
-    image: str,
+    image: str | RuntimeImageSpec,
     command: Sequence[str],
     binds: Sequence[RuntimeBind] = (),
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
     disable_network: bool = True,
     gpu: bool = False,
+    run_id: str | None = None,
 ) -> RuntimeContainerRunRequest:
     """Build a structured container execution request.
 
-    Callers provide structured bind/env/cwd values; the selected runtime backend
-    (``apptainer_runtime.py``) turns this request into the final ``argv``.
+    Callers provide structured bind/env/cwd values; the bridge's selected runtime
+    adapter turns this request into the final ``argv``.
     """
     if not command:
         raise ValueError("Container command cannot be empty")
@@ -57,11 +59,12 @@ def build_container_request(
             )
         )
     return RuntimeContainerRunRequest(
-        image=container_image_name(image),
+        image=image if isinstance(image, RuntimeImageSpec) else RuntimeImageSpec(oci_reference=container_image_name(image)),
         command=[str(part) for part in command],
         binds=tuple(normalized_binds),
         cwd=_validate_container_path(cwd, label="Container working directory") if cwd else None,
         env=dict(env or {}),
         network_disabled=disable_network,
         gpu_enabled=gpu,
+        run_id=run_id,
     )

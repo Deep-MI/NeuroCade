@@ -979,6 +979,7 @@ def test_start_run_active_constraint_returns_conflict_when_precheck_races(seeded
     outputs_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
     monkeypatch.setattr(run_operations_module, "ensure_case_not_active", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_operations_module, "resolve_gpu_enabled", lambda preferred, **_kwargs: preferred)
 
     case = Case(
         id="active-conflict-id",

@@ -91,6 +91,11 @@ def _patch_monitoring_checks(monkeypatch):
         )
 
     monkeypatch.setattr(monitoring_module, "_check_fastsurfer_queue", fake_fastsurfer_queue)
+    monkeypatch.setattr(
+        monitoring_module,
+        "_check_runtime_bridge",
+        lambda: monitoring_module._service_status("Runtime bridge", "ok"),
+    )
 
 
 def test_monitoring_summary_counts_recent_session_bootstraps(seeded_monitoring_context, monkeypatch):
@@ -138,6 +143,7 @@ def test_monitoring_health_returns_service_status_without_summary_counts(seeded_
     assert health.status == "ok"
     assert [service.name for service in health.services] == [
         "API service",
+        "Runtime bridge",
         "Database",
         "Background jobs",
         "NeuroCade FastSurfer queue",
@@ -145,6 +151,23 @@ def test_monitoring_health_returns_service_status_without_summary_counts(seeded_
     assert health.jobs["worker"]["status"] == "ok"
     assert health.jobs["fastsurfer_queue"]["total"] == 3
     assert not hasattr(health, "totals")
+
+
+def test_monitoring_health_degrades_when_runtime_bridge_is_down(seeded_monitoring_context, monkeypatch):
+    db_session, context, _member = seeded_monitoring_context
+    _patch_monitoring_checks(monkeypatch)
+    monkeypatch.setattr(
+        monitoring_module,
+        "_check_runtime_bridge",
+        lambda: monitoring_module._service_status("Runtime bridge", "down", "bridge unavailable"),
+    )
+
+    health = monitoring_health(db=db_session, context=context)
+
+    assert health.status == "degraded"
+    bridge = next(service for service in health.services if service.name == "Runtime bridge")
+    assert bridge.status == "down"
+    assert bridge.message == "bridge unavailable"
 
 
 def test_client_error_ingestion_records_user_event(seeded_monitoring_context):

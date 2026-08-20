@@ -96,13 +96,38 @@ def test_provider_reachability_is_separate_from_configuration(monkeypatch):
     monkeypatch.setattr(
         provider_module.requests,
         "get",
-        lambda *_args, **_kwargs: type("Response", (), {"ok": True})(),
+        lambda *_args, **_kwargs: type("Response", (), {"ok": True, "json": lambda self: {"data": [{"id": "model"}]}})(),
     )
 
     reachable, reason = provider_module.provider_reachability(config)
 
     assert reachable is True
     assert reason is None
+
+
+def test_provider_reachability_rejects_unlisted_openai_model(monkeypatch):
+    config = provider_module.ModelConfig(
+        provider="test-provider",
+        provider_family="openai_compatible",
+        model="removed-model",
+        base_url="https://provider-status.example.invalid",
+        configured=True,
+    )
+    provider_module._probe_provider.cache_clear()
+    monkeypatch.setattr(
+        provider_module.requests,
+        "get",
+        lambda *_args, **_kwargs: type(
+            "Response",
+            (),
+            {"ok": True, "json": lambda self: {"data": [{"id": "available-model"}]}}
+        )(),
+    )
+
+    reachable, reason = provider_module.provider_reachability(config)
+
+    assert reachable is False
+    assert reason == "Configured model 'removed-model' is not listed by the provider"
 
 
 def test_settings_default_to_sqlite(monkeypatch):
@@ -145,16 +170,20 @@ def test_settings_ignore_removed_data_root_aliases(monkeypatch, tmp_path):
 
 
 def test_docker_launcher_exposes_clerk_environment():
-    run_text = Path("scripts/run.sh").read_text()
-    assert "--env-file" in run_text
+    driver_text = Path("scripts/lib/runtime_docker.sh").read_text()
+    assert "--env-file" in driver_text
 
 
 def test_docker_launcher_uses_mounted_sqlite_database():
-    run_text = Path("scripts/run.sh").read_text()
+    driver_text = Path("scripts/lib/runtime_docker.sh").read_text()
+    launcher_text = Path("scripts/run.sh").read_text()
 
-    assert "sqlite+pysqlite:////database/neurocade.db" in run_text
-    assert '"${NEUROCADE_DB_DIR}:/database"' in run_text
-    assert "NEUROCADE_CONTAINER_DATABASE_URL" not in run_text
+    assert "sqlite+pysqlite:////database/neurocade.db" in driver_text
+    assert '"$DATABASE_VOLUME:/database"' in driver_text
+    assert 'docker volume create "$DATABASE_VOLUME"' in driver_text
+    assert "runtime_prepare_database" in launcher_text
+    assert '"$HOST_DATA_DIR:/database"' not in driver_text
+    assert "NEUROCADE_CONTAINER_DATABASE_URL" not in driver_text
 
 
 def test_gui_command_channel_polls_immediately_and_continuously():
@@ -180,6 +209,8 @@ def test_docker_image_pins_project_python_version():
     assert not Path("pyrightconfig.json").exists()
     assert "npm ci" not in build_script
     assert "python:3.12-slim" in backend_dockerfile
+    assert "SQLITE_AUTOCONF_VERSION=3530400" in backend_dockerfile
+    assert "sqlite3.sqlite_version" in backend_dockerfile
     assert "uv sync --locked --no-dev --no-editable" in backend_dockerfile
     assert "pip uninstall -y uv" in backend_dockerfile
     assert "node:22-alpine" in backend_dockerfile

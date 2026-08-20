@@ -1,6 +1,5 @@
-# NeuroCade monolith image: one process serves the API + built SPA and launches
-# analysis tools via Apptainer. Native Linux uses privileged FUSE execution;
-# Docker Desktop uses Apptainer's extraction mode on its Linux writable layer.
+# Canonical NeuroCade application image. Tool containers are launched only by
+# the host-native authenticated runtime bridge, never from this image.
 
 FROM node:22-alpine AS client-build
 WORKDIR /app/client
@@ -10,9 +9,26 @@ RUN npm ci
 COPY client ./
 RUN npm run build
 
-# Pinned to bookworm: the Apptainer .deb depends on libfuse3-3, which Debian
-# trixie (the current python:3.12-slim) replaced with libfuse3-4.
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim AS sqlite-build
+
+ARG SQLITE_AUTOCONF_VERSION=3530400
+ARG SQLITE_AUTOCONF_SHA3=454e45f61c6bd75b7420e7190732dea03ce6639c63ada47bbc592f67fc340338
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl \
+    && curl --fail --show-error --location \
+      "https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" \
+      --output /tmp/sqlite.tar.gz \
+    && SQLITE_AUTOCONF_SHA3="$SQLITE_AUTOCONF_SHA3" python -c \
+      'import hashlib, os, pathlib; archive = pathlib.Path("/tmp/sqlite.tar.gz"); actual = hashlib.sha3_256(archive.read_bytes()).hexdigest(); expected = os.environ["SQLITE_AUTOCONF_SHA3"]; assert actual == expected, f"SQLite SHA3 mismatch: {actual}"' \
+    && mkdir /tmp/sqlite \
+    && tar -xzf /tmp/sqlite.tar.gz --strip-components=1 -C /tmp/sqlite \
+    && cd /tmp/sqlite \
+    && ./configure --prefix=/opt/sqlite --disable-static \
+    && make -j2 \
+    && make install
+
+FROM python:3.12-slim
 
 ARG NEUROCADE_VERSION=0.0.0
 
@@ -27,17 +43,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Apptainer is the tool runtime. squashfs-tools/fuse2fs/uidmap support its
-# rootless SIF execution; the .deb is pulled from the official release.
-ARG APPTAINER_VERSION=1.3.6
-ARG APPTAINER_SHA256=2723b2928cfc30edf687723c49556ec4e013f0bf7cdb43a5a76bca7bd3c70792
+COPY --from=sqlite-build /opt/sqlite/lib/libsqlite3.so* /usr/local/lib/
+
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl uidmap fuse2fs squashfs-tools \
-    && curl -fsSL -o /tmp/apptainer.deb \
-        "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_amd64.deb" \
-    && echo "${APPTAINER_SHA256}  /tmp/apptainer.deb" | sha256sum -c - \
-    && apt-get install -y --no-install-recommends /tmp/apptainer.deb \
-    && rm -f /tmp/apptainer.deb \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && ldconfig \
+    && python -c 'import sqlite3; assert tuple(map(int, sqlite3.sqlite_version.split("."))) >= (3, 51, 3), sqlite3.sqlite_version' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./

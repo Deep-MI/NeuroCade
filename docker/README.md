@@ -1,41 +1,18 @@
-# Docker Image
+# Application image
 
-`docker/backend.Dockerfile` builds one image, published on release as
-`ghcr.io/deep-mi/neurocade`:
+`backend.Dockerfile` is the canonical NeuroCade release artifact. Its first
+stage builds the React client; its Python 3.12 stage installs the monolithic
+FastAPI application and serves both the API and SPA with one uvicorn worker.
 
-1. a Node stage builds the React SPA
-2. a Python runtime stage installs backend dependencies and Apptainer
-3. uvicorn serves both `/api/app` and the built SPA
+The application image contains no Docker CLI, Apptainer, FUSE tooling, or
+runtime socket. Neuroimaging containers are launched by the authenticated
+host-native `neurocade-runtime-bridge` selected during installation.
 
-Build:
+Release CI publishes the amd64 OCI image, converts that exact tagged image to a
+checksummed application SIF, and smoke-tests both artifacts as a non-root user.
 
-```bash
-./scripts/run.sh build
-```
-
-Run:
+Build locally with:
 
 ```bash
-./scripts/run.sh start -d
+NEUROCADE_RUNTIME=docker ./scripts/run.sh build
 ```
-
-On native Linux the container uses `--privileged --device /dev/fuse` so
-Apptainer can execute tool images inside Docker. On Docker Desktop for macOS,
-the launcher instead uses container-local temporary storage and Apptainer's
-extraction mode because macOS bind mounts cannot host Apptainer build or
-executable FUSE mounts. `scripts/run.sh` configures the appropriate mode,
-mounts `neurocade-data/` at `/data`, and runs the application with the invoking
-host UID/GID. The launcher performs a one-time ownership migration for its
-writable data, SIF, cache, and database mounts.
-
-`NEUROCADE_GPU_MODE=auto` probes Docker's NVIDIA passthrough, adds `--gpus all`
-when it works, and verifies that CUDA initializes inside the prepared tool
-image. Use `cuda` to require both checks and fail early, or `cpu` to skip them.
-
-Run Analysis images are prepared as persistent, architecture-specific SIF files
-under `neurocade-data/sif/` during startup. Use
-`./scripts/run.sh prepare-tools` to populate them without starting the app.
-The beta installation is qualified on Linux amd64.
-
-Workflow definitions are loaded from `config/neuroimaging_tools.yaml` by
-`tool_search` and `tool_call`.

@@ -1,4 +1,6 @@
 import type {
+    AssistantApprovalRequest,
+    AssistantApprovalPresentation,
     AssistantScope,
     ChatContentPart,
     ChatMessage,
@@ -26,37 +28,6 @@ export interface ApiResponse {
     approval_request?: AssistantApprovalRequest;
 }
 
-export interface AssistantApprovalRequest {
-    name: string;
-    call_id?: string | null;
-    execution_id?: string | null;
-    arguments: Record<string, unknown>;
-    digest: string;
-    description: string;
-    presentation?: AssistantApprovalPresentation;
-}
-
-export interface AssistantApprovalPresentation {
-    kind: 'workflow';
-    title: string;
-    description: string;
-    details: string;
-    inputs: {
-        name: string;
-        description: string;
-        path: string;
-    }[];
-    outputs: {
-        name: string;
-        description: string;
-        path: string;
-    }[];
-    execution: {
-        mode: 'background' | 'synchronous';
-        gpu: boolean;
-    };
-}
-
 export interface AssistantMessageEvent {
     content: string;
     round?: number;
@@ -75,6 +46,18 @@ export function getRandomStatusMessage(exclude?: string): string {
 
 export function createChatRequestId(): string {
     return createUuid();
+}
+
+export function approvalButtonClass(presentation?: AssistantApprovalPresentation | null): string {
+    return presentation?.kind === 'action' && presentation.tone === 'danger'
+        ? 'nc-chip-red'
+        : 'nc-btn-active';
+}
+
+export function approvalButtonLabel(presentation?: AssistantApprovalPresentation | null): string {
+    if (presentation?.kind === 'workflow') return 'Start workflow';
+    if (presentation?.kind === 'action') return presentation.confirm_label;
+    return 'Approve';
 }
 
 export function reportChatEvent(

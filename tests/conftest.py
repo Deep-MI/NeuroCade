@@ -11,7 +11,6 @@ Start the app before running tests:
 import base64
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -36,7 +35,13 @@ DEFAULT_GUI_SESSION_ID = os.environ.get("TEST_GUI_SESSION_ID", "pytest-default-s
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
-from backend_common.case_storage import UPLOAD_SUFFIXES, case_storage_dir_from_root, upload_extension  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "api-service"))
+from backend_common.case_storage import (  # noqa: E402
+    UPLOAD_SUFFIXES,
+    case_id_from_storage_dir,
+    case_storage_dir_from_root,
+    upload_extension,
+)
 
 _host_data_dir = os.environ.get("HOST_DATA_DIR")
 if not _host_data_dir or _host_data_dir == "/data":
@@ -52,6 +57,22 @@ _LAST_GUI_SCOPE: dict[str, str | None] = {
     "gui_session_id": DEFAULT_GUI_SESSION_ID,
 }
 _GUI_PROCESSED_CASE_CACHE: dict[str, dict] = {}
+
+
+@pytest.fixture(autouse=True)
+def _disable_host_startup_services_for_in_process_tests():
+    """Keep unit-test app lifespans local without a production-only pytest branch."""
+    from api_service.main import app
+
+    previous = getattr(app.state, "skip_host_startup_services", None)
+    app.state.skip_host_startup_services = True
+    try:
+        yield
+    finally:
+        if previous is None:
+            del app.state.skip_host_startup_services
+        else:
+            app.state.skip_host_startup_services = previous
 
 
 def _case_id_from_upload(upload_path: Path) -> str:
@@ -340,12 +361,18 @@ def get_app_auth_headers() -> dict[str, str]:
 
 
 def require_app_auth_headers() -> dict[str, str]:
-    """Return app auth headers or skip pytest when none are configured."""
+    """Return app auth headers, allowing the explicit local-auth profile."""
     headers = get_app_auth_headers()
     if headers:
         return headers
+    try:
+        response = requests.get(f"{APP_URL}/api/app/frontend-config", timeout=5)
+        if response.ok and response.json().get("local_auth_enabled") is True:
+            return {}
+    except (requests.RequestException, ValueError):
+        pass
     pytest.skip(
-        "Authenticated /api/app tests require APP_AUTH_TOKEN or PLAYWRIGHT_STORAGE_STATE with a __session cookie."
+        "Authenticated /api/app tests require local auth, APP_AUTH_TOKEN, or PLAYWRIGHT_STORAGE_STATE with a __session cookie."
     )
 
 
@@ -480,21 +507,6 @@ def get_case_detail(case_id: str, app_url: str = APP_URL) -> dict:
     return response.json()
 
 
-def _copy_tree_contents(src: Path, dst: Path) -> None:
-    """Copy processed case outputs while excluding root uploads."""
-    dst.mkdir(parents=True, exist_ok=True)
-    for child in src.iterdir():
-        if child.is_file() and child.parent == src and child.name.endswith(UPLOAD_SUFFIXES):
-            continue
-
-        source_path = child.resolve(strict=False) if child.is_symlink() else child
-        target_path = dst / child.name
-        if child.is_dir():
-            shutil.copytree(source_path, target_path, dirs_exist_ok=True)
-        else:
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, target_path)
-
 def _build_case_context(workspace: dict, upload_result: dict) -> dict:
     """Assemble case metadata and GUI state expected by tests."""
     case_dir = _case_storage_dir(workspace["id"], upload_result["case_id"])
@@ -561,28 +573,48 @@ def build_fresh_processed_case(
     workspace_prefix: str = "pytest-processed-workspace",
     case_prefix: str = "pytest-processed-case",
 ) -> dict:
-    """Create a fresh case seeded with processed outputs from a demo case."""
+    """Return API-backed context for a stable, read-only processed demo case."""
+    del workspace_prefix, case_prefix
     source_case_dir = _resolve_case_dir(source_case_key)
     if not source_case_dir.exists():
         raise RuntimeError(f"Processed demo case directory not found: {source_case_dir}")
-
-    context = build_fresh_uploaded_case(
-        upload_filename=upload_filename,
-        app_url=app_url,
-        workspace_prefix=workspace_prefix,
-        case_prefix=case_prefix,
+    case_id = case_id_from_storage_dir(source_case_dir)
+    if not case_id:
+        raise RuntimeError(f"Processed demo case has no identity manifest: {source_case_dir}")
+    case_detail = get_case_detail(case_id, app_url)
+    artifacts = case_detail.get("artifacts", [])
+    loaded_volumes = _loaded_volumes_for_case(source_case_dir)
+    input_artifact = next(
+        (
+            artifact
+            for artifact in artifacts
+            if artifact.get("kind") == "volume"
+            and (artifact.get("metadata") or {}).get("volume_role") != "segmentation"
+        ),
+        None,
     )
-    context["source_case_key"] = source_case_key
-    _copy_tree_contents(source_case_dir, context["case_dir"])
-    case_detail = get_case_detail(context["case_id"], app_url)
-    context.update(_build_case_context({"id": context["workspace_id"], "name": context["workspace_name"]}, {
-        "case_id": context["case_id"],
-        "title": context["title"],
-        "filename": context["upload_filename"],
-    }))
-    context["artifacts"] = case_detail.get("artifacts", [])
-    context["runs"] = case_detail.get("runs", [])
-    return context
+    current_intensity = (input_artifact or {}).get("name") or upload_filename
+    return {
+        "id": case_id,
+        "workspace_id": case_detail["workspace_id"],
+        "workspace_name": "processed-demo",
+        "case_id": case_id,
+        "title": case_detail["title"],
+        "upload_filename": upload_filename,
+        "source_case_key": source_case_key,
+        "case_dir": source_case_dir,
+        "loaded_volumes": loaded_volumes,
+        "artifacts": artifacts,
+        "runs": case_detail.get("runs", []),
+        "gui_state": {
+            "workspace_id": case_detail["workspace_id"],
+            "case_id": case_id,
+            "is_job_running": False,
+            "layers": _gui_layers_for_volumes(loaded_volumes),
+            "current_intensity_volume": current_intensity,
+            "current_intensity_artifact_id": (input_artifact or {}).get("id"),
+        },
+    }
 
 
 def fresh_processed_case_data(app_url: str = APP_URL) -> dict:
@@ -618,7 +650,7 @@ def fresh_run_case(services_up):
 
 @pytest.fixture(scope="module")
 def fresh_processed_case(services_up):
-    """Fresh processed demo case for module-scoped tests."""
+    """Stable processed demo case for module-scoped read-only tests."""
     if not DEMO_CASE_ID or not DEMO_UPLOAD_FILENAME:
         pytest.skip("No processed demo case with outputs is available in the configured test outputs directory.")
     return build_fresh_processed_case(

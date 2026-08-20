@@ -7,13 +7,19 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from api_service.assistant.approval_presentations import approval_description, build_approval_presentation
+from api_service.assistant.approval_contracts import (
+    AssistantActionApprovalPresentation,
+    AssistantApprovalPresentation,
+    AssistantWorkflowApprovalPresentation,
+)
+from api_service.assistant.approval_presentations import approval_description
 from api_service.assistant.tool_execution_store import AssistantToolExecutionStore, approval_digest
 from api_service.assistant.tool_results import ToolResultRenderer
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult
@@ -69,18 +75,26 @@ class AssistantToolExecutor:
         *,
         call_id: str | None = None,
         execution_id: str | None = None,
-        presentation: dict[str, Any] | None = None,
+        presentation: Mapping[str, Any] | AssistantApprovalPresentation | None = None,
     ) -> dict[str, Any]:
+        presentation_payload = (
+            presentation.model_dump(mode="json")
+            if isinstance(
+                presentation,
+                (AssistantWorkflowApprovalPresentation, AssistantActionApprovalPresentation),
+            )
+            else presentation
+        )
         request = {
             "name": name,
             "call_id": call_id,
             "execution_id": execution_id,
             "arguments": arguments,
             "digest": approval_digest(name, arguments),
-            "description": approval_description(name, arguments, presentation),
+            "description": approval_description(name, arguments, presentation_payload),
         }
-        if presentation is not None:
-            request["presentation"] = presentation
+        if presentation_payload is not None:
+            request["presentation"] = presentation_payload
         return request
 
     @classmethod
@@ -184,7 +198,9 @@ class AssistantToolExecutor:
             )
             if tool.risk.requires_confirmation and (execution is None or execution.status == "planned"):
                 if not self.consume_approval(state, tool.name, arguments, call_id=call_id):
-                    presentation = build_approval_presentation(state, tool.name, arguments)
+                    presenter = tool.approval_presentation
+                    assert presenter is not None
+                    presentation = presenter(arguments)
                     approval_request = self.approval_request(
                         tool.name,
                         arguments,
@@ -207,6 +223,11 @@ class AssistantToolExecutor:
 
             replayed = self.executions.begin(db, execution)
             started_at = time.monotonic()
+            if state.get("event_sink") is not None:
+                await state["event_sink"](
+                    "activity",
+                    {"kind": "tool", "label": tool.name, "blocking": True},
+                )
             logger.info(
                 "assistant.tool_call.started request_id=%s round=%s tool=%s",
                 request_id,
@@ -342,6 +363,16 @@ class AssistantToolExecutor:
             )
             replayed = self.executions.begin(db, execution)
             prepared.append((tool, call_id, arguments, execution, replayed))
+
+        if state.get("event_sink") is not None:
+            await state["event_sink"](
+                "activity",
+                {
+                    "kind": "tool",
+                    "label": f"{len(prepared)} tools",
+                    "blocking": True,
+                },
+            )
 
         async def execute_one(tool, call_id, arguments, execution, replayed):
             started_at = time.monotonic()

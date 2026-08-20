@@ -16,7 +16,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.assistant import runtime as assistant_runtime_module  # noqa: E402
-from api_service.assistant.approval_presentations import workflow_approval_presentation  # noqa: E402
 from api_service.assistant.compaction import build_domain_summary, select_recent_messages  # noqa: E402
 from api_service.assistant.loop import AssistantLoop  # noqa: E402
 from api_service.assistant.prompts import build_model_messages, render_untrusted_tool_output  # noqa: E402
@@ -61,27 +60,6 @@ class NativeToolModel:
             content="",
             tool_calls=[{"id": "call-native-1", "name": "read", "args": {"path": "notes.txt"}}],
         )
-
-
-def test_workflow_approval_presentation_comes_from_catalog_config():
-    presentation = workflow_approval_presentation(
-        {},
-        {
-            "tool_id": "fastsurfer_segmentation",
-            "inputs": ["/case/mri/001.mgz"],
-        },
-    )
-
-    assert presentation is not None
-    assert presentation["title"] == "FastSurfer — Segmentation"
-    assert presentation["description"] == "Run FastSurfer segmentation without cortical surface reconstruction."
-    assert presentation["inputs"] == [{
-        "name": "t1",
-        "description": "T1-weighted input volume.",
-        "path": "/case/mri/001.mgz",
-    }]
-    assert presentation["execution"] == {"mode": "background", "gpu": True}
-    assert any(output["name"] == "whole_brain_segmentation" for output in presentation["outputs"])
 
 
 async def noop_tool(_context, _arguments):
@@ -219,7 +197,9 @@ def test_approval_resumes_same_durable_turn_and_validates_call_id():
         context = AuthContext(user=user, role=RoleEnum.owner, auth_mode="local")
         store = AssistantTurnStore()
         turn = store.start(db, context, thread, request_id="turn-1", message_count=1)
-        tool = ToolDefinition("write", "", {}, noop_tool, risk=ToolRisk.write)
+        tool = ToolDefinition(
+            "write", "", {}, noop_tool, risk=ToolRisk.write, approval_presentation=lambda _arguments: None
+        )
         execution = AssistantToolExecutionStore().plan(
             db,
             turn_id=turn.id,
@@ -256,6 +236,56 @@ def test_approval_resumes_same_durable_turn_and_validates_call_id():
         assert interrupted.status == "failed"
     finally:
         db.close()
+
+
+def test_storage_error_recovery_reconnects_and_retires_turn(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'recovery.db'}", future=True)
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    db = factory()
+    try:
+        user = User(id="user-recovery", external_auth_id="user-recovery", email="recovery@example.com", full_name="User")
+        workspace = Workspace(
+            id="workspace-recovery",
+            owner_user_id=user.id,
+            name="workspace",
+            kind="personal",
+            is_default=True,
+        )
+        db.add_all([user, workspace])
+        db.flush()
+        thread = AssistantThread(
+            id="thread-recovery",
+            thread_key="private:recovery",
+            scope_type=AssistantScope.workspace,
+            workspace_id=workspace.id,
+            created_by_user_id=user.id,
+            provider_name="test",
+            model_name="model",
+        )
+        db.add(thread)
+        db.commit()
+        store = AssistantTurnStore()
+        turn = store.start(
+            db,
+            AuthContext(user=user, role=RoleEnum.owner, auth_mode="local"),
+            thread,
+            request_id="turn-recovery",
+            message_count=1,
+        )
+        store.checkpoint(db, turn.id, phase="tool_execution", state={"pending_tool_calls": [{"name": "read"}]})
+
+        assert store.recover_after_storage_error(db, turn.id, error="disk I/O error")
+
+        with factory() as verification_db:
+            recovered = verification_db.get(AssistantTurn, turn.id)
+            assert recovered is not None
+            assert recovered.status == "failed"
+            assert recovered.error_message == "disk I/O error"
+            assert recovered.result_json == {"phase": "storage_error"}
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_checkpoint_preserves_historical_tool_evidence_without_a_ledger_reference(monkeypatch):
@@ -333,7 +363,9 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
         executions = AssistantToolExecutionStore()
 
         workflow_turn = turns.start(db, context, thread, request_id="turn-workflow", message_count=1)
-        workflow_tool = ToolDefinition("tool_call", "", {}, noop_tool, risk=ToolRisk.workflow)
+        workflow_tool = ToolDefinition(
+            "tool_call", "", {}, noop_tool, risk=ToolRisk.workflow, approval_presentation=lambda _arguments: None
+        )
         workflow_execution = executions.plan(
             db,
             turn_id=workflow_turn.id,
@@ -366,7 +398,9 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
         assert workflow_execution.result_json["details"]["ledger_recovered"] is True
 
         write_turn = turns.start(db, context, thread, request_id="turn-write", message_count=1)
-        write_tool = ToolDefinition("write", "", {}, noop_tool, risk=ToolRisk.write)
+        write_tool = ToolDefinition(
+            "write", "", {}, noop_tool, risk=ToolRisk.write, approval_presentation=lambda _arguments: None
+        )
         write_execution = executions.plan(
             db,
             turn_id=write_turn.id,
@@ -415,6 +449,7 @@ def test_runtime_approval_continues_without_replanning(monkeypatch, tmp_path):
             {"type": "object", "properties": {"path": {"type": "string"}}},
             execute,
             risk=ToolRisk.write,
+            approval_presentation=lambda _arguments: None,
         )
 
         class ApprovalModel:
@@ -456,6 +491,9 @@ def test_runtime_approval_continues_without_replanning(monkeypatch, tmp_path):
         approval = waiting["approval_request"]
         turn_id = waiting["turn_id"]
         assert executions == []
+        awaiting_turn = db.query(AssistantTurn).one()
+        assert awaiting_turn.status == "awaiting_approval"
+        assert awaiting_turn.result_json["approval_request"] == approval
         planned_entry = db.query(AssistantToolExecution).one()
         assert planned_entry.status == "planned"
         assert planned_entry.arguments_json == {"path": "note.txt"}

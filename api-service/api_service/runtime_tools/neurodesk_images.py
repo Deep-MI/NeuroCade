@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import subprocess
 import threading
 import time
 from contextlib import suppress
@@ -16,11 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from neurocade_runtime_tools.apptainer_runtime import (
-    SIF_DIR_ENV,
-    apptainer_sif_path,
-    require_network_disabled_image,
-)
 from pydantic import BaseModel, Field
 
 from backend_common.settings import ROOT_DIR, get_settings
@@ -36,7 +29,6 @@ MAX_CATALOG_BYTES = 2 * 1024 * 1024
 _CONTAINER_ID_PATTERN = re.compile(r"^(?P<family>.+)_(?P<version>[^_]+)_(?P<build_date>\d{8})$")
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _CATALOG_LOCK = threading.Lock()
-_IMAGE_LOCK = threading.Lock()
 _FAILED_REFRESH_RETRY_AT = 0.0
 
 
@@ -228,72 +220,13 @@ def find_image_by_reference(catalog: NeurodeskImageCatalog, image: str) -> Neuro
     return next((item for item in catalog.images if item.image == image), None)
 
 
-def prepare_neurodesk_image(
-    image: NeurodeskImage,
-    *,
-    sif_dir: str | Path | None = None,
-    force: bool = False,
-) -> Path:
-    """Download a ready-to-run NeuroDesk SIF directly into the persistent cache."""
-    resolved_sif_dir = sif_dir or os.environ.get(SIF_DIR_ENV)
-    if not resolved_sif_dir:
-        raise RuntimeError(f"{SIF_DIR_ENV} must be configured")
-    target = apptainer_sif_path(image.image, sif_dir=resolved_sif_dir)
-    with _IMAGE_LOCK:
-        if target.is_file() and target.stat().st_size > 0 and not force:
-            return target
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.stem}.partial.sif")
-        temporary.unlink(missing_ok=True)
-        try:
-            with requests.get(image.download_url, stream=True, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                response.raise_for_status()
-                with temporary.open("wb") as output:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            output.write(chunk)
-            if temporary.stat().st_size == 0:
-                raise RuntimeError("Downloaded NeuroDesk image is empty")
-            subprocess.run(
-                ["apptainer", "inspect", str(temporary)],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            temporary.replace(target)
-        finally:
-            temporary.unlink(missing_ok=True)
-    return target
-
-
-def ensure_image_prepared(
-    image: str,
-    *,
-    settings: Any | None = None,
-    force: bool = False,
-) -> Path | None:
-    """Prepare a cataloged NeuroDesk image on first use; ignore other registries."""
-    if not image.startswith("vnmd/"):
-        return None
-    loaded = load_image_catalog(settings=settings)
-    record = find_image_by_reference(loaded.catalog, image)
-    if record is None:
-        return None
-    resolved_settings = settings or get_settings()
-    sif_dir = Path(resolved_settings.sif_dir)
-    return prepare_neurodesk_image(record, sif_dir=sif_dir, force=force)
-
-
-def resolve_or_prepare_image(image: str, *, settings: Any | None = None) -> str:
-    """Return a runnable image reference, downloading a known NeuroDesk SIF on cache miss."""
-    try:
-        return require_network_disabled_image(image)
-    except RuntimeError:
-        prepared = ensure_image_prepared(image, settings=settings)
-        if prepared is None:
-            raise
-        return str(prepared)
+def validate_catalog_image(image: str, *, settings: Any | None = None) -> str:
+    """Validate a dynamic catalog image before the host bridge prepares it."""
+    if image.startswith("vnmd/"):
+        loaded = load_image_catalog(settings=settings)
+        if find_image_by_reference(loaded.catalog, image) is None:
+            raise ValueError(f"Unknown NeuroDesk image: {image}")
+    return image
 
 
 def main() -> int:

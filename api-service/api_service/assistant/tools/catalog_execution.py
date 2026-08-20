@@ -7,7 +7,6 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from neurocade_runtime_tools.apptainer_runtime import require_network_disabled_image
 from neurocade_runtime_tools.container_request import RuntimeBind
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
@@ -20,7 +19,7 @@ from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT
 from api_service.runtime_tools.workflow_catalog import resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
 from backend_common.case_storage import workspace_storage_dir
-from backend_common.db import AssistantScope, Run, RunStatus
+from backend_common.db import AssistantScope, Run, RunStatus, run_with_sqlite_lock_retry
 from backend_common.run_statuses import TERMINAL_RUN_STATUSES
 
 RUN_STATUS_POLL_INTERVAL_SECONDS = 0.1
@@ -61,6 +60,7 @@ class AssistantCatalogExecutor:
         tool,
         run: Run,
         *,
+        gpu_enabled: bool,
         status: str | None = None,
         idempotent_replay: bool = False,
     ) -> dict[str, Any]:
@@ -70,7 +70,7 @@ class AssistantCatalogExecutor:
             "status": status or run.status.value,
             "execution": workflow_runs.workflow_execution_details(
                 tool,
-                gpu_enabled=tool.execution.gpu,
+                gpu_enabled=gpu_enabled,
             ),
         }
         if idempotent_replay:
@@ -120,7 +120,6 @@ class AssistantCatalogExecutor:
                 settings=self.settings,
                 user_id=user_id,
             )
-            require_network_disabled_image(tool.neurodesk_image)
             if not binds or len(binds) != 1:
                 raise ValueError("A catalog workflow requires one active case or workspace.")
             prepared = prepare_workflow(
@@ -135,52 +134,60 @@ class AssistantCatalogExecutor:
 
         if db is None or user_id is None or workspace_id is None:
             return ToolResult.error("Error preparing tool execution: workflows require an authenticated workspace.")
-        existing = db.get(Run, prepared.run_id)
-        if existing is not None:
-            expected_inputs = list((existing.input_json or {}).get("inputs") or [])
+        job_id = str(uuid4())
+
+        def persist_run() -> tuple[Run, bool]:
+            existing = db.get(Run, prepared.run_id)
+            if existing is not None:
+                return existing, True
+            candidate = Run(
+                id=prepared.run_id,
+                case_id=case_id,
+                workspace_id=workspace_id,
+                created_by_user_id=user_id,
+                scope_type=AssistantScope(scope),
+                status=RunStatus.queued,
+                run_type=tool.id,
+                input_json={
+                    "tool_id": tool.id,
+                    "inputs": parsed.inputs,
+                    **workflow_runs.workflow_run_snapshot(tool, gpu_enabled=prepared.gpu_enabled),
+                },
+                result_json={"status": "queued", "tool_id": tool.id, "run_id": prepared.run_id},
+                job_id=job_id,
+            )
+            db.add(candidate)
+            db.commit()
+            return candidate, False
+
+        try:
+            run, idempotent_replay = run_with_sqlite_lock_retry(db, persist_run)
+        except IntegrityError as exc:
+            db.rollback()
+            run = db.get(Run, prepared.run_id)
+            if run is None:
+                return ToolResult.error(f"Error submitting background workflow: {exc}")
+            idempotent_replay = True
+
+        if idempotent_replay:
+            expected_inputs = list((run.input_json or {}).get("inputs") or [])
             if (
-                existing.workspace_id != workspace_id
-                or existing.case_id != case_id
-                or existing.created_by_user_id != user_id
-                or existing.run_type != tool.id
+                run.workspace_id != workspace_id
+                or run.case_id != case_id
+                or run.created_by_user_id != user_id
+                or run.run_type != tool.id
                 or expected_inputs != parsed.inputs
             ):
                 return ToolResult.error("Error submitting background workflow: idempotency key conflicts with another run.")
-            return ToolResult.structured(self._queued_payload(tool, existing, idempotent_replay=True))
-        job_id = str(uuid4())
-        run = Run(
-            id=prepared.run_id,
-            case_id=case_id,
-            workspace_id=workspace_id,
-            created_by_user_id=user_id,
-            scope_type=AssistantScope(scope),
-            status=RunStatus.queued,
-            run_type=tool.id,
-            input_json={
-                "tool_id": tool.id,
-                "inputs": parsed.inputs,
-                **workflow_runs.workflow_run_snapshot(tool, gpu_enabled=prepared.gpu_enabled),
-            },
-            result_json={"status": "queued", "tool_id": tool.id, "run_id": prepared.run_id},
-            job_id=job_id,
-        )
-        db.add(run)
-        try:
-            db.commit()
-        except IntegrityError as exc:
-            db.rollback()
-            if db.get(Run, prepared.run_id) is not None:
-                return self.catalog_tool_call(
-                    arguments,
-                    binds,
-                    db=db,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                    case_id=case_id,
-                    scope=scope,
-                    run_id=prepared.run_id,
+            execution_device = str(((run.input_json or {}).get("execution") or {}).get("device") or "cpu")
+            return ToolResult.structured(
+                self._queued_payload(
+                    tool,
+                    run,
+                    gpu_enabled=execution_device == "cuda",
+                    idempotent_replay=True,
                 )
-            return ToolResult.error(f"Error submitting background workflow: {exc}")
+            )
         try:
             workflow_runs.submit_workflow_run(
                 run,
@@ -195,7 +202,14 @@ class AssistantCatalogExecutor:
             db.rollback()
             workflow_runs.mark_workflow_run_failed(db, prepared.run_id, tool.id, exc)
             return ToolResult.error(f"Error submitting background workflow: {exc}")
-        return ToolResult.structured(self._queued_payload(tool, run, status="queued"))
+        return ToolResult.structured(
+            self._queued_payload(
+                tool,
+                run,
+                gpu_enabled=prepared.gpu_enabled,
+                status="queued",
+            )
+        )
 
     @staticmethod
     def run_status(db, *, run_id: str, workspace_id: str, case_id: str | None = None) -> ToolResult:

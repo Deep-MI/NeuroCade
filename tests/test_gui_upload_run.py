@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
-from conftest import DEMO_RUN_UPLOAD_FILENAME, UPLOAD_FIXTURES_DIR
+from conftest import DEMO_RUN_UPLOAD_FILENAME, UPLOAD_FIXTURES_DIR, delete_workspace_via_api
 from gui_helpers import (
     APP_URL,
     get_auth_headers,
@@ -177,26 +177,56 @@ class TestGuiUploadAndRun:
         upload_mri(page, str(upload_file))
         page.wait_for_timeout(3000)
 
-        # MriViewer renders three <canvas> elements (sagittal, coronal, axial)
+        # NiiVue renders the active multiplanar scene into one WebGL canvas.
         canvases = page.locator("canvas")
-        assert canvases.count() >= 3, (
-            f"Expected at least 3 canvases (MRI views), found {canvases.count()}"
+        assert canvases.count() >= 1, (
+            f"Expected an MRI viewer canvas, found {canvases.count()}"
         )
 
         take_screenshot(page, "05_viewer_with_upload", screenshot_dir)
 
     def test_case_view_upload_can_add_volume_to_current_case(self, page, screenshot_dir, upload_file):
         """Uploading from case view can append a new intensity volume without leaving the current case."""
-        current_case_id = routed_case_id(page)
-        initial_layer_count = page.locator("div.layer-item").count()
+        workspace = create_workspace(page, f"add-volume-{uuid4().hex[:8]}")
+        try:
+            page.goto(
+                f"{APP_URL}/workspaces/{workspace['id']}/cases",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+            upload_mri(page, str(upload_file), trigger_selector="button:has-text('Upload Case')")
+            current_case_id = routed_case_id(page)
+            layer_items = page.get_by_test_id("viewer-layer-item")
+            layer_items.first.wait_for(state="visible", timeout=60_000)
+            initial_layer_count = layer_items.count()
 
-        upload_mri(page, str(upload_file), destination="add_to_case")
+            upload_mri(page, str(upload_file), destination="add_to_case")
 
-        assert routed_case_id(page) == current_case_id
-        page.locator("div.layer-item", has_text=upload_file.name).wait_for(state="visible", timeout=20_000)
-        assert page.locator("div.layer-item").count() >= initial_layer_count + 1
+            assert routed_case_id(page) == current_case_id
+            page.reload(wait_until="domcontentloaded", timeout=30_000)
+            page.wait_for_selector("button:has-text('Choose MRI File')", state="visible", timeout=20_000)
+            layers_button = page.get_by_role("button", name="Layers", exact=True)
+            if "nc-btn-active" not in (layers_button.get_attribute("class") or ""):
+                layers_button.click()
+            page.wait_for_function(
+                """count => document.querySelectorAll('[data-testid="viewer-layer-item"]').length >= count""",
+                arg=initial_layer_count + 1,
+                timeout=60_000,
+            )
+            assert page.get_by_test_id("viewer-layer-item").count() >= initial_layer_count + 1
+            page.wait_for_function(
+                """count => {
+                  const state = window.__neurocadeViewerDebug?.getState?.();
+                  return state?.loadedLayerIds.length >= count
+                    && !document.querySelector('.nc-viewer-canvas-spinner');
+                }""",
+                arg=initial_layer_count + 1,
+                timeout=90_000,
+            )
 
-        take_screenshot(page, "05b_case_view_add_volume", screenshot_dir)
+            take_screenshot(page, "05b_case_view_add_volume", screenshot_dir)
+        finally:
+            delete_workspace_via_api(workspace["id"])
 
     def test_empty_workspace_shows_upload_tile(self, page, screenshot_dir, upload_file):
         """An empty workspace should still expose the upload entry point as a case-shaped tile."""
@@ -225,7 +255,11 @@ class TestGuiUploadAndRun:
         page.click("[data-testid='confirm-upload-case']")
 
         page.wait_for_url(f"**/workspaces/{workspace_id}/cases/*", timeout=30_000)
-        page.wait_for_selector("button:has-text('Run FastSurfer Analysis')", state="visible", timeout=15_000)
+        page.get_by_label("Analysis workflow").wait_for(state="visible", timeout=15_000)
+        page.get_by_role("button", name="Launch FastSurfer — Full Analysis").wait_for(
+            state="visible",
+            timeout=15_000,
+        )
         take_screenshot(page, "06_empty_workspace_upload_tile", screenshot_dir)
 
     def test_workspace_case_card_can_rename_and_delete_case(self, page, screenshot_dir, upload_file):
@@ -286,7 +320,7 @@ class TestGuiUploadAndRun:
         upload_mri(page, str(upload_file), case_name=initial_name, trigger_selector="button:has-text('Upload Case')")
         case_id = routed_case_id(page)
 
-        page.click("button:has-text('Manage Cases')")
+        page.get_by_role("button", name=initial_name, exact=True).click()
         page.get_by_role("heading", name="Manage Cases").wait_for(state="visible", timeout=10_000)
         page.locator(f"[data-testid='manage-case-title-{case_id}']", has_text=initial_name).wait_for(
             state="visible",
@@ -371,25 +405,19 @@ class TestGuiUploadAndRun:
                 {"caseId": current_case_id, "title": original_name},
             )
 
-    def test_processed_case_reload_shows_static_log(self, page, screenshot_dir):
-        """Reloading a completed case should reopen the static output log automatically."""
+    def test_processed_case_reload_restores_output_layers(self, page, screenshot_dir):
+        """Reloading a processed case should restore its segmentation outputs."""
         case_name = load_processed_case(page)
         current_url = page.url
 
         page.reload(wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_url(current_url, timeout=15_000)
         page.wait_for_selector("input.chat-input", state="visible", timeout=20_000)
-        page.wait_for_selector("button:has-text('Hide Output')", state="visible", timeout=20_000)
-        page.wait_for_selector("[data-testid='terminal-content']", state="visible", timeout=10_000)
-        page.wait_for_function(
-            """() => {
-              const terminal = document.querySelector('[data-testid="terminal-content"]');
-              return !!terminal && (terminal.textContent || '').trim().length > 32;
-            }""",
-            timeout=15_000,
+        segmentation_layers = page.locator("[data-testid='viewer-layer-item'][data-layer-type='segmentation']")
+        segmentation_layers.first.wait_for(
+            state="visible",
+            timeout=60_000,
         )
+        assert segmentation_layers.count() > 0, f"Expected processed layers for {case_name!r}"
 
-        terminal_text = page.locator("[data-testid='terminal-content']").inner_text().strip()
-        assert terminal_text, f"Expected stored logs to be visible for completed case {case_name!r}"
-
-        take_screenshot(page, "07_processed_case_static_log", screenshot_dir)
+        take_screenshot(page, "07_processed_case_reloaded", screenshot_dir)

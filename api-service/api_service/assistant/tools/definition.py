@@ -8,6 +8,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from api_service.assistant.approval_contracts import AssistantApprovalPresentation
+
+ApprovalPresenter = Callable[[dict[str, Any]], AssistantApprovalPresentation | None]
+
 
 class ToolRisk(str, Enum):
     read = "read"
@@ -102,6 +106,11 @@ class ToolDefinition:
     execute: Callable[[ToolExecutionContext, dict[str, Any]], Awaitable[ToolResult]]
     risk: ToolRisk = ToolRisk.read
     parallel_safe: bool = False
+    approval_presentation: ApprovalPresenter | None = None
+
+    def __post_init__(self) -> None:
+        if self.risk.requires_confirmation and self.approval_presentation is None:
+            raise ValueError(f"Confirmation tool {self.name!r} requires an approval presenter")
 
     def as_openai_tool(self) -> dict[str, Any]:
         return {

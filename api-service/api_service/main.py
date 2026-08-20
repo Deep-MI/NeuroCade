@@ -5,8 +5,11 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from neurocade_runtime_tools.bridge_client import BridgeClient
+from neurocade_runtime_tools.protocol import BUILD_VERSION
 
 from api_service.assistant.tool_execution_store import reconcile_interrupted_tool_executions
+from api_service.assistant.turn_manager import assistant_turn_manager
 from api_service.assistant.turn_store import reconcile_interrupted_turns
 from api_service.bootstrap import bootstrap_database, seed_demo_state
 from api_service.jobs import job_manager
@@ -29,6 +32,22 @@ startup_logger = logging.getLogger("uvicorn.error")
 settings = get_settings()
 
 
+def validate_runtime_bridge() -> dict:
+    """Require a protocol-compatible bridge using the selected matched runtime."""
+    if settings.neurocade_runtime not in {"docker", "apptainer"}:
+        raise RuntimeError("NEUROCADE_RUNTIME=docker|apptainer is required")
+    health = BridgeClient.from_environment().health()
+    if health.get("build_version") != BUILD_VERSION:
+        raise RuntimeError(
+            f"Runtime bridge build mismatch: application expects {BUILD_VERSION}, bridge provides {health.get('build_version')}"
+        )
+    if health.get("backend") != settings.neurocade_runtime:
+        raise RuntimeError(
+            f"Runtime mismatch: application selected {settings.neurocade_runtime}, bridge provides {health.get('backend')}"
+        )
+    return health
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Validate startup configuration and prepare the application database.
@@ -44,7 +63,10 @@ async def lifespan(_app: FastAPI):
     try:
         load_workflow_catalog()
         register_neuroimaging_tasks()
-        if not os.environ.get("PYTEST_CURRENT_TEST"):
+        skip_host_services = bool(getattr(_app.state, "skip_host_startup_services", False))
+        if not skip_host_services:
+            startup_logger.info("Validating native runtime bridge.")
+            validate_runtime_bridge()
             startup_logger.info("Warming analysis runtime capability checks.")
             warm_workflow_gpu_capabilities()
         startup_logger.info("Validating auth configuration.")
@@ -78,7 +100,7 @@ async def lifespan(_app: FastAPI):
             index_all_case_workflow_outputs(startup_db, settings)
             reconcile_all_artifacts(startup_db)
             startup_db.commit()
-        if not os.environ.get("PYTEST_CURRENT_TEST"):
+        if not skip_host_services:
             startup_logger.info("Starting update checker.")
             start_update_checker()
         if allow_local_auth():
@@ -99,6 +121,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        await assistant_turn_manager.shutdown()
         job_manager.shutdown(wait=False)
         job_manager.configure_persistence(None)
 

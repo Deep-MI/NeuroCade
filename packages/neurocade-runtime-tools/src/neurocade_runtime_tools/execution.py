@@ -2,34 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import signal
 import subprocess
-from collections.abc import Callable, Mapping, Sequence
+import threading
+import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from .protocol import RuntimeImageSpec
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 300
 TERMINATION_GRACE_SECONDS = 5.0
 
-# Optional observer invoked with the live ``Popen`` of a running runtime
-# subprocess. The in-process JobWorker sets this in its worker threads so it can
-# terminate the process group on cancellation (see ``api_service.jobs``).
-process_observer: ContextVar[Callable[[subprocess.Popen], None] | None] = ContextVar(
-    "runtime_process_observer", default=None
+# Runtime-agnostic cancellation registration. Executors publish a callback that
+# the JobManager may invoke without knowing whether it controls a process group
+# or an authenticated bridge run.
+cancellation_observer: ContextVar[Callable[[Callable[[], None]], None] | None] = ContextVar(
+    "runtime_cancellation_observer", default=None
 )
 
-
-@dataclass(slots=True)
-class RuntimeExecutionPolicy:
-    """Structured execution policy expected for a runtime command."""
-
-    network_disabled: bool = True
-    gpu_enabled: bool = False
+ProcessObserver = Callable[[subprocess.Popen[str] | None], None]
+ProgressObserver = Callable[[dict[str, Any]], None]
+runtime_progress_observer: ContextVar[ProgressObserver | None] = ContextVar(
+    "runtime_progress_observer", default=None
+)
 
 
 @dataclass(slots=True)
@@ -41,26 +45,35 @@ class RuntimeBind:
     mode: str = "ro"
 
 
+@dataclass(frozen=True, slots=True)
+class BridgeBind:
+    """A validated bind path relative to the bridge's configured data root."""
+
+    source_relative: str
+    container_path: str
+    mode: str = "ro"
+
+
 @dataclass(slots=True)
 class RuntimeContainerRunRequest:
-    """Describe a structured Docker-native runtime container execution."""
+    """Describe a structured container execution for either bridge backend."""
 
-    image: str
+    image: RuntimeImageSpec
     command: Sequence[str]
-    binds: Sequence[RuntimeBind] = field(default_factory=tuple)
+    binds: Sequence[RuntimeBind | BridgeBind] = field(default_factory=tuple)
     env: Mapping[str, str] | None = None
     cwd: str | None = None
     network_disabled: bool = True
     gpu_enabled: bool = False
-    remove: bool = True
     isolated: bool = False
+    run_id: str | None = None
 
 
 @dataclass(slots=True)
 class RuntimeExecutionRequest:
     """Describe a runtime command execution in one backend-facing shape."""
 
-    argv: Sequence[str]
+    argv: Sequence[str] = field(default_factory=tuple)
     cwd: Path | str | None = None
     env: Mapping[str, str] | None = None
     timeout_s: float | None = DEFAULT_TIMEOUT_SECONDS
@@ -72,9 +85,12 @@ class RuntimeExecutionRequest:
     capture_output: bool = True
     check: bool = False
     stdin_devnull: bool = True
-    runtime_policy: RuntimeExecutionPolicy | None = None
     log_lines: list[str] = field(default_factory=list)
     container_run: RuntimeContainerRunRequest | None = None
+
+    def __post_init__(self) -> None:
+        if bool(self.argv) == (self.container_run is not None):
+            raise ValueError("Provide exactly one of argv or container_run")
 
     @property
     def command(self) -> list[str]:
@@ -87,11 +103,11 @@ def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) ->
     if request is None:
         return None
     return {
-        "image": request.image,
+        "image": request.image.to_dict(),
         "command": [str(part) for part in request.command],
         "binds": [
             {
-                "host_path": str(bind.host_path),
+                "source": str(bind.host_path if isinstance(bind, RuntimeBind) else bind.source_relative),
                 "container_path": bind.container_path,
                 "mode": bind.mode,
             }
@@ -101,8 +117,8 @@ def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) ->
         "cwd": request.cwd,
         "network_disabled": request.network_disabled,
         "gpu_enabled": request.gpu_enabled,
-        "remove": request.remove,
         "isolated": request.isolated,
+        "run_id": request.run_id,
     }
 
 
@@ -148,37 +164,127 @@ def _assert_request_containment(request: RuntimeExecutionRequest) -> None:
 
 def _log_request(request: RuntimeExecutionRequest) -> None:
     logger.info(
-        "runtime_execution.run mode=%s cwd=%s timeout_s=%s runtime_policy=%s command=%s",
+        "runtime_execution.run mode=%s cwd=%s timeout_s=%s command=%s",
         request.execution_mode,
         request.cwd,
         request.timeout_s,
-        request.runtime_policy,
         request.command if request.container_run is None else runtime_container_run_payload(request.container_run),
     )
 
 
+def run_managed_command(
+    argv: Sequence[str],
+    *,
+    timeout: float | None = None,
+    check: bool = False,
+    capture_output: bool = False,
+    process_observer: ProcessObserver | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one command in a managed process group with timeout and interruption cleanup."""
+    command = [str(part) for part in argv]
+    if not command:
+        raise ValueError("Managed command cannot be empty")
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        start_new_session=True,
+    )
+    try:
+        if process_observer is not None:
+            process_observer(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            assert timeout is not None
+            _terminate_process_group(process)
+            stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from exc
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, command, stdout, stderr)
+        return result
+    except BaseException:
+        _terminate_process_group(process)
+        raise
+    finally:
+        if process_observer is not None:
+            process_observer(None)
+
+
 def execute_runtime_request(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
-    """Execute a runtime request as a local subprocess.
-
-    Structured container requests (``request.container_run``) are turned into a
-    concrete ``argv`` by the selected in-process runtime backend (Apptainer or
-    Docker) and then run like any other local command. Plain ``argv`` requests
-    run directly.
-    """
+    """Execute locally trusted commands locally and every container via the bridge."""
     if request.container_run is not None:
-        from .apptainer_runtime import build_container_argv
+        from .bridge_client import BridgeClient
 
-        request.argv = build_container_argv(request.container_run)
-        request.container_run = None
+        if request.container_run.run_id is None:
+            request.container_run.run_id = str(uuid.uuid4())
+        return BridgeClient.from_environment().execute(request)
     return execute_local_runtime_request(request)
+
+
+async def execute_runtime_request_async(
+    request: RuntimeExecutionRequest,
+    *,
+    progress_observer: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> RuntimeExecutionResult:
+    """Execute a runtime request without leaking work when its asyncio task is canceled.
+
+    ``asyncio.to_thread`` does not stop its worker thread when the awaiting task is
+    canceled. Register the runtime's backend-neutral cancellation callback before
+    entering the thread so assistant timeouts and disconnected clients also stop
+    bridge image preparation or the launched container.
+    """
+    callback_lock = threading.Lock()
+    cancel_requested = threading.Event()
+    cancel_callback: Callable[[], None] | None = None
+
+    def observe_cancellation(callback: Callable[[], None]) -> None:
+        nonlocal cancel_callback
+        with callback_lock:
+            cancel_callback = callback
+        if cancel_requested.is_set():
+            callback()
+
+    loop = asyncio.get_running_loop()
+
+    def publish_progress(payload: dict[str, Any]) -> None:
+        if progress_observer is None:
+            return
+        observer = progress_observer
+
+        def schedule() -> None:
+            async def deliver() -> None:
+                await observer(dict(payload))
+
+            asyncio.create_task(deliver())
+
+        loop.call_soon_threadsafe(schedule)
+
+    cancellation_token = cancellation_observer.set(observe_cancellation)
+    progress_token = runtime_progress_observer.set(publish_progress)
+    task = asyncio.create_task(asyncio.to_thread(execute_runtime_request, request))
+    try:
+        return await task
+    except asyncio.CancelledError:
+        cancel_requested.set()
+        with callback_lock:
+            callback = cancel_callback
+        if callback is not None:
+            await asyncio.to_thread(callback)
+        raise
+    finally:
+        runtime_progress_observer.reset(progress_token)
+        cancellation_observer.reset(cancellation_token)
 
 
 def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
     """Execute a runtime request in a local subprocess.
 
     Uses ``Popen`` with a dedicated process group so the in-process JobWorker can
-    terminate a long-running tool (and its children) on cancellation. The current
-    :data:`process_observer`, if set, is notified with the live process handle.
+    terminate a long-running tool and its children on cancellation.
     """
     command = request.command
     if not command:
@@ -218,9 +324,9 @@ def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeEx
             stdin=subprocess.DEVNULL if request.stdin_devnull else None,
             start_new_session=True,
         )
-        observer = process_observer.get()
-        if observer is not None:
-            observer(process)
+        cancel_observer = cancellation_observer.get()
+        if cancel_observer is not None:
+            cancel_observer(lambda: _terminate_process_group(process))
         try:
             stdout_text, stderr_text = process.communicate(timeout=request.timeout_s)
         except subprocess.TimeoutExpired as exc:

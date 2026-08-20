@@ -60,3 +60,12 @@ def test_sqlite_lock_retry_does_not_retry_other_operational_errors(monkeypatch) 
         )
 
     assert session.rollback_count == 1
+
+
+@pytest.mark.parametrize("message", ["disk I/O error", "file is not a database"])
+def test_sqlite_storage_error_classification(message: str) -> None:
+    assert db_module.is_sqlite_storage_error(_operational_error(message))
+
+
+def test_sqlite_storage_error_rejects_lock_contention() -> None:
+    assert not db_module.is_sqlite_storage_error(_operational_error("database is locked"))

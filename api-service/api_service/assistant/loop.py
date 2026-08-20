@@ -106,6 +106,11 @@ class AssistantLoop:
 
     async def _model_turn(self, state: AssistantState) -> dict[str, Any]:
         """Call a model that supports native provider tool calls."""
+        if state.get("event_sink") is not None:
+            await state["event_sink"](
+                "activity",
+                {"kind": "model", "label": "Assistant", "blocking": True},
+            )
         provider_config = state["provider_config"]
         request_id = state.get("diagnostic_request_id")
         round_number = state["round_count"] + 1
@@ -216,15 +221,27 @@ class AssistantLoop:
         if state.get("event_sink") is None or not hasattr(model, "astream"):
             return await model.ainvoke(messages)
         aggregate = None
-        async for chunk in model.astream(messages):
-            aggregate = chunk if aggregate is None else aggregate + chunk
-            text = getattr(chunk, "text", "")
-            text = text() if callable(text) else text
-            if text:
-                state.setdefault("streamed_text_rounds", set()).add(round_number)
-                await state["event_sink"]("text_delta", {"content": str(text), "round": round_number})
-            for tool_chunk in getattr(chunk, "tool_call_chunks", []) or []:
-                await state["event_sink"]("tool_call_delta", {"round": round_number, **dict(tool_chunk)})
+        emitted_delta = False
+        try:
+            async for chunk in model.astream(messages):
+                aggregate = chunk if aggregate is None else aggregate + chunk
+                text = response_text(chunk)
+                if text:
+                    emitted_delta = True
+                    state.setdefault("streamed_text_rounds", set()).add(round_number)
+                    await state["event_sink"]("text_delta", {"content": str(text), "round": round_number})
+                for tool_chunk in getattr(chunk, "tool_call_chunks", []) or []:
+                    emitted_delta = True
+                    await state["event_sink"]("tool_call_delta", {"round": round_number, **dict(tool_chunk)})
+        except Exception as exc:
+            if emitted_delta:
+                raise
+            logger.warning(
+                "assistant.model_stream.failed_falling_back round=%s error_type=%s",
+                round_number,
+                type(exc).__name__,
+            )
+            return await model.ainvoke(messages)
         if aggregate is None:
             raise HTTPException(status_code=502, detail="Assistant model stream ended without a response")
         return aggregate

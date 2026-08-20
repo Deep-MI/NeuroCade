@@ -5,6 +5,7 @@ import { isRunFailed } from '../constants';
 import type { AnalysisRunParams, CaseSummary, ChatMessage } from '../types';
 import * as api from '../utils/api';
 import { caseViewerPath } from '../utils/caseRoutes';
+import { workflowStatusNotificationId } from '../utils/runNotifications';
 
 interface UseAnalysisRunControllerArgs {
   initialWorkspaceId: string | null;
@@ -32,6 +33,7 @@ export function useAnalysisRunController({
   const [showConfirm, setShowConfirm] = useState(false);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<string>('idle');
+  const [runId, setRunId] = useState<string | null>(null);
   const [isSubmittingRun, setIsSubmittingRun] = useState(false);
   const [queueMessage, setQueueMessage] = useState<string>('This workflow will run as a background job.');
 
@@ -51,11 +53,15 @@ export function useAnalysisRunController({
     try {
       await api.cancelCaseRun(currentCaseId);
       setRunStatus('canceled');
-      setChatNotifications((previous) => [...previous, { role: 'info', content: 'Run canceled by user.' }]);
+      setChatNotifications((previous) => [...previous, {
+        notificationId: runId ? workflowStatusNotificationId(runId, 'canceled') : undefined,
+        role: 'info',
+        content: 'Run canceled by user.',
+      }]);
     } catch (error) {
       console.error('Failed to cancel run', error);
     }
-  }, [currentCaseId, setChatNotifications]);
+  }, [currentCaseId, runId, setChatNotifications]);
 
   const confirmRun = useCallback(async (params: AnalysisRunParams) => {
     if (!currentCaseId || !initialWorkspaceId) {
@@ -78,6 +84,7 @@ export function useAnalysisRunController({
         output_name_overrides: params.output_name_overrides,
       });
       setRunStatus(data.status);
+      setRunId(data.run_id);
       setActiveCaseId(data.case_id);
       if (data.workspace_id) {
         void navigate(caseViewerPath(data.workspace_id, data.case_id));
@@ -131,8 +138,10 @@ export function useAnalysisRunController({
     showConfirm,
     setShowConfirm,
     selectedToolId,
+    runId,
     runStatus,
     isSubmittingRun,
+    setRunId,
     setRunStatus,
     queueMessage,
     handleRunAnalysis,

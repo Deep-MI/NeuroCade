@@ -222,6 +222,20 @@ def test_startup_recovery_indexes_catalog_outputs_before_artifact_reads(seeded_c
     assert [artifact.name for artifact in artifacts] == ["aparc.DKTatlas+aseg.deep.mgz"]
 
 
+def test_startup_recovery_skips_case_with_missing_storage_manifest(seeded_case, caplog):
+    db_session, context = seeded_case
+    db_session.add(Case(
+        id="orphaned-case-id",
+        workspace_id="workspace-1",
+        owner_user_id=context.user.id,
+        title="orphaned-case",
+    ))
+    db_session.commit()
+
+    assert index_all_case_workflow_outputs(db_session, storage_module.settings) == []
+    assert "Skipping workflow output recovery for case orphaned-case-id" in caplog.text
+
+
 def test_list_case_artifacts_preserves_stored_volume_role(seeded_case):
     db_session, context = seeded_case
     case = db_session.get(Case, CASE_ID)

@@ -90,7 +90,7 @@ function BackendStartupScreen({
   const recoveryCommand = !local
     ? null
     : electron || devFrontendOnly
-      ? './scripts/desktop/run_backend.sh\n# then open http://localhost:8000'
+      ? './scripts/run.sh start\n# then open http://localhost:8000'
       : './scripts/run.sh start'
   const checks = [
     {

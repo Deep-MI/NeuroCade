@@ -22,12 +22,15 @@
     "src/neurocadeViewer/fixedReferenceRuntime.ts",
     "src/neurocadeViewer/viewerControls.ts",
     "src/types.ts",
+    "src/components/assistantActivity.ts",
+    "src/components/chatMessages.ts",
     "src/utils/caseLayers.ts",
     "src/utils/artifactOutputs.ts",
     "src/utils/caseLayerPersistence.ts",
     "src/utils/caseLoading.ts",
     "src/utils/caseRoutes.ts",
     "src/utils/caseStorage.ts",
+    "src/utils/runNotifications.ts",
     "src/utils/layerBuilders.ts",
     "src/utils/randomUuid.ts",
     "src/utils/niivueInterop.ts",
@@ -46,6 +49,9 @@
     "tests/SurfaceLoader.test.ts",
     "tests/caseLayers.test.ts",
     "tests/artifactOutputs.test.ts",
+    "tests/assistantActivity.test.ts",
+    "tests/chatMessages.test.ts",
+    "tests/runNotifications.test.ts",
     "tests/volumeColormap.test.ts"
   ]
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import stat
 from pathlib import Path, PurePosixPath
 from typing import Literal, TypedDict
@@ -18,6 +19,7 @@ from backend_common.run_statuses import ACTIVE_RUN_STATUSES
 from backend_common.settings import Settings
 
 OutputState = Literal["created", "modified", "preexisting", "missing"]
+logger = logging.getLogger(__name__)
 
 
 class OutputFingerprint(TypedDict):
@@ -312,5 +314,8 @@ def index_all_case_workflow_outputs(db: Session, settings: Settings) -> list[Art
     """Index catalog-declared outputs for every case during startup recovery."""
     indexed: list[Artifact] = []
     for case in db.query(Case).order_by(Case.created_at.asc(), Case.id.asc()).all():
-        indexed.extend(index_latest_case_workflow_outputs(db, settings, case))
+        try:
+            indexed.extend(index_latest_case_workflow_outputs(db, settings, case))
+        except FileNotFoundError:
+            logger.warning("Skipping workflow output recovery for case %s because its storage manifest is missing", case.id)
     return indexed

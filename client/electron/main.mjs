@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..');
 const envPath = path.join(repoRoot, '.env');
-const backendScript = path.join(repoRoot, 'scripts', 'desktop', 'run_backend.sh');
+const runtimeLauncher = path.join(repoRoot, 'scripts', 'run.sh');
 const appIconPath = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 const electronRuntimeDir = path.join(repoRoot, '.runtime', 'electron');
+const runtimeAppUrlPath = path.join(repoRoot, '.runtime', 'app-url');
 const healthPollMs = 1500;
 const healthTimeoutMs = 600_000;
 const appDisplayName = 'NeuroCade';
@@ -201,36 +202,49 @@ async function isHealthy(healthUrl) {
   }
 }
 
-async function waitForBackendHealth(healthUrl) {
+async function resultingAppUrl(fallbackUrl) {
+  try {
+    const value = (await readFile(runtimeAppUrlPath, 'utf8')).trim();
+    return value ? new URL(value).toString() : fallbackUrl;
+  } catch {
+    return fallbackUrl;
+  }
+}
+
+async function waitForBackendHealth(fallbackAppUrl) {
   const finishTiming = timingLogger('Electron backend health wait');
   const deadline = Date.now() + healthTimeoutMs;
   while (Date.now() < deadline) {
+    const appUrl = await resultingAppUrl(fallbackAppUrl);
+    const healthUrl = healthUrlFor(appUrl);
     if (await isHealthy(healthUrl)) {
       finishTiming();
-      return;
+      return appUrl;
     }
     if (backendChild && backendChild.exitCode !== null) {
       throw new Error(`${appDisplayName} backend exited (code ${backendChild.exitCode}) before becoming healthy.`);
     }
     await sleep(healthPollMs);
   }
-  throw new Error(`Timed out waiting for ${healthUrl}`);
+  throw new Error(`Timed out waiting for ${fallbackAppUrl}`);
 }
 
-async function startBackendIfNeeded(healthUrl) {
+async function startBackendIfNeeded(appBaseUrl) {
   const finishInitialHealthTiming = timingLogger('Electron initial health check');
+  const existingAppUrl = await resultingAppUrl(appBaseUrl);
+  const healthUrl = healthUrlFor(existingAppUrl);
   appendLog(`Checking ${healthUrl}`);
   if (await isHealthy(healthUrl)) {
     finishInitialHealthTiming();
     appendLog('Local backend is already running.');
-    return false;
+    return existingAppUrl;
   }
   finishInitialHealthTiming();
   appendLog('Starting local NeuroCade backend.');
   startedStack = true;
-  // Spawn the monolith as a long-running child (own process group so we can
-  // terminate it and any tool subprocesses on quit).
-  backendChild = spawn('bash', [backendScript], {
+  // The generic launcher starts the native bridge and the matched application
+  // runtime. It remains the owned foreground process for orderly shutdown.
+  backendChild = spawn('bash', [runtimeLauncher, 'start'], {
     cwd: repoRoot,
     env: process.env,
     detached: true,
@@ -240,9 +254,9 @@ async function startBackendIfNeeded(healthUrl) {
   backendChild.stderr?.on('data', (chunk) => appendLog(chunk.toString()));
   backendChild.on('exit', (code) => appendLog(`Backend process exited with code ${code}.`));
   appendLog(`Waiting for ${appDisplayName} backend.`);
-  await waitForBackendHealth(healthUrl);
+  const resultingUrl = await waitForBackendHealth(appBaseUrl);
   appendLog(`${appDisplayName} backend is ready.`);
-  return true;
+  return resultingUrl;
 }
 
 async function stopBackendIfOwned() {
@@ -250,8 +264,20 @@ async function stopBackendIfOwned() {
   stopping = true;
   appendLog('Stopping local NeuroCade backend.');
   try {
+    await new Promise((resolve) => {
+      const stopper = spawn('bash', [runtimeLauncher, 'stop'], {
+        cwd: repoRoot,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      stopper.stdout?.on('data', (chunk) => appendLog(chunk.toString()));
+      stopper.stderr?.on('data', (chunk) => appendLog(chunk.toString()));
+      stopper.on('close', resolve);
+      stopper.on('error', resolve);
+    });
     if (backendChild && backendChild.pid && backendChild.exitCode === null) {
-      // Kill the whole process group (negative pid) so tool subprocesses stop too.
+      // The generic stop path handles app-before-bridge ordering. Terminate the
+      // owned launcher group only as a final cleanup if it has not exited.
       try {
         process.kill(-backendChild.pid, 'SIGTERM');
       } catch {
@@ -301,18 +327,17 @@ async function boot() {
   createWindow();
   const env = await readEnvFile();
   const appBaseUrl = env.APP_BASE_URL || 'http://localhost:8000';
-  const healthUrl = healthUrlFor(appBaseUrl);
   try {
-    await startBackendIfNeeded(healthUrl);
+    const resultingUrl = await startBackendIfNeeded(appBaseUrl);
     finishBackendReadyTiming();
-    await mainWindow?.loadURL(appBaseUrl);
+    await mainWindow?.loadURL(resultingUrl);
   } catch (error) {
     appendLog(error.stack || error.message);
     await dialog.showMessageBox(mainWindow, {
       type: 'error',
       title: `${appDisplayName} could not start`,
       message: `The local ${appDisplayName} backend did not start.`,
-      detail: `${error.message}\n\nRun ./scripts/desktop/run_backend.sh from the repo root to see backend logs.`,
+      detail: `${error.message}\n\nRun ./scripts/run.sh start from the repo root to see runtime logs.`,
     });
   }
 }

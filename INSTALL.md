@@ -1,160 +1,94 @@
 # Installation
 
-NeuroCade now installs as one Docker container. Docker is the only runtime
-dependency for the default Linux/local install path.
+NeuroCade uses a host-native runtime bridge and requires one matched profile:
 
-## Quick Install
+- `docker`: the application is a Docker container and tools run as direct host Docker containers.
+- `apptainer`: the application is a published SIF and tools run as verified SIFs with rootless Apptainer (Linux amd64).
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local
-```
+Mixed profiles, nested container runtimes, and legacy runtime settings are not supported.
 
-From an existing checkout:
+## Install
+
+Docker (Linux or macOS):
 
 ```bash
 ./scripts/install.sh --mode local
 ```
 
-The installer:
+The runtime is optional. macOS selects Docker. Linux selects rootless Apptainer
+when it passes the host capability checks and otherwise falls back to Docker.
+An existing `NEUROCADE_RUNTIME` setting is preserved on reinstall; pass
+`--runtime docker|apptainer` to override it.
 
-- writes `.env`
-- creates `neurocade-data/`
-- downloads the curated sample case into `sample_case/` when it is missing
-- pulls the published NeuroCade image from GHCR
-- starts one container with `scripts/run.sh`
-
-No Docker Compose, host Python virtualenv, or host Node.js install is required.
-
-## Runtime Commands
+Rootless Apptainer (Linux amd64):
 
 ```bash
-./scripts/run.sh start -d       # pull if needed and start in the background
-./scripts/run.sh pull           # update the configured published image
-./scripts/run.sh start --build -d # build the current checkout for development
-./scripts/run.sh status
-./scripts/run.sh logs
-./scripts/run.sh stop
-./scripts/run.sh build
+./scripts/install.sh --runtime apptainer --mode local \
+  --app-sif-url https://github.com/Deep-MI/NeuroCade/releases/download/VERSION/neurocade-app-VERSION-amd64.sif \
+  --app-sif-sha256 SHA256
 ```
 
-The app is available at `http://localhost:8000` by default.
+The installer pins `uv`, installs managed Python 3.12, creates
+`.runtime/bridge-venv`, generates `.runtime/bridge-token` with mode `0600`,
+writes a fresh `.env`, prepares the default tool images, and starts the matched
+application and bridge. Rerun the installer to migrate an older installation;
+existing data, SQLite state, outputs, uploads, image caches, and `license.txt`
+are preserved.
 
-`scripts/run.sh` also keeps the local sample source available. If
-`sample_case/FastSurfer_Rhineland_0000` is missing, it uses the NeuroCade Docker
-image to download the release artifact before starting the app. Set
-`NEUROCADE_SKIP_SAMPLE_CASE=true` to skip this step.
-The sample archive is pinned independently of app releases and verified against
-`NEUROCADE_SAMPLE_CASE_SHA256`.
+The managed `uv` executable and Python installation live under `.runtime` and
+are used directly by the launcher. They do not need to be added to `PATH` and
+do not conflict with another `uv` installation. On Apple Silicon, the installer
+uses native arm64 tools even when it was started from a Rosetta-translated shell.
+
+Interactive installs prompt for provider settings. `--yes` deliberately skips
+all prompts, preserves configured values, and accepts defaults.
+
+## Commands
+
+```bash
+./scripts/run.sh start -d
+./scripts/run.sh stop
+./scripts/run.sh status
+./scripts/run.sh logs
+./scripts/run.sh pull
+./scripts/run.sh build          # canonical Docker application image
+./scripts/run.sh prepare-tools
+./scripts/run.sh doctor
+```
+
+Startup validates the host, updates the managed bridge, prepares the application
+artifact and pinned tools, verifies bridge protocol/backend compatibility, and
+then starts the application. The app is available at `http://localhost:8000` by
+default. The Docker profile maps `host.docker.internal` through Linux's
+host-gateway; the Apptainer profile uses host networking and binds the bridge to
+loopback only.
 
 ## Configuration
 
-The installer writes `.env`. The most important values are:
+The runtime contract is explicit:
 
 ```bash
-APP_BASE_URL=http://localhost:8000
-APP_HTTP_BIND=127.0.0.1
-APP_HTTP_PORT=8000
-NEUROCADE_IMAGE=ghcr.io/deep-mi/neurocade:latest
+NEUROCADE_RUNTIME=docker
+NEUROCADE_BRIDGE_URL=http://127.0.0.1:8765
+NEUROCADE_BRIDGE_TOKEN_FILE=/path/to/NeuroCade/.runtime/bridge-token
+NEUROCADE_BRIDGE_PORT=8765
 HOST_DATA_DIR=/path/to/NeuroCade/neurocade-data
-NEUROCADE_DB_DIR=/path/on/local-disk/neurocade-db
-DATABASE_URL=sqlite+pysqlite:////path/on/local-disk/neurocade-db/neurocade.db
+NEUROCADE_DATABASE_VOLUME=neurocade-database
 NEUROCADE_GPU_MODE=auto
 ```
 
-Use `ghcr.io/deep-mi/neurocade:beta` for the current prerelease channel, or an
-exact release tag such as `ghcr.io/deep-mi/neurocade:v2026.7.23-beta.1` for a
-reproducible deployment.
+For Apptainer, also set the published `NEUROCADE_APP_SIF_URL` and
+`NEUROCADE_APP_SIF_SHA256`. Tool OCI digests and SIF checksums/URLs are in
+`config/tool_images.json`.
 
-```bash
-./scripts/install.sh --mode local --image ghcr.io/deep-mi/neurocade:v2026.7.23-beta.1
-```
+`NEUROCADE_GPU_MODE=auto` selects CUDA only after the bridge validates the host
+and selected tool image. `cuda` requires it; `cpu` disables it. Neither profile
+uses sudo, fakeroot, privileged containers, writable SIFs, FUSE passthrough, or
+a Docker socket inside the NeuroCade application.
 
-`DATABASE_URL` is the host-side path used by local/admin tooling. The launcher
-mounts `NEUROCADE_DB_DIR` separately at `/database` and uses
-`/database/neurocade.db` inside Docker. Keep this directory on a local
-filesystem; SQLite WAL is not suitable for NFS or other network filesystems.
-Large imaging inputs and outputs can remain under `HOST_DATA_DIR`.
-
-### Pre-beta database reset
-
-This beta uses a clean database baseline and does not upgrade databases created
-by earlier development builds. Before starting it against an existing pre-beta
-installation, reset the local application state from the repository root:
-
-```bash
-./scripts/admin/reset_app_state.sh --yes
-```
-
-This removes the SQLite database and workspace data under `HOST_DATA_DIR`; copy
-research data elsewhere first if it must be retained. The reset preserves
-`license.txt`.
-
-## Apple Silicon
-
-Apple Silicon Macs run the NeuroDesk runtime containers through amd64 emulation.
-The installer writes `NEUROCADE_DOCKER_PLATFORM=linux/amd64` automatically on
-Darwin arm64 hosts; Docker Desktop must have Rosetta support enabled. Analysis
-is slower than on native Linux amd64, and GPU execution is not supported on
-macOS. Override the setting only when you have an alternative compatible
-runtime:
-
-```bash
-NEUROCADE_DOCKER_PLATFORM=linux/amd64
-```
-
-## Tool Runtime
-
-The app launches neuroimaging tools with Apptainer inside the Docker container.
-`scripts/run.sh` supplies the required FUSE privileges and runs the application
-as the invoking host UID/GID, so newly created database, cache, and analysis
-files remain writable by the host user. Set `NEUROCADE_UID` and
-`NEUROCADE_GID` only when the mounted data should belong to a different user.
-On native Linux, the Apptainer build workspace is mounted separately at
-`/apptainer-tmp` and SIF files use FUSE execution. Docker Desktop exposes macOS
-bind mounts through a `fakeowner` filesystem that cannot host Apptainer builds
-or executable FUSE mounts, so the launcher automatically uses container-local
-temporary storage and Apptainer's extraction-based SIF execution on macOS.
-
-GPU-capable workflows use `NEUROCADE_GPU_MODE`:
-
-- `auto` (default) verifies both Docker GPU passthrough and CUDA initialization
-  inside the selected tool image; it selects CPU if either check fails.
-- `cuda` requires working NVIDIA passthrough and a CUDA-enabled tool image, and
-  stops startup or run submission when either requirement is unavailable.
-- `cpu` skips the NVIDIA probe and runs workflows on the CPU.
-
-On CUDA systems the launcher adds `--gpus all`. It also uses:
-
-```bash
---privileged --device /dev/fuse
-```
-
-Run Analysis workflows and assistant tool metadata are defined in
-`config/neuroimaging_tools.yaml` and loaded by `tool_search` and `tool_call`.
-Unknown catalog fields are
-rejected at startup so misspelled settings cannot silently fall back to defaults.
-Workflow terminal logs are retained per run under each case's
-`scripts/runs/<run-id>/` directory.
-
-Startup prepares the pinned FastSurfer and dcm2niix images as verified,
-architecture-specific SIF files in `neurocade-data/sif/`. Downloads run in
-parallel, resume when supported, and are reused after checksum validation.
-Prepare them independently with `./scripts/run.sh prepare-tools`. Run
-`./scripts/run.sh doctor` to validate Docker, FUSE passthrough inside the Docker
-Linux environment, storage, images, GPU, and LLM configuration.
-
-## LLM Providers
-
-Supported installer choices:
-
-- `openai-compatible`
-- `anthropic`
-- `google`
-- `ollama`
-- `no-llm`
-
-Unattended installation (`--yes` or redirected input) defaults to `no-llm`
-unless `--llm-provider` is supplied explicitly.
-
-For host-local Ollama, use `http://host.docker.internal:11434`; the run script
-adds the Docker host gateway mapping.
+Docker keeps SQLite in the native Linux `NEUROCADE_DATABASE_VOLUME`; only case
+files and outputs use the host bind mount. Apptainer keeps SQLite under
+`.runtime/database` on its native Linux host.
+Large inputs and outputs may remain under `HOST_DATA_DIR`. Use
+`./scripts/admin/reset_app_state.sh --yes` for a local reset; it preserves
+`license.txt` and the managed bridge/image installation.

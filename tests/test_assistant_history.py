@@ -24,6 +24,7 @@ from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.db import (  # noqa: E402
     AssistantMessage,
     AssistantThread,
+    AssistantTurn,
     Base,
     Case,
     RoleEnum,
@@ -104,6 +105,79 @@ def test_persist_turn_stores_display_history(monkeypatch):
         assert "TAIL" in bounded_history[-1]["content"]
         assert "omitted" in bounded_history[-1]["content"]
         assert sum(len(json.dumps(message)) for message in bounded_history) <= 500
+    finally:
+        db.close()
+
+
+def test_history_state_returns_thread_messages_and_pending_approval():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)()
+    try:
+        user = User(id="user-1", external_auth_id="user-1", email="user@example.com", full_name="User")
+        workspace = Workspace(
+            id="workspace-1",
+            owner_user_id=user.id,
+            name="personal-workspace",
+            kind="personal",
+            is_default=True,
+        )
+        db.add_all([user, workspace])
+        db.commit()
+        context = AuthContext(user=user, role=RoleEnum.owner, auth_mode="local")
+        thread = get_or_create_thread(
+            db,
+            context,
+            scope="workspace",
+            workspace_id=workspace.id,
+            case_id=None,
+            provider_name="provider",
+            model_name="model",
+        )
+        persist_turn(
+            db,
+            context,
+            thread,
+            incoming_messages=[{"role": "user", "content": "Write the report"}],
+            tool_calls_log=[],
+            reasoning_entries=[],
+            assistant_content="Please approve the file write.",
+        )
+        approval = {
+            "name": "write",
+            "call_id": "call-1",
+            "execution_id": "execution-1",
+            "arguments": {"path": "report.txt", "content": "ready"},
+            "digest": "a" * 64,
+            "description": "write `report.txt`",
+        }
+        db.add(
+            AssistantTurn(
+                id="turn-1",
+                thread_id=thread.id,
+                workspace_id=workspace.id,
+                user_id=user.id,
+                status="awaiting_approval",
+                request_json={},
+                result_json={"approval_request": approval},
+            )
+        )
+        db.commit()
+
+        state = AssistantHistoryStore().history_state(
+            db,
+            user_id=user.id,
+            scope="workspace",
+            workspace_id=workspace.id,
+        )
+
+        assert state.thread_key == thread.thread_key
+        assert [message.content for message in state.messages] == [
+            "Write the report",
+            "Please approve the file write.",
+        ]
+        assert state.pending_approval is not None
+        assert state.pending_approval.model_dump() == {**approval, "presentation": None}
     finally:
         db.close()
 

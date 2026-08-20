@@ -5,6 +5,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from api_service.assistant.activity import AssistantActivity
+from api_service.assistant.approval_contracts import AssistantApprovalPresentation
+
 
 class UserSummary(BaseModel):
     id: str
@@ -213,6 +216,16 @@ class AssistantToolApproval(BaseModel):
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class AssistantApprovalRequestResponse(BaseModel):
+    name: str
+    call_id: str | None = None
+    execution_id: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    description: str
+    presentation: AssistantApprovalPresentation | None = None
+
+
 class AssistantTurnRequest(BaseModel):
     messages: list[AssistantTurnMessage] = Field(min_length=1, max_length=1)
     workspace_id: str = Field(min_length=1, max_length=255)
@@ -234,9 +247,22 @@ class AssistantTurnRequest(BaseModel):
         return self
 
 
+class AssistantActiveTurnResponse(BaseModel):
+    active: bool
+    turn_id: str | None = None
+    elapsed_seconds: float | None = None
+    activity: AssistantActivity | None = None
+
+
+class AssistantTurnCancelResponse(BaseModel):
+    status: Literal["canceling", "not_active"]
+    turn_id: str
+
+
 class AssistantHistoryResponse(BaseModel):
     thread_id: str | None = None
     messages: list[ChatMessageSummary] = Field(default_factory=list)
+    pending_approval: AssistantApprovalRequestResponse | None = None
 
 
 class AssistantHistoryClearResponse(BaseModel):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,10 +14,10 @@ sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.cases import uploads as uploads_module  # noqa: E402
 from neurocade_runtime_tools.execution import (  # noqa: E402
-    RuntimeExecutionPolicy,
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
     execute_runtime_request,
+    run_managed_command,
 )
 
 
@@ -47,6 +48,24 @@ def test_runtime_execution_rejects_uncontained_log_path(tmp_path):
         )
 
 
+def test_managed_command_terminates_on_timeout() -> None:
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_managed_command([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.01)
+
+
+def test_managed_command_cleans_up_when_observer_interrupts() -> None:
+    observed: list[subprocess.Popen[str]] = []
+
+    def interrupt(process: subprocess.Popen[str] | None) -> None:
+        if process is not None:
+            observed.append(process)
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_managed_command([sys.executable, "-c", "import time; time.sleep(30)"], process_observer=interrupt)
+    assert observed[0].poll() is not None
+
+
 def test_dicom_conversion_uses_shared_runtime_execution(monkeypatch, tmp_path):
     input_dir = tmp_path / "dicom-input"
     output_dir = tmp_path / "dicom-output"
@@ -69,7 +88,6 @@ def test_dicom_conversion_uses_shared_runtime_execution(monkeypatch, tmp_path):
     assert request.output_root == output_dir
     assert request.workdir_root == output_dir
     assert request.timeout_s == 17
-    assert request.runtime_policy == RuntimeExecutionPolicy(network_disabled=True, gpu_enabled=False)
     # dcm2niix now runs in-process through the selected runtime backend.
     assert request.execution_mode == "container"
     assert request.container_run is not None

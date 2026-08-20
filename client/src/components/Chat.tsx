@@ -1,8 +1,9 @@
 import { Children, useCallback, useState, useRef, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import type { LocationInfo, MriSnapshots } from '../types';
 import type {
+    AssistantApprovalRequest,
+    AssistantActivity,
     AssistantScope,
     ChatMessage,
     ChatContentPart,
@@ -10,14 +11,25 @@ import type {
     ChatImagePart,
     ToolCallEntry,
     ReasoningEntry,
+    LocationInfo,
+    MriSnapshots,
 } from '../types';
-import { appFetch, clearAssistantHistory, fetchAssistantHistory, fetchProviders, parseError } from '../utils/api';
+import {
+    appFetch,
+    clearAssistantHistory,
+    fetchAssistantHistory,
+    fetchProviders,
+    parseError,
+} from '../utils/api';
+import { useAssistantTurnMonitor } from '../hooks/useAssistantTurnMonitor';
 import { ChatToolCallsContent } from './ChatToolCallsContent';
 import { ChatApprovalContent } from './ChatApprovalContent';
+import { appendUniqueChatMessages } from './chatMessages';
 import {
     type ApiResponse,
-    type AssistantApprovalRequest,
     type AssistantMessageEvent,
+    approvalButtonClass,
+    approvalButtonLabel,
     buildUserContent,
     CHAT_REQUEST_TIMEOUT_MS,
     CHAT_REQUEST_TIMEOUT_SECONDS,
@@ -29,6 +41,7 @@ import {
     STATUS_MESSAGES,
     upsertToolCallsMessage,
 } from './chatSupport';
+import { assistantActivityMessage, assistantActivityProgress } from './assistantActivity';
 
 export type { ChatMessage };
 
@@ -84,38 +97,65 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     const externalMessagesRef = useRef(externalMessages);
     externalMessagesRef.current = externalMessages;
 
+    const loadPersistedChatState = useCallback(async () => {
+        if (!workspaceId) return;
+        const requestVersion = historyRequestVersionRef.current + 1;
+        historyRequestVersionRef.current = requestVersion;
+        const history = await fetchAssistantHistory(workspaceId, scope, caseId);
+        if (historyRequestVersionRef.current !== requestVersion) return;
+        setMessages(appendUniqueChatMessages([
+            ...defaultMessages(scope),
+            ...history.messages,
+        ], externalMessagesRef.current));
+        setPendingApproval(history.pending_approval ?? null);
+    }, [caseId, scope, workspaceId]);
+
+    const handleBackgroundTurnComplete = useCallback(async () => {
+        await loadPersistedChatState();
+        onAssistantTurnComplete?.();
+    }, [loadPersistedChatState, onAssistantTurnComplete]);
+
+    const {
+        activeTurnId,
+        activity: assistantActivity,
+        isCanceling,
+        trackTurn,
+        updateActivity: updateAssistantActivity,
+        discoverTurn,
+        markTurnFinished,
+        cancelTurn,
+    } = useAssistantTurnMonitor({
+        workspaceId,
+        scope,
+        caseId,
+        isStreamConnected: isLoading,
+        onTurnComplete: handleBackgroundTurnComplete,
+    });
+    const isTurnActive = isLoading || activeTurnId !== null;
+    const assistantProgress = assistantActivityProgress(assistantActivity);
+
     useEffect(() => {
         if (!workspaceId) {
             return;
         }
-        let cancelled = false;
-        const requestVersion = historyRequestVersionRef.current + 1;
-        historyRequestVersionRef.current = requestVersion;
         setPendingApproval(null);
-        void fetchAssistantHistory(workspaceId, scope, caseId)
-            .then((history) => {
-                if (cancelled || historyRequestVersionRef.current !== requestVersion) return;
-                if (history.messages.length > 0) {
-                    setMessages([
-                        ...defaultMessages(scope),
-                        ...history.messages,
-                        ...externalMessagesRef.current,
-                    ]);
-                    return;
-                }
-                setMessages([
-                    ...defaultMessages(scope),
-                    ...externalMessagesRef.current,
-                ]);
-            })
+        void loadPersistedChatState()
             .catch((error) => {
-                if (cancelled || historyRequestVersionRef.current !== requestVersion) return;
                 console.error('Failed to load assistant history:', error);
             });
         return () => {
-            cancelled = true;
+            historyRequestVersionRef.current += 1;
         };
-    }, [workspaceId, caseId, scope]);
+    }, [loadPersistedChatState, workspaceId]);
+
+    useEffect(() => {
+        return () => {
+            if (abortRef.current) {
+                suppressAbortMessageRef.current = true;
+                abortRef.current.abort();
+            }
+        };
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -161,11 +201,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     // Sync with external messages (e.g. system notifications)
     useEffect(() => {
         if (externalMessages.length > 0) {
-            setMessages(prev => {
-                const newMessages = externalMessages.filter(msg => !prev.includes(msg));
-                if (newMessages.length === 0) return prev;
-                return [...prev, ...newMessages];
-            });
+            setMessages(prev => appendUniqueChatMessages(prev, externalMessages));
         }
     }, [externalMessages]);
 
@@ -176,7 +212,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     }, [messages]);
 
     const handleClear = useCallback(async () => {
-        if (!workspaceId || isClearing) return;
+        if (!workspaceId || isClearing || isTurnActive) return;
         historyRequestVersionRef.current += 1;
         suppressAbortMessageRef.current = true;
         abortRef.current?.abort();
@@ -195,11 +231,11 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         } finally {
             setIsClearing(false);
         }
-    }, [caseId, isClearing, scope, workspaceId]);
+    }, [caseId, isClearing, isTurnActive, scope, workspaceId]);
 
     useEffect(() => {
-        onClearStateChange?.(isClearing);
-    }, [isClearing, onClearStateChange]);
+        onClearStateChange?.(isClearing || isTurnActive);
+    }, [isClearing, isTurnActive, onClearStateChange]);
 
     useEffect(() => {
         if (clearRequestToken === undefined || clearRequestToken === lastClearRequestTokenRef.current) return;
@@ -208,7 +244,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     }, [clearRequestToken, handleClear]);
 
     const handleSend = async (approval?: AssistantApprovalRequest) => {
-        if ((!approval && !input.trim()) || isLoading || isClearing || assistantDisabledMessage) return;
+        if ((!approval && !input.trim()) || isTurnActive || isClearing || assistantDisabledMessage) return;
 
         const userContent = approval
             ? { content: `I approve the requested action: ${approval.presentation?.title ?? approval.description}.`, error: undefined }
@@ -226,6 +262,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         const controller = new AbortController();
         const chatRequestId = createChatRequestId();
         const startedAt = performance.now();
+        let managedTurnId: string | null = null;
         let didTimeout = false;
         const timeoutId = window.setTimeout(() => {
             didTimeout = true;
@@ -270,6 +307,11 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 signal: controller.signal,
             });
             const responseStartedElapsedMs = Math.round(performance.now() - startedAt);
+            const responseTurnId = response.headers.get('X-Assistant-Turn-Id');
+            if (responseTurnId) {
+                managedTurnId = responseTurnId;
+                trackTurn(responseTurnId);
+            }
             reportChatEvent('info', 'frontend.assistant_turn.response_started', 'Assistant turn response stream opened', {
                 chat_request_id: chatRequestId,
                 elapsed_ms: responseStartedElapsedMs,
@@ -278,6 +320,13 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             });
 
             if (!response.ok) {
+                if (response.status === 409 && workspaceId) {
+                    const turnId = await discoverTurn().catch(() => null);
+                    if (turnId) {
+                        trackTurn(turnId);
+                        return;
+                    }
+                }
                 const errorMessage = await parseError(response, 'API request failed');
                 if (errorMessage.includes('image')) {
                     throw new Error("The current model does not support image capabilities. Please switch to a vision model like Qwen3-VL-32B or gpt-4o.");
@@ -320,6 +369,8 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                                 : [...prev, { role: 'assistant', content: streamedText }];
                         });
                     }
+                } else if (eventType === 'activity') {
+                    updateAssistantActivity(JSON.parse(data) as AssistantActivity);
                 } else if (eventType === 'assistant_message') {
                     const assistantMessage = JSON.parse(data) as AssistantMessageEvent;
                     if (assistantMessage.content.trim()) {
@@ -371,6 +422,8 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     sse_event_counts: sseEventCounts,
                 });
                 setMessages(prev => [...prev, { role: 'info', content: 'Assistant response ended before a final message was received. Please try again.' }]);
+            } else {
+                markTurnFinished();
             }
         } catch (error: unknown) {
             if (error instanceof DOMException && error.name === 'AbortError') {
@@ -383,13 +436,18 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                         workspace_id: workspaceId,
                         case_id: scope === 'case' ? caseId : null,
                     });
-                    setMessages(prev => [...prev, { role: 'info', content: `Assistant request timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. Please try again or narrow the request.` }]);
+                    setMessages(prev => [...prev, {
+                        role: 'info',
+                        content: managedTurnId
+                            ? `Live updates timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. The assistant is continuing in the background.`
+                            : `Assistant request timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. Please try again or narrow the request.`,
+                    }]);
                 } else if (!suppressAbortMessageRef.current) {
                     reportChatEvent('info', 'frontend.assistant_turn.stopped', 'Assistant turn request stopped by the user', {
                         chat_request_id: chatRequestId,
                         elapsed_ms: Math.round(performance.now() - startedAt),
                     });
-                    setMessages(prev => [...prev, { role: 'info', content: 'Request stopped.' }]);
+                    setMessages(prev => [...prev, { role: 'info', content: managedTurnId ? 'Live updates stopped. The assistant is continuing in the background.' : 'Request stopped.' }]);
                 }
                 suppressAbortMessageRef.current = false;
             } else {
@@ -407,6 +465,23 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             abortRef.current = null;
             setIsLoading(false);
             onAssistantTurnComplete?.();
+        }
+    };
+
+    const handleStop = async () => {
+        if (!workspaceId || isCanceling) return;
+        try {
+            const status = await cancelTurn();
+            if (status === 'canceling') {
+                setMessages(prev => [...prev, { role: 'info', content: 'Assistant cancellation requested.' }]);
+            }
+            if (abortRef.current) {
+                suppressAbortMessageRef.current = true;
+                abortRef.current.abort();
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to stop the assistant turn.';
+            setMessages(prev => [...prev, { role: 'info', content: message }]);
         }
     };
 
@@ -445,7 +520,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                         type="button"
                         className="chat-clear-button"
                         onClick={() => void handleClear()}
-                        disabled={isClearing}
+                        disabled={isClearing || isTurnActive}
                         title="Clear chat context"
                         aria-label="Clear chat context"
                     >
@@ -500,10 +575,45 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                         )}
                     </div>
                 ))}
-                {isLoading && (
+                {isTurnActive && (
                     <div className="chat-message info italic chat-loading">
-                        <span>{loadingMessage}</span>
-                        <span className="chat-spinner" aria-hidden="true" />
+                        <div className="chat-loading-label">
+                            <span>{assistantActivityMessage(assistantActivity, isLoading, loadingMessage)}</span>
+                            {assistantProgress == null && <span className="chat-spinner" aria-hidden="true" />}
+                        </div>
+                        {assistantActivity?.kind === 'image' && assistantActivity.disk_warning && (
+                            <div className="chat-download-warning" role="status">
+                                <AlertTriangle size={14} aria-hidden="true" />
+                                <div>
+                                    <span>{assistantActivity.disk_warning}</span>
+                                    {assistantActivity.reclaimable_storage
+                                        && Object.keys(assistantActivity.reclaimable_storage).length > 0 && (
+                                        <details>
+                                            <summary>Storage options</summary>
+                                            <span>
+                                                Docker reports{' '}
+                                                {Object.entries(assistantActivity.reclaimable_storage)
+                                                    .map(([type, size]) => `${type}: ${size}`)
+                                                    .join('; ')} reclaimable. Review unused items in Docker Desktop;
+                                                NeuroCade will not delete them automatically.
+                                            </span>
+                                        </details>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                        {assistantProgress != null && (
+                            <div
+                                className="chat-download-progress"
+                                role="progressbar"
+                                aria-label="Container image download progress"
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={Math.round(assistantProgress * 100)}
+                            >
+                                <span style={{ width: `${assistantProgress * 100}%` }} />
+                            </div>
+                        )}
                     </div>
                 )}
                 {assistantDisabledMessage && (
@@ -522,16 +632,16 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 )}
             </div>
 
-            {pendingApproval && !isLoading && (
+            {pendingApproval && !isTurnActive && (
                 <div className="chat-approval" role="group" aria-label="Confirm assistant action">
                     <ChatApprovalContent approval={pendingApproval} />
                     <div className="chat-approval-actions flex items-center gap-2">
                         <button
                             type="button"
-                            className="nc-btn nc-btn-active px-3"
+                            className={`nc-btn ${approvalButtonClass(pendingApproval.presentation)} px-3`}
                             onClick={() => void handleSend(pendingApproval)}
                         >
-                            {pendingApproval.presentation?.kind === 'workflow' ? 'Start workflow' : 'Approve'}
+                            {approvalButtonLabel(pendingApproval.presentation)}
                         </button>
                         <button
                             type="button"
@@ -550,15 +660,15 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') void handleSend(); }}
-                    disabled={isClearing || Boolean(assistantDisabledMessage)}
+                    disabled={isClearing || isTurnActive || Boolean(assistantDisabledMessage)}
                 />
-                {isLoading ? (
+                {isTurnActive ? (
                     <button
                         className="nc-btn nc-btn-danger px-4"
-                        onClick={() => abortRef.current?.abort()}
-                        disabled={isClearing}
+                        onClick={() => void handleStop()}
+                        disabled={isClearing || isCanceling}
                     >
-                        Stop
+                        {isCanceling ? 'Stopping…' : 'Stop'}
                     </button>
                 ) : (
                     <button

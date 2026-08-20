@@ -43,14 +43,12 @@ run_host_doctor() {
     doctor_fail "This beta's pinned tool images require amd64; found $(uname -m)"
   fi
 
-  local path available_kb
-  for path in "$HOST_DATA_DIR" "$NEUROCADE_DB_DIR"; do
-    if mkdir -p "$path" && [[ -w "$path" ]]; then
-      doctor_ok "$path is writable"
-    else
-      doctor_fail "$path is not writable"
-    fi
-  done
+  local available_kb
+  if mkdir -p "$HOST_DATA_DIR" && [[ -w "$HOST_DATA_DIR" ]]; then
+    doctor_ok "$HOST_DATA_DIR is writable"
+  else
+    doctor_fail "$HOST_DATA_DIR is not writable"
+  fi
   available_kb="$(df -Pk "$HOST_DATA_DIR" 2>/dev/null | awk 'NR == 2 {print $4}')"
   if [[ "$available_kb" =~ ^[0-9]+$ ]] && (( available_kb >= minimum_free_kb )); then
     doctor_ok "Disk has enough space for missing application and tool images"

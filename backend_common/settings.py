@@ -1,6 +1,5 @@
 """Provide shared backend settings utilities for NeuroCade."""
 
-import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -15,12 +14,12 @@ class Settings(BaseSettings):
 
     app_base_url: str = Field(default="http://localhost:8000", alias="APP_BASE_URL")
     deployment_profile: str = Field(default="local", alias="DEPLOYMENT_PROFILE")
+    neurocade_runtime: str = Field(default="", alias="NEUROCADE_RUNTIME")
     app_allowed_hosts: str = Field(default="", alias="APP_ALLOWED_HOSTS")
 
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
     fs_data_root: Path = Field(default=ROOT_DIR / "neurocade-data", alias="HOST_DATA_DIR")
-    sif_dir: Path = Field(default=ROOT_DIR / "neurocade-data" / "sif", alias="NEUROCADE_SIF_DIR")
     dicom_conversion_timeout_seconds: int = Field(default=300, alias="DICOM_CONVERSION_TIMEOUT_SECONDS")
     max_upload_file_size_bytes: int = Field(default=2 * 1024 * 1024 * 1024, alias="MAX_UPLOAD_FILE_SIZE_BYTES")
     dicom_zip_max_entries: int = Field(default=5000, alias="DICOM_ZIP_MAX_ENTRIES")
@@ -84,6 +83,5 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return cached settings and ensure the output directory exists."""
     settings = Settings()
-    os.environ.setdefault("NEUROCADE_SIF_DIR", str(settings.sif_dir))
     settings.outputs_dir.mkdir(parents=True, exist_ok=True)
     return settings

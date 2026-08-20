@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Docker-only NeuroCade installer.
+# NeuroCade matched-runtime installer.
 set -euo pipefail
 
 ARCHIVE_URL="${NEUROCADE_ARCHIVE_URL:-https://github.com/Deep-MI/NeuroCade/archive/refs/heads/main.tar.gz}"
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
 
 usage() {
   cat <<'EOF'
-NeuroCade Docker installer
+NeuroCade runtime installer
 
 Quick install:
   bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh)
@@ -18,11 +18,17 @@ From a checkout:
   ./scripts/install.sh
 
 Options:
+  --runtime docker|apptainer      Override automatic runtime selection.
+                                  Defaults to Docker on macOS; rootless Apptainer
+                                  on Linux when available, otherwise Docker.
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
   --image IMAGE                   Published image tag or digest. Default: ghcr.io/deep-mi/neurocade:latest.
+  --app-sif-url URL               Published application SIF (apptainer profile).
+  --app-sif-sha256 SHA256         Published application SIF checksum.
+  --bridge-port PORT              Host bridge port. Default: 8765.
   --no-start                      Prepare required images without launching the app.
-  --yes                           Accept defaults for omitted prompts.
+  --yes                           Noninteractive: preserve configured values and accept defaults.
   --help                          Show this help.
 EOF
 }
@@ -164,7 +170,7 @@ normalize_provider() {
 default_docker_platform() {
   local os arch
   os="$(uname -s)"
-  arch="$(uname -m)"
+  arch="$(neurocade_host_arch)"
   if [[ "$os" == "Darwin" && "$arch" =~ ^(arm64|aarch64)$ ]]; then
     printf 'linux/amd64\n'
   fi
@@ -187,18 +193,15 @@ require_option_value() {
 }
 
 write_env() {
-  local root="$1" mode="$2" provider="$3" image_override="${4:-}" env_path
+  local root="$1" mode="$2" provider="$3" runtime="$4" image_override="${5:-}" app_sif_url="${6:-}" app_sif_sha256="${7:-}" bridge_port="${8:-8765}" env_path
   env_path="$root/.env"
-  local host_data_dir db_dir app_base_url app_bind app_port docker_platform image local_auth
+  local host_data_dir database_volume app_base_url app_bind app_port docker_platform image local_auth
   local clerk_publishable="" clerk_secret="" clerk_jwks="" clerk_issuer="" clerk_audience="" clerk_jwt_template=""
   host_data_dir="$(configured_or_default "$root" HOST_DATA_DIR "$root/neurocade-data")"
   if [[ "$host_data_dir" != /* ]]; then
     host_data_dir="$root/$host_data_dir"
   fi
-  db_dir="$(configured_or_default "$root" NEUROCADE_DB_DIR "$host_data_dir")"
-  if [[ "$db_dir" != /* ]]; then
-    db_dir="$root/$db_dir"
-  fi
+  database_volume="$(configured_or_default "$root" NEUROCADE_DATABASE_VOLUME "neurocade-database")"
   docker_platform="$(configured_or_default "$root" NEUROCADE_DOCKER_PLATFORM "$(default_docker_platform)")"
   image="${image_override:-$(configured_or_default "$root" NEUROCADE_IMAGE "$DEFAULT_IMAGE")}"
 
@@ -223,7 +226,8 @@ write_env() {
       ;;
   esac
 
-  local llm_url="" llm_key="" llm_model="Qwen/Qwen3.6-35B-A3B" anthropic_key="" anthropic_model="" google_key="" google_model="" ollama_model=""
+  local llm_url="" llm_key="" llm_model="Qwen/Qwen3.6-35B-A3B" anthropic_key="" anthropic_model="" google_key="" google_model="" ollama_model="" ollama_base_url
+  if [[ "$runtime" == "docker" ]]; then ollama_base_url="http://host.docker.internal:11434"; else ollama_base_url="http://127.0.0.1:11434"; fi
   case "$provider" in
     openai-compatible)
       llm_url="$(prompt "OpenAI-compatible base URL" "$(configured_or_default "$root" LLM_BACKEND_URL "")")"
@@ -243,7 +247,7 @@ write_env() {
       ;;
     ollama)
       ollama_model="$(prompt "Ollama model" "$(configured_or_default "$root" OLLAMA_MODEL "gemma4:e2b")")"
-      llm_url="http://host.docker.internal:11434"
+      llm_url="$ollama_base_url"
       llm_model="$ollama_model"
       ;;
     no-llm)
@@ -274,7 +278,7 @@ write_env() {
   if [[ -n "$app_host" && "$app_host" != "localhost" && "$app_host" != "127.0.0.1" ]]; then
     allowed_hosts="$app_host,$allowed_hosts"
   fi
-  mkdir -p "$host_data_dir/output" "$db_dir"
+  mkdir -p "$host_data_dir/output"
   [[ -f "$env_path" ]] && cp "$env_path" "$env_path.backup.$(date +%Y%m%d%H%M%S)"
 
   {
@@ -285,11 +289,15 @@ write_env() {
     env_line APP_HTTP_BIND "$app_bind"
     env_line APP_HTTP_PORT "$app_port"
     env_line HOST_DATA_DIR "$host_data_dir"
-    env_line NEUROCADE_DB_DIR "$db_dir"
-    env_line NEUROCADE_SIF_DIR "$host_data_dir/sif"
+    env_line NEUROCADE_DATABASE_VOLUME "$database_volume"
+    env_line NEUROCADE_RUNTIME "$runtime"
+    env_line NEUROCADE_BRIDGE_URL "http://127.0.0.1:$bridge_port"
+    env_line NEUROCADE_BRIDGE_TOKEN_FILE "$root/.runtime/bridge-token"
+    env_line NEUROCADE_BRIDGE_PORT "$bridge_port"
     env_line NEUROCADE_IMAGE "$image"
+    env_line NEUROCADE_APP_SIF_URL "$app_sif_url"
+    env_line NEUROCADE_APP_SIF_SHA256 "$app_sif_sha256"
     env_line NEUROCADE_DOCKER_PLATFORM "$docker_platform"
-    env_line DATABASE_URL "sqlite+pysqlite:///$db_dir/neurocade.db"
     env_line NEUROCADE_GPU_MODE "$(configured_or_default "$root" NEUROCADE_GPU_MODE "auto")"
     env_line LOCAL_AUTH_ENABLED "$local_auth"
     env_line LOCAL_AUTH_USER_ID "local-user"
@@ -305,7 +313,7 @@ write_env() {
     env_line LLM_BACKEND_URL "$llm_url"
     env_line LLM_BACKEND_API_KEY "$llm_key"
     env_line LLM_BACKEND_MODEL "$llm_model"
-    env_line OLLAMA_BASE_URL "http://host.docker.internal:11434"
+    env_line OLLAMA_BASE_URL "$ollama_base_url"
     env_line OLLAMA_MODEL "$ollama_model"
     env_line ANTHROPIC_API_KEY "$anthropic_key"
     env_line ANTHROPIC_MODEL "$anthropic_model"
@@ -318,13 +326,22 @@ write_env() {
 bootstrap_checkout "$@"
 
 MODE="local"
+RUNTIME=""
 LLM_PROVIDER=""
 IMAGE_OVERRIDE=""
+APP_SIF_URL=""
+APP_SIF_SHA256=""
+BRIDGE_PORT="8765"
 START=1
 ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --runtime)
+      require_option_value "$1" "${2:-}"
+      RUNTIME="$2"
+      shift 2
+      ;;
     --mode)
       require_option_value "$1" "${2:-}"
       MODE="$2"
@@ -340,6 +357,21 @@ while [[ $# -gt 0 ]]; do
       IMAGE_OVERRIDE="$2"
       shift 2
       ;;
+    --app-sif-url)
+      require_option_value "$1" "${2:-}"
+      APP_SIF_URL="$2"
+      shift 2
+      ;;
+    --app-sif-sha256)
+      require_option_value "$1" "${2:-}"
+      APP_SIF_SHA256="$2"
+      shift 2
+      ;;
+    --bridge-port)
+      require_option_value "$1" "${2:-}"
+      BRIDGE_PORT="$2"
+      shift 2
+      ;;
     --no-start) START=0; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -349,6 +381,25 @@ done
 
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/lib/managed_python.sh"
+source "$ROOT_DIR/scripts/lib/runtime_selection.sh"
+if [[ -z "$RUNTIME" ]]; then
+  RUNTIME="$(configured_or_default "$ROOT_DIR" NEUROCADE_RUNTIME "")"
+  if [[ -n "$RUNTIME" ]]; then
+    echo "Using configured runtime: $RUNTIME"
+  else
+    RUNTIME="$(default_runtime)"
+    echo "Selected runtime: $RUNTIME"
+  fi
+fi
+validate_runtime "$RUNTIME" || exit 1
+if [[ "$RUNTIME" == "apptainer" ]]; then
+  [[ -n "$APP_SIF_URL" ]] || APP_SIF_URL="$(configured_or_default "$ROOT_DIR" NEUROCADE_APP_SIF_URL "")"
+  [[ -n "$APP_SIF_SHA256" ]] || APP_SIF_SHA256="$(configured_or_default "$ROOT_DIR" NEUROCADE_APP_SIF_SHA256 "")"
+  require_value "Application SIF URL" "$APP_SIF_URL"
+  [[ "$APP_SIF_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "A 64-character application SIF SHA-256 is required." >&2; exit 2; }
+fi
+[[ "$BRIDGE_PORT" =~ ^[0-9]+$ ]] && (( BRIDGE_PORT > 0 && BRIDGE_PORT < 65536 )) || { echo "Invalid bridge port: $BRIDGE_PORT" >&2; exit 2; }
 MODE="$(normalize_mode "$MODE")"
 if [[ -z "$LLM_PROVIDER" ]]; then
   LLM_PROVIDER="$(detect_configured_provider "$ROOT_DIR")"
@@ -362,7 +413,15 @@ if [[ -z "$LLM_PROVIDER" ]]; then
 fi
 LLM_PROVIDER="$(normalize_provider "$LLM_PROVIDER")"
 
-write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$IMAGE_OVERRIDE"
+if [[ "$ASSUME_YES" -eq 1 ]]; then
+  echo "Noninteractive install: reusing configured values and accepting defaults."
+fi
+
+install_managed_uv
+echo "Ensuring managed Python $NEUROCADE_PYTHON_VERSION..."
+managed_uv python install "$NEUROCADE_PYTHON_VERSION"
+
+write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$RUNTIME" "$IMAGE_OVERRIDE" "$APP_SIF_URL" "$APP_SIF_SHA256" "$BRIDGE_PORT"
 
 if [[ "$START" -eq 1 ]]; then
   "$ROOT_DIR/scripts/run.sh" start -d

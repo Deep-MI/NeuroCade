@@ -638,8 +638,14 @@ provides-extras = ["test"]
 
 [[package]]
 name = "neurocade-runtime-tools"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/neurocade-runtime-tools" }
+dependencies = [
+    { name = "requests" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "requests", specifier = ">=2.31,<3" }]
 
 [[package]]
 name = "nibabel"

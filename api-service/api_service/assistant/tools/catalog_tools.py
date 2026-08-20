@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from api_service.assistant.approval_presentations import (
+    config_delete_approval_presentation,
+    config_upsert_approval_presentation,
+    run_cancel_approval_presentation,
+    workflow_approval_presentation,
+)
 from api_service.assistant.tools.catalog_execution import (
     AssistantCatalogExecutor,
     CatalogRunArgs,
@@ -17,7 +24,7 @@ from api_service.assistant.tools.definition import ToolDefinition, ToolExecution
 from api_service.assistant.tools.registration import ToolRegistration
 from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.policies import require_case_write, require_workspace_write
-from api_service.runtime_tools.neurodesk_images import resolve_or_prepare_image
+from api_service.runtime_tools.neurodesk_images import validate_catalog_image
 from api_service.runtime_tools.workflow_catalog import (
     NeuroimagingWorkflow,
     delete_user_workflow,
@@ -44,8 +51,9 @@ class CatalogConfigUpsertArgs(BaseModel):
         ...,
         description=(
             "Complete workflow definition to create or replace. Use only documented CLI flags. "
-            "The script must use quoted ${INPUTS[n]} and should write declared files to quoted "
-            "${OUTPUTS[n]}. For a FreeSurfer-LUT segmentation, set output metadata.lut to "
+            "Output paths are relative (for example mri/segmentation.mgz), never /case/... paths. "
+            "The script must directly double-quote every ${INPUTS[n]} and ${OUTPUTS[n]} reference. "
+            "For a FreeSurfer-LUT segmentation, set output metadata.lut to "
             "freesurfer and metadata.visible to true. Do not add optional command flags that "
             "the user did not request."
         ),
@@ -89,6 +97,7 @@ class AssistantCatalogTools:
         self.catalog_executor = catalog_executor
 
     def build_tools(self, state: dict[str, Any]) -> list[ToolDefinition]:
+        settings = self.catalog_executor.settings
         registrations: tuple[ToolRegistration, ...] = (
             ToolRegistration(
                 "tool_search",
@@ -115,6 +124,7 @@ class AssistantCatalogTools:
                 CatalogToolCallArgs.model_json_schema(),
                 self.call,
                 ToolRisk.workflow,
+                approval_presentation=partial(workflow_approval_presentation, settings=settings),
             ),
             ToolRegistration(
                 "tool_run_status",
@@ -135,6 +145,7 @@ class AssistantCatalogTools:
                 CatalogRunArgs.model_json_schema(),
                 self.cancel,
                 ToolRisk.workflow,
+                approval_presentation=partial(run_cancel_approval_presentation, settings=settings),
             ),
         )
         if self.user_id(state) is not None:
@@ -152,6 +163,7 @@ class AssistantCatalogTools:
                     _catalog_config_upsert_schema(),
                     self.config_upsert,
                     ToolRisk.write,
+                    approval_presentation=partial(config_upsert_approval_presentation, settings=settings),
                 ),
                 ToolRegistration(
                     "tool_config_delete",
@@ -159,6 +171,7 @@ class AssistantCatalogTools:
                     CatalogConfigDeleteArgs.model_json_schema(),
                     self.config_delete,
                     ToolRisk.write,
+                    approval_presentation=partial(config_delete_approval_presentation, settings=settings),
                 ),
             )
         return [registration.bind(state) for registration in registrations]
@@ -188,7 +201,7 @@ class AssistantCatalogTools:
                 user_id=user_id,
             )
             await asyncio.to_thread(
-                resolve_or_prepare_image,
+                validate_catalog_image,
                 tool.neurodesk_image,
                 settings=self.catalog_executor.settings,
             )
@@ -211,9 +224,24 @@ class AssistantCatalogTools:
         queued = result.details
         execution = queued.get("execution") if isinstance(queued, dict) else None
         run_id = queued.get("run_id") if isinstance(queued, dict) else None
+        mode = execution.get("mode") if isinstance(execution, dict) else None
+        gpu_enabled = bool(execution.get("gpu")) if isinstance(execution, dict) else False
+        event_sink = state.get("event_sink")
+        if event_sink is not None and isinstance(run_id, str) and mode in {"synchronous", "background"}:
+            await event_sink(
+                "activity",
+                {
+                    "kind": "workflow",
+                    "label": tool.label,
+                    "blocking": mode == "synchronous",
+                    "run_id": run_id,
+                    "mode": mode,
+                    "device": "gpu" if gpu_enabled else "cpu",
+                },
+            )
         if (
             not isinstance(execution, dict)
-            or execution.get("mode") != "synchronous"
+            or mode != "synchronous"
             or not isinstance(run_id, str)
             or db is None
         ):
@@ -225,6 +253,18 @@ class AssistantCatalogTools:
             workspace_id=state["workspace_id"],
             case_id=self.case_id(state),
         )
+        if completed is None and event_sink is not None:
+            await event_sink(
+                "activity",
+                {
+                    "kind": "workflow",
+                    "label": tool.label,
+                    "blocking": False,
+                    "run_id": run_id,
+                    "mode": "synchronous",
+                    "device": "gpu" if gpu_enabled else "cpu",
+                },
+            )
         return completed or result
 
     def search(

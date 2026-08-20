@@ -78,14 +78,17 @@ def upload_mri(
         dropzone.click()
     file_chooser = fc_info.value
     file_chooser.set_files(abs_path)
-    page.locator("[data-testid='upload-case-name-input']").wait_for(state="visible", timeout=10_000)
-    target_name = case_name or infer_case_name(Path(abs_path).name)
-    page.locator("[data-testid='upload-case-name-input']").fill(target_name)
     if destination == "add_to_case":
         page.click("[data-testid='confirm-add-to-case']")
     else:
+        name_input = page.locator("[data-testid='upload-case-name-input']")
+        if not name_input.is_visible():
+            page.get_by_role("button", name="New case").click()
+        name_input.wait_for(state="visible", timeout=10_000)
+        target_name = case_name or infer_case_name(Path(abs_path).name)
+        name_input.fill(target_name)
         page.click("[data-testid='confirm-upload-case']")
-    page.locator("[data-testid='upload-case-name-input']").wait_for(state="hidden", timeout=30_000)
+    page.locator(".nc-upload-dialog-backdrop").wait_for(state="hidden", timeout=30_000)
     page.wait_for_url("**/workspaces/*/cases/*", timeout=30_000)
     page.wait_for_selector("input.chat-input", state="visible", timeout=20_000)
     page.wait_for_selector("button:has-text('Choose MRI File')", state="visible", timeout=20_000)
@@ -177,7 +180,7 @@ def get_current_position(page: Page) -> dict:
 
 
 def load_processed_case(page: Page) -> str:
-    """Navigate to a reproducible processed case copied into a fresh workspace."""
+    """Navigate to the stable API-backed processed demo case."""
     processed_case = fresh_processed_case_data()
     workspace_id = processed_case["workspace_id"]
     case_id = processed_case["case_id"]

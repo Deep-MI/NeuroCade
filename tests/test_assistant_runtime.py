@@ -9,8 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,6 +19,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.assistant import runtime as assistant_runtime_module  # noqa: E402
+from api_service.assistant.approval_presentations import (  # noqa: E402
+    file_write_approval_presentation,
+    workflow_approval_presentation,
+)
 from api_service.assistant.prompts import build_model_messages, build_system_prompt, load_text  # noqa: E402
 from api_service.assistant.runtime import AssistantRuntime  # noqa: E402
 from api_service.assistant.tools import catalog_tools as catalog_tools_module  # noqa: E402
@@ -25,6 +30,7 @@ from api_service.assistant.tools import probe_tools as probe_tools_module  # noq
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk  # noqa: E402
 from api_service.runtime import workflow_runs as workflow_runs_module  # noqa: E402
 from api_service.runtime.gui_runtime import GuiRuntime  # noqa: E402
+from api_service.runtime_tools import workflow_execution as workflow_execution_module  # noqa: E402
 from api_service.runtime_tools.workflow_catalog import load_workflow_catalog, run_analysis_workflows_payload  # noqa: E402
 
 from backend_common import providers as provider_module  # noqa: E402
@@ -84,6 +90,23 @@ class FakeModel:
                 additional_kwargs=additional_kwargs,
             )
         return AIMessage(content=json.dumps(payload))
+
+
+class StreamFailureModel:
+    """Fail streaming before or after a visible delta, with a working non-stream call."""
+
+    def __init__(self, *, emit_before_failure: bool = False):
+        self.emit_before_failure = emit_before_failure
+        self.ainvoke_calls = 0
+
+    async def astream(self, _messages):
+        if self.emit_before_failure:
+            yield AIMessageChunk(content="partial")
+        raise RuntimeError("upstream streaming failed")
+
+    async def ainvoke(self, _messages):
+        self.ainvoke_calls += 1
+        return AIMessage(content="fallback response")
 
 
 class FakeGuiRuntime(GuiRuntime):
@@ -530,11 +553,61 @@ def test_catalog_tool_search_returns_configured_tool_payload():
     ]
 
 
+def test_model_stream_failure_falls_back_before_any_delta():
+    runtime = AssistantRuntime(FakeGuiRuntime())
+    model = StreamFailureModel()
+    events = []
+
+    async def emit(event, payload):
+        events.append((event, payload))
+
+    response = asyncio.run(
+        runtime.loop._invoke_model(
+            model,
+            [HumanMessage(content="hello")],
+            {"event_sink": emit},
+            1,
+        )
+    )
+
+    assert response.content == "fallback response"
+    assert model.ainvoke_calls == 1
+    assert events == []
+
+
+def test_model_stream_failure_does_not_replay_after_visible_delta():
+    runtime = AssistantRuntime(FakeGuiRuntime())
+    model = StreamFailureModel(emit_before_failure=True)
+    events = []
+
+    async def emit(event, payload):
+        events.append((event, payload))
+
+    with pytest.raises(RuntimeError, match="upstream streaming failed"):
+        asyncio.run(
+            runtime.loop._invoke_model(
+                model,
+                [HumanMessage(content="hello")],
+                {"event_sink": emit},
+                1,
+            )
+        )
+
+    assert model.ainvoke_calls == 0
+    assert events == [("text_delta", {"content": "partial", "round": 1})]
+
+
 def test_catalog_tool_call_returns_background_run_immediately(monkeypatch, seeded_context):
     db_session, context, workspace, case_a, _case_b = seeded_context
     runtime = AssistantRuntime(FakeGuiRuntime())
+    monkeypatch.setattr(workflow_execution_module, "resolve_gpu_enabled", lambda preferred, **_kwargs: preferred)
     captured = {}
     submission_count = 0
+    events = []
+
+    async def emit(event, payload):
+        events.append((event, payload))
+
     state = {
         "db": db_session,
         "context": context,
@@ -542,6 +615,7 @@ def test_catalog_tool_call_returns_background_run_immediately(monkeypatch, seede
         "workspace_id": workspace.id,
         "case_id": case_a.id,
         "gui_session_id": "gui-test",
+        "event_sink": emit,
     }
     bind = runtime.tools.catalog_executor.catalog_runtime_binds(state)[0]
     (Path(bind.host_path) / "input.mgz").write_bytes(b"volume")
@@ -555,10 +629,6 @@ def test_catalog_tool_call_returns_background_run_immediately(monkeypatch, seede
         db_session.commit()
         return kwargs["job_id"]
 
-    from api_service.assistant.tools import catalog_execution as catalog_execution_module
-
-    monkeypatch.setattr(catalog_tools_module, "resolve_or_prepare_image", lambda image, **_kwargs: image)
-    monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
     monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
     payload = json.loads(
@@ -594,6 +664,135 @@ def test_catalog_tool_call_returns_background_run_immediately(monkeypatch, seede
     assert replayed["run_id"] == payload["run_id"] == "stable-assistant-run"
     assert db_session.query(Run).filter(Run.id == "stable-assistant-run").count() == 1
     assert submission_count == 1
+    assert events[0] == (
+        "activity",
+        {
+            "kind": "workflow",
+            "label": "FastSurfer — Segmentation",
+            "blocking": False,
+            "run_id": "stable-assistant-run",
+            "mode": "background",
+            "device": "gpu",
+        },
+    )
+
+
+def test_synchronous_workflow_activity_reports_wait_and_background_handoff(monkeypatch, seeded_context):
+    db_session, context, workspace, case_a, _case_b = seeded_context
+    runtime = AssistantRuntime(FakeGuiRuntime())
+    events = []
+
+    async def emit(event, payload):
+        events.append((event, payload))
+
+    async def wait_for_terminal_run(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(catalog_tools_module, "validate_catalog_image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runtime.tools.catalog_executor,
+        "catalog_tool_call",
+        lambda *_args, **_kwargs: ToolResult.structured(
+            {
+                "tool_id": "fastsurfer_segmentation",
+                "run_id": "sync-run",
+                "status": "queued",
+                "execution": {"mode": "synchronous", "gpu": False},
+            }
+        ),
+    )
+    monkeypatch.setattr(runtime.tools.catalog_executor, "wait_for_terminal_run", wait_for_terminal_run)
+
+    result = asyncio.run(
+        runtime.tools.catalog_tools.call(
+            {
+                "db": db_session,
+                "context": context,
+                "scope": "case",
+                "workspace_id": workspace.id,
+                "case_id": case_a.id,
+                "event_sink": emit,
+            },
+            ToolExecutionContext("call-sync", external_run_id="sync-run"),
+            {
+                "tool_id": "fastsurfer_segmentation",
+                "inputs": ["/case/input.mgz"],
+            },
+        )
+    )
+
+    assert not result.is_error
+    assert events == [
+        (
+            "activity",
+            {
+                "kind": "workflow",
+                "label": "FastSurfer — Segmentation",
+                "blocking": True,
+                "run_id": "sync-run",
+                "mode": "synchronous",
+                "device": "cpu",
+            },
+        ),
+        (
+            "activity",
+            {
+                "kind": "workflow",
+                "label": "FastSurfer — Segmentation",
+                "blocking": False,
+                "run_id": "sync-run",
+                "mode": "synchronous",
+                "device": "cpu",
+            },
+        ),
+    ]
+
+
+def test_catalog_tool_call_retries_sqlite_lock_when_creating_run(monkeypatch, seeded_context):
+    db_session, context, workspace, case_a, _case_b = seeded_context
+    runtime = AssistantRuntime(FakeGuiRuntime())
+    monkeypatch.setattr(workflow_execution_module, "resolve_gpu_enabled", lambda preferred, **_kwargs: preferred)
+    state = {
+        "db": db_session,
+        "context": context,
+        "scope": "case",
+        "workspace_id": workspace.id,
+        "case_id": case_a.id,
+        "gui_session_id": "gui-test",
+    }
+    bind = runtime.tools.catalog_executor.catalog_runtime_binds(state)[0]
+    (Path(bind.host_path) / "input.mgz").write_bytes(b"volume")
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def flaky_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise OperationalError("INSERT INTO runs", {}, Exception("database is locked"))
+        original_commit()
+
+    monkeypatch.setattr(db_session, "commit", flaky_commit)
+    monkeypatch.setattr(
+        workflow_runs_module,
+        "submit_neuroimaging_workflow",
+        lambda **kwargs: kwargs["job_id"],
+    )
+
+    result = asyncio.run(
+        runtime.tools.catalog_tools.call(
+            state,
+            ToolExecutionContext("call-lock", external_run_id="sqlite-lock-retry-run"),
+            {"tool_id": "fastsurfer_segmentation", "inputs": ["/case/input.mgz"]},
+        )
+    )
+    payload = json.loads(result.content)
+
+    assert result.is_error is False
+    assert payload["run_id"] == "sqlite-lock-retry-run"
+    assert payload["status"] == "queued"
+    assert commit_attempts == 2
+    assert db_session.get(Run, payload["run_id"]) is not None
 
 
 def test_catalog_run_wait_timeout_returns_none(monkeypatch, seeded_context):
@@ -723,6 +922,7 @@ def test_catalog_tool_call_does_not_wait_for_background_failure(
 ):
     db_session, context, workspace, case_a, _case_b = seeded_context
     runtime = AssistantRuntime(FakeGuiRuntime())
+    monkeypatch.setattr(workflow_execution_module, "resolve_gpu_enabled", lambda preferred, **_kwargs: preferred)
     state = {
         "db": db_session,
         "context": context,
@@ -745,10 +945,6 @@ def test_catalog_tool_call_does_not_wait_for_background_failure(
         db_session.commit()
         return kwargs["job_id"]
 
-    from api_service.assistant.tools import catalog_execution as catalog_execution_module
-
-    monkeypatch.setattr(catalog_tools_module, "resolve_or_prepare_image", lambda image, **_kwargs: image)
-    monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
     monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
     result = asyncio.run(
@@ -820,6 +1016,7 @@ def test_run_analysis_tools_come_from_workflow_catalog():
 def test_case_catalog_tool_call_passes_case_to_worker(monkeypatch, seeded_context):
     db_session, context, workspace, case_a, _case_b = seeded_context
     runtime = AssistantRuntime(FakeGuiRuntime())
+    monkeypatch.setattr(workflow_execution_module, "resolve_gpu_enabled", lambda preferred, **_kwargs: preferred)
     captured = {}
     state = {
         "db": db_session,
@@ -840,10 +1037,6 @@ def test_case_catalog_tool_call_passes_case_to_worker(monkeypatch, seeded_contex
         db_session.commit()
         return kwargs["job_id"]
 
-    from api_service.assistant.tools import catalog_execution as catalog_execution_module
-
-    monkeypatch.setattr(catalog_tools_module, "resolve_or_prepare_image", lambda image, **_kwargs: image)
-    monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", lambda image: image)
     monkeypatch.setattr(workflow_runs_module, "submit_neuroimaging_workflow", fake_submit)
 
     payload = json.loads(
@@ -885,38 +1078,6 @@ def test_catalog_tool_call_rejects_unknown_tool():
     )
 
     assert "Workflow 'unsafe_tool' was not found" in result.content
-
-
-def test_catalog_tool_call_rejects_unprepared_image_before_creating_run(monkeypatch, seeded_context):
-    db_session, context, workspace, case_a, _case_b = seeded_context
-    runtime = AssistantRuntime(FakeGuiRuntime())
-    state = {
-        "db": db_session,
-        "context": context,
-        "scope": "case",
-        "workspace_id": workspace.id,
-        "case_id": case_a.id,
-    }
-    bind = runtime.tools.catalog_executor.catalog_runtime_binds(state)[0]
-    (Path(bind.host_path) / "input.mgz").write_bytes(b"volume")
-
-    from api_service.assistant.tools import catalog_execution as catalog_execution_module
-
-    def reject_image(_image):
-        raise RuntimeError("Run `./scripts/run.sh prepare-tools`")
-
-    monkeypatch.setattr(catalog_execution_module, "require_network_disabled_image", reject_image)
-    result = runtime.tools.catalog_executor.catalog_tool_call(
-        {"tool_id": "fastsurfer_segmentation", "inputs": ["/case/input.mgz"]},
-        [bind],
-        db=db_session,
-        user_id=context.user.id,
-        workspace_id=workspace.id,
-        case_id=case_a.id,
-    )
-
-    assert "prepare-tools" in result.content
-    assert db_session.query(Run).count() == 0
 
 
 def test_run_chat_handles_round_limit(monkeypatch):
@@ -1271,7 +1432,10 @@ def test_execute_tools_relays_tool_exceptions_to_model():
     assert result["status"] == "running"
     assert result["tool_calls_log"][0]["result"] == "Error: /case requires an active case"
     assert result["conversation"][-1]["content"] == "read: Error: /case requires an active case"
-    assert events == [("tool_call", result["tool_calls_log"][0])]
+    assert events == [
+        ("activity", {"kind": "tool", "label": "read", "blocking": True}),
+        ("tool_call", result["tool_calls_log"][0]),
+    ]
 
 
 def test_execute_tools_requires_and_consumes_exact_confirmation():
@@ -1295,6 +1459,9 @@ def test_execute_tools_requires_and_consumes_exact_confirmation():
                 parameters={},
                 execute=execute,
                 risk=ToolRisk.write,
+                approval_presentation=lambda arguments: file_write_approval_presentation(
+                    {"scope": "case"}, arguments
+                ),
             )
         ],
     }
@@ -1302,6 +1469,8 @@ def test_execute_tools_requires_and_consumes_exact_confirmation():
     waiting = asyncio.run(runtime.loop._execute_tools(base_state))
     assert waiting["status"] == "awaiting_approval"
     assert waiting["approval_request"]["name"] == "write"
+    assert waiting["approval_request"]["presentation"]["kind"] == "action"
+    assert waiting["approval_request"]["presentation"]["confirm_label"] == "Write file"
     assert executions == []
 
     approved_state = {
@@ -1312,6 +1481,14 @@ def test_execute_tools_requires_and_consumes_exact_confirmation():
     assert completed["status"] == "running"
     assert completed["tool_calls_log"][0]["result"] == "done"
     assert executions == [{"path": "note.txt", "content": "hello"}]
+
+
+def test_confirmation_tool_definition_requires_a_presenter():
+    async def execute(_context, _arguments):
+        return ToolResult.success("unused")
+
+    with pytest.raises(ValueError, match="requires an approval presenter"):
+        ToolDefinition("write", "Write a file", {}, execute, risk=ToolRisk.write)
 
 
 def test_workflow_confirmation_uses_catalog_presentation():
@@ -1339,6 +1516,9 @@ def test_workflow_confirmation_uses_catalog_presentation():
             parameters={},
             execute=execute,
             risk=ToolRisk.workflow,
+            approval_presentation=lambda arguments: workflow_approval_presentation(
+                {"scope": "case"}, arguments, settings=runtime.tools.catalog_executor.settings
+            ),
         )],
     }))
 
@@ -1422,8 +1602,16 @@ def test_run_chat_streams_and_persists_interim_assistant_message(monkeypatch, se
         )
     )
 
-    assert [event for event, _payload in events] == ["assistant_message", "reasoning", "tool_call", "reasoning"]
-    assert events[0][1]["content"] == "The container route failed. I'll try reading the stats directly instead."
+    assert [event for event, _payload in events] == [
+        "activity",
+        "assistant_message",
+        "reasoning",
+        "activity",
+        "tool_call",
+        "activity",
+        "reasoning",
+    ]
+    assert events[1][1]["content"] == "The container route failed. I'll try reading the stats directly instead."
 
     history = asyncio.run(runtime.list_history(db_session, context, scope="case", workspace_id=workspace.id, case_id=case_a.id))
     assert [message.role for message in history] == ["user", "assistant", "tool-calls", "assistant"]
@@ -1567,6 +1755,31 @@ def test_workspace_tools_are_workspace_specific(monkeypatch, seeded_context):
     assert "workspace_file_tree" in tool_names
 
 
+def test_every_registered_confirmation_tool_has_a_presentation(seeded_context):
+    db_session, context, workspace, _case_a, _case_b = seeded_context
+    runtime = AssistantRuntime(FakeGuiRuntime())
+
+    definitions, _tools = runtime.tools.build(
+        {
+            "db": db_session,
+            "context": context,
+            "scope": "workspace",
+            "workspace_id": workspace.id,
+        }
+    )
+    confirming = {definition.name: definition for definition in definitions if definition.risk.requires_confirmation}
+
+    assert set(confirming) == {
+        "write",
+        "edit",
+        "tool_call",
+        "tool_run_cancel",
+        "tool_config_upsert",
+        "tool_config_delete",
+    }
+    assert all(definition.approval_presentation is not None for definition in confirming.values())
+
+
 def test_workspace_file_tools_do_not_advertise_case_mount(seeded_context):
     db_session, context, workspace, _case_a, _case_b = seeded_context
     runtime = AssistantRuntime(FakeGuiRuntime())
@@ -1676,30 +1889,37 @@ def test_case_scope_excludes_arbitrary_execution_tools(seeded_context):
     assert "$ref" not in json.dumps(schema)
     script_description = workflow_schema["properties"]["script"]["description"]
     assert "${OUTPUTS[n]}" in script_description
+    assert "directly enclosed in double quotes" in script_description
     assert "${RUN_ID} is not available" in script_description
     output_schema = workflow_schema["properties"]["outputs"]["items"]
+    assert "Normalized relative path" in output_schema["properties"]["path"]["description"]
+    assert "Never prefix it with /case" in output_schema["properties"]["path"]["description"]
     assert "FreeSurfer-LUT" in output_schema["properties"]["metadata"]["description"]
 
 
 def test_tool_probe_runs_without_mounts_in_isolated_container(monkeypatch):
     runtime = AssistantRuntime(FakeGuiRuntime())
     captured = {}
+    activities = []
 
-    monkeypatch.setattr(
-        probe_tools_module,
-        "resolve_or_prepare_image",
-        lambda image, **_kwargs: captured.setdefault("prepared_image", image),
-    )
-
-    def fake_execute(request):
+    async def fake_execute(request, **kwargs):
         captured["request"] = request
+        await kwargs["progress_observer"]({
+            "phase": "downloading",
+            "progress": 0.5,
+            "completed_layers": 5,
+            "total_layers": 10,
+        })
         return SimpleNamespace(returncode=0, stdout="DenoiseImage help\n", stderr="")
 
-    monkeypatch.setattr(probe_tools_module, "execute_runtime_request", fake_execute)
+    async def event_sink(event, payload):
+        activities.append((event, payload))
+
+    monkeypatch.setattr(probe_tools_module, "execute_runtime_request_async", fake_execute)
 
     result = asyncio.run(
         runtime.tools.probe_tools.probe(
-            {},
+            {"event_sink": event_sink},
             ToolExecutionContext("probe-1"),
             {
                 "image": "antsx/ants:v2.6.5",
@@ -1713,7 +1933,7 @@ def test_tool_probe_runs_without_mounts_in_isolated_container(monkeypatch):
     assert payload["return_code"] == 0
     assert payload["sandbox"]["workspace_mounted"] is False
     request = captured["request"]
-    assert captured["prepared_image"] == "antsx/ants:v2.6.5"
+    assert getattr(request.container_run.image, "oci_reference", None) == "antsx/ants:v2.6.5"
     assert request.timeout_s == probe_tools_module.PROBE_TIMEOUT_SECONDS
     assert request.container_run.isolated is True
     assert request.container_run.binds == ()
@@ -1723,9 +1943,30 @@ def test_tool_probe_runs_without_mounts_in_isolated_container(monkeypatch):
     assert "ulimit -Hu 64" in probe_script
     assert "ulimit -Hv 524288" in probe_script
     assert probe_script.endswith("command -v DenoiseImage && DenoiseImage --help")
+    assert activities == [
+        (
+            "activity",
+            {
+                "kind": "image",
+                "label": "antsx/ants:v2.6.5",
+                "blocking": True,
+                "phase": "downloading",
+                "progress": 0.5,
+                "completed_layers": 5,
+                "total_layers": 10,
+                "current_bytes": None,
+                "total_bytes": None,
+                "disk_free_bytes": None,
+                "disk_warning": None,
+                "reclaimable_storage": None,
+                "stalled_seconds": None,
+                "process_active": None,
+            },
+        )
+    ]
 
 
-def test_tool_probe_rejects_latest_and_unprepared_images(monkeypatch):
+def test_tool_probe_rejects_latest_images():
     runtime = AssistantRuntime(FakeGuiRuntime())
 
     latest = asyncio.run(
@@ -1738,34 +1979,18 @@ def test_tool_probe_rejects_latest_and_unprepared_images(monkeypatch):
     assert latest.is_error is True
     assert "non-latest tag" in latest.content
 
-    monkeypatch.setattr(
-        probe_tools_module,
-        "resolve_or_prepare_image",
-        lambda _image, **_kwargs: (_ for _ in ()).throw(RuntimeError("image is not prepared locally")),
-    )
-    missing = asyncio.run(
-        runtime.tools.probe_tools.probe(
-            {},
-            ToolExecutionContext("probe-missing"),
-            {"image": "antsx/ants:v2.6.5", "script": "DenoiseImage --help"},
-        )
-    )
-    assert missing.is_error is True
-    assert "not prepared locally" in missing.content
-
-
-def test_tool_probe_uses_resolved_first_use_image(monkeypatch):
+def test_tool_probe_defers_first_use_image_to_bridge(monkeypatch):
     runtime = AssistantRuntime(FakeGuiRuntime())
-    resolved = []
+    captured = {}
+
+    async def fake_execute(request, **_kwargs):
+        captured["image"] = request.container_run.image
+        return SimpleNamespace(returncode=0, stdout="tool help\n", stderr="")
+
     monkeypatch.setattr(
         probe_tools_module,
-        "resolve_or_prepare_image",
-        lambda image, **_kwargs: resolved.append(image) or "/cache/ants.sif",
-    )
-    monkeypatch.setattr(
-        probe_tools_module,
-        "execute_runtime_request",
-        lambda _request: SimpleNamespace(returncode=0, stdout="tool help\n", stderr=""),
+        "execute_runtime_request_async",
+        fake_execute,
     )
 
     result = asyncio.run(
@@ -1777,7 +2002,7 @@ def test_tool_probe_uses_resolved_first_use_image(monkeypatch):
     )
 
     assert result.is_error is False
-    assert resolved == ["vnmd/ants_2.6.5:20260602"]
+    assert getattr(captured["image"], "oci_reference", None) == "vnmd/ants_2.6.5:20260602"
 
 
 def test_catalog_config_get_returns_complete_effective_definition(monkeypatch, tmp_path, seeded_context):

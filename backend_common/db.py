@@ -10,7 +10,7 @@ from uuid import uuid4
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event, func, text
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from backend_common.settings import get_settings
@@ -80,6 +80,14 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 def is_sqlite_lock_error(exc: BaseException) -> bool:
     """Return whether an exception represents SQLite write-lock contention."""
     return isinstance(exc, OperationalError) and "database is locked" in str(exc).lower()
+
+
+def is_sqlite_storage_error(exc: BaseException) -> bool:
+    """Return whether SQLite lost coherent access to its database files."""
+    if not isinstance(exc, DBAPIError):
+        return False
+    message = str(exc).lower()
+    return "disk i/o error" in message or "file is not a database" in message
 
 
 def run_with_sqlite_lock_retry(

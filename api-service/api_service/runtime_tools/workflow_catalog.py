@@ -46,7 +46,12 @@ class WorkflowOutput(StrictWorkflowModel):
 
     name: str = Field(pattern=_ID_PATTERN)
     type: Literal["intensity_volume", "segmentation_volume", "surface", "other"]
-    path: str
+    path: str = Field(
+        description=(
+            "Normalized relative path beneath the active case/workspace, for example "
+            "mri/segmentation.mgz. Never prefix it with /case, /workspace, or a slash."
+        )
+    )
     description: str
     required: bool = True
     metadata: dict[str, Any] = Field(
@@ -123,7 +128,9 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
         description=(
             "Bash script. Available runtime variables are ${INPUTS[n]}, ${OUTPUTS[n]}, "
             "${RUN_DIR}, ${CASE_ROOT}, and ${DEVICE}. Write declared files to their "
-            "${OUTPUTS[n]} paths. Output {run_id} templates are resolved before execution; "
+            "${OUTPUTS[n]} paths. Every runtime path reference must be directly enclosed in "
+            "double quotes, for example command \"${INPUTS[0]}\" \"${OUTPUTS[0]}\". "
+            "Output {run_id} templates are resolved before execution; "
             "${RUN_ID} is not available."
         )
     )

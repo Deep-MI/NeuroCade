@@ -136,6 +136,7 @@ export interface CaseListResponse {
 }
 
 export interface StatusResponse {
+  runId?: string;
   status: string;
   workflowId?: string;
 }
@@ -200,6 +201,38 @@ export interface ErrorResponse {
   error?: string;
   message?: string;
   detail?: string;
+}
+
+export interface AssistantActiveTurnResponse {
+  active: boolean;
+  turn_id: string | null;
+  elapsed_seconds: number | null;
+  activity: AssistantActivity | null;
+}
+
+export interface AssistantActivity {
+  kind: 'model' | 'tool' | 'workflow' | 'image';
+  label: string;
+  blocking: boolean;
+  run_id?: string | null;
+  mode?: 'synchronous' | 'background' | null;
+  device?: 'cpu' | 'gpu' | null;
+  phase?: 'waiting' | 'downloading' | 'extracting' | 'preparing' | 'verifying' | 'ready' | null;
+  progress?: number | null;
+  completed_layers?: number | null;
+  total_layers?: number | null;
+  current_bytes?: number | null;
+  total_bytes?: number | null;
+  disk_free_bytes?: number | null;
+  disk_warning?: string | null;
+  reclaimable_storage?: Record<string, string> | null;
+  stalled_seconds?: number | null;
+  process_active?: boolean | null;
+}
+
+export interface AssistantTurnCancelResponse {
+  status: 'canceling' | 'not_active';
+  turn_id: string;
 }
 
 export interface SessionBootstrap {
@@ -341,6 +374,61 @@ export interface ChatTextPart {
 
 export type ChatContentPart = ChatTextPart | ChatImagePart;
 
+export interface WorkflowApprovalPresentation {
+  kind: 'workflow';
+  title: string;
+  description: string;
+  details: string;
+  inputs: {
+    name: string;
+    description: string;
+    path: string;
+  }[];
+  outputs: {
+    name: string;
+    description: string;
+    path: string;
+  }[];
+  execution: {
+    mode: 'background' | 'synchronous';
+    gpu: boolean;
+  };
+}
+
+export interface ActionApprovalPresentation {
+  kind: 'action';
+  action: 'config_upsert' | 'config_delete' | 'run_cancel' | 'file_write' | 'file_edit';
+  title: string;
+  description: string;
+  confirm_label: string;
+  tone: 'warning' | 'danger';
+  sections: {
+    label: string;
+    rows: {
+      label: string;
+      value: string;
+      code: boolean;
+    }[];
+  }[];
+  details: {
+    summary: string;
+    content: string;
+    language?: string | null;
+  }[];
+}
+
+export type AssistantApprovalPresentation = WorkflowApprovalPresentation | ActionApprovalPresentation;
+
+export interface AssistantApprovalRequest {
+  name: string;
+  call_id?: string | null;
+  execution_id?: string | null;
+  arguments: Record<string, unknown>;
+  digest: string;
+  description: string;
+  presentation?: AssistantApprovalPresentation | null;
+}
+
 export interface ToolCallEntry {
   call_id?: string | null;
   execution_id?: string | null;
@@ -363,6 +451,7 @@ export interface ReasoningEntry {
 }
 
 export interface ChatMessage {
+  notificationId?: string;
   role: 'user' | 'assistant' | 'system' | 'info' | 'tool-calls';
   content: string | ChatContentPart[];
   severity?: 'warning';
@@ -373,6 +462,7 @@ export interface ChatMessage {
 export interface AssistantHistoryResponse {
   thread_id: string | null;
   messages: ChatMessage[];
+  pending_approval?: AssistantApprovalRequest | null;
 }
 
 export interface ProviderSummary {

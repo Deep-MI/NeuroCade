@@ -31,7 +31,7 @@ done
 
 if [[ "$CONFIRMED" -ne 1 ]]; then
   echo "Refusing to run without --yes." >&2
-  echo "This command wipes the SQLite database and workspace data under HOST_DATA_DIR." >&2
+  echo "This command wipes the SQLite database and workspace data." >&2
   exit 2
 fi
 
@@ -74,22 +74,16 @@ require_repo_local_path() {
 }
 
 HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
-NEUROCADE_DB_DIR="${NEUROCADE_DB_DIR:-$HOST_DATA_DIR}"
 RUNTIME_DIR="${NEUROCADE_RUNTIME_DIR:-$ROOT_DIR/.runtime}"
+DATABASE_VOLUME="${NEUROCADE_DATABASE_VOLUME:-neurocade-database}"
+APPTAINER_DATABASE_DIR="$RUNTIME_DIR/database"
 
 require_repo_local_path ".runtime" "$RUNTIME_DIR"
 require_repo_local_path "HOST_DATA_DIR" "$HOST_DATA_DIR"
-if [[ "$NEUROCADE_DB_DIR" != /* ]]; then
-  NEUROCADE_DB_DIR="$ROOT_DIR/$NEUROCADE_DB_DIR"
-fi
-if [[ "$(canonical_path "$NEUROCADE_DB_DIR")" == "/" ]]; then
-  echo "Refusing to use the filesystem root as NEUROCADE_DB_DIR." >&2
-  exit 1
-fi
 
 kill_repo_service_orphans() {
   local pids pid
-  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|api_service.main:app" || true)"
+  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|api_service.main:app|neurocade-runtime-bridge" || true)"
   [[ -n "$pids" ]] || return 0
   for pid in $pids; do
     [[ "$pid" != "$$" ]] || continue
@@ -109,17 +103,22 @@ kill_repo_service_orphans
 
 echo "Removing local runtime state..."
 rm -rf "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
+rm -f "$RUNTIME_DIR/app.log" "$RUNTIME_DIR/bridge.log" "$RUNTIME_DIR/app.pid" "$RUNTIME_DIR/bridge.pid"
 mkdir -p "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 
 echo "Wiping workspace and database state under $HOST_DATA_DIR..."
 rm -rf "$HOST_DATA_DIR/output"
 mkdir -p "$HOST_DATA_DIR/output"
-echo "Removing SQLite state from $NEUROCADE_DB_DIR..."
-rm -f \
-  "$NEUROCADE_DB_DIR/neurocade.db" \
-  "$NEUROCADE_DB_DIR/neurocade.db-shm" \
-  "$NEUROCADE_DB_DIR/neurocade.db-wal"
-mkdir -p "$NEUROCADE_DB_DIR"
+if [[ "${NEUROCADE_RUNTIME:-}" == "docker" ]]; then
+  echo "Removing SQLite volume $DATABASE_VOLUME..."
+  docker volume rm "$DATABASE_VOLUME" >/dev/null 2>&1 || true
+else
+  echo "Removing SQLite state from $APPTAINER_DATABASE_DIR..."
+  rm -f \
+    "$APPTAINER_DATABASE_DIR/neurocade.db" \
+    "$APPTAINER_DATABASE_DIR/neurocade.db-shm" \
+    "$APPTAINER_DATABASE_DIR/neurocade.db-wal"
+fi
 
 if [[ "$KEEP_STACK_DOWN" -eq 1 ]]; then
   echo "Reset complete. Stack left stopped."

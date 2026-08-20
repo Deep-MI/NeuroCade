@@ -137,9 +137,10 @@ def test_public_head_dicom_zip_upload_converts_all_outputs_and_runs_selected_inp
         lambda response: response.request.method == "POST" and "/api/app/runs" in response.url,
         timeout=120_000,
     ) as run_response:
-        page.click("button:has-text('Run FastSurfer Analysis')")
-        page.locator("select").select_option(label=t1_input["name"])
-        page.click("button:has-text('Begin Run')")
+        page.get_by_label("Analysis workflow").select_option("fastsurfer_fast")
+        page.get_by_role("button", name="Launch FastSurfer — Fast Analysis").click()
+        page.locator("select.nc-select-dark").select_option(label=t1_input["name"])
+        page.get_by_role("button", name="Start", exact=True).click()
     run_result = run_response.value
     assert run_result.ok, f"FastSurfer run start failed with {run_result.status}: {run_result.text()}"
     run_payload = run_result.json()

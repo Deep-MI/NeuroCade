@@ -14,6 +14,7 @@ import { restorePersistedCaseLayers, savePersistedCaseLayers } from '../utils/ca
 import { isCaseTransitionPending } from '../utils/caseLoading';
 import { caseViewerPath } from '../utils/caseRoutes';
 import { createGuiSessionId } from '../utils/guiSession';
+import { workflowStatusNotificationId } from '../utils/runNotifications';
 
 
 interface UseCaseWorkspaceControllerArgs {
@@ -124,7 +125,12 @@ export function useCaseWorkspaceController({
     setLogs,
     setChatNotifications,
   });
-  const { runStatus, setRunStatus } = runController;
+  const { runId, runStatus, setRunId, setRunStatus } = runController;
+
+  const setCurrentRun = useCallback((status: string, nextRunId?: string) => {
+    setRunStatus(status);
+    setRunId(nextRunId ?? null);
+  }, [setRunId, setRunStatus]);
 
   const loadCase = useCallback(async (caseId: string) => {
     const actionId = startWorkspaceAction();
@@ -143,10 +149,10 @@ export function useCaseWorkspaceController({
       try {
         const data = await api.fetchStatus(caseId);
         if (isStaleWorkspaceAction(actionId)) return;
-        setRunStatus(data.status ?? 'unknown');
+        setCurrentRun(data.status ?? 'unknown', data.runId);
       } catch {
         if (isStaleWorkspaceAction(actionId)) return;
-        setRunStatus('unknown');
+        setCurrentRun('unknown');
       }
 
       setActiveCaseId(caseId);
@@ -160,7 +166,7 @@ export function useCaseWorkspaceController({
         setLoadingCaseId(null);
       }
     }
-  }, [fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setRunStatus, setVolumes, startWorkspaceAction]);
+  }, [fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setCurrentRun, setVolumes, startWorkspaceAction]);
 
   const handleRenameCase = useCallback(async (oldId: string, newId: string) => {
     const renamed = await api.updateCase(oldId, { title: newId });
@@ -236,9 +242,9 @@ export function useCaseWorkspaceController({
         await fetchLogs(data.case_id);
         try {
           const status = await api.fetchStatus(data.case_id);
-          setRunStatus(status.status ?? 'uploaded');
+          setCurrentRun(status.status ?? 'uploaded', status.runId);
         } catch {
-          setRunStatus('uploaded');
+          setCurrentRun('uploaded');
         }
         await fetchAvailableCases();
         const uploadLabel = files.length > 1 ? `${files.length} files` : files[0].name;
@@ -291,20 +297,24 @@ export function useCaseWorkspaceController({
 
   useCasePolling({
     activeCaseId: currentCaseId,
+    runId,
     runStatus,
     isRunActive,
-    isRunTerminal,
     fetchStatus: api.fetchStatus,
     fetchLogs,
     fetchOutputs: fetchCaseOutputs,
-    onStatusChange: setRunStatus,
-    onTerminalStatus: (status, workflowId) => {
+    onRunChange: setCurrentRun,
+    onTerminalStatus: (status, terminalRunId, workflowId) => {
       const workflowName = analysisTools.find((tool) => tool.id === workflowId)?.label
         ?? workflowId
         ?? 'Workflow';
       setChatNotifications((previous) => [
         ...previous,
-        { role: 'info', content: `${workflowName} ${status}.` },
+        {
+          notificationId: workflowStatusNotificationId(terminalRunId, status),
+          role: 'info',
+          content: `${workflowName} ${status}.`,
+        },
       ]);
     },
     onError: (error) => {

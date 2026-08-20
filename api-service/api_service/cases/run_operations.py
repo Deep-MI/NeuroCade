@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from fastapi import HTTPException
-from neurocade_runtime_tools.apptainer_runtime import RuntimeGpuUnavailableError, resolve_gpu_enabled
+from neurocade_runtime_tools.bridge_client import RuntimeGpuUnavailableError, resolve_gpu_enabled
 from neurocade_runtime_tools.container_request import RuntimeBind
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from api_service.cases.uploads import _require_run_analysis_input_artifact
 from api_service.helpers import get_case_for_user, log_event
 from api_service.policies import require_case_write
 from api_service.runtime import settings, workflow_runs
+from api_service.runtime_tools.runtime_images import runtime_image_spec
 from api_service.runtime_tools.workflow_catalog import resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
 from api_service.schemas import RunSummary, StartRunRequest
@@ -61,7 +62,7 @@ async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: 
     tool = resolve_workflow(request.tool_id, settings=settings, user_id=context.user.id)
     output_name_overrides = _validate_output_name_overrides(request, tool)
     try:
-        gpu_enabled = resolve_gpu_enabled(tool.execution.gpu, image=tool.neurodesk_image)
+        gpu_enabled = resolve_gpu_enabled(tool.execution.gpu, image=runtime_image_spec(tool.neurodesk_image))
     except RuntimeGpuUnavailableError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if len(request.input_artifact_ids) != len(tool.inputs):

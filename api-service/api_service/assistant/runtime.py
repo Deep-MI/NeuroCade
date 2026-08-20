@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from api_service.assistant.conversation_store import AssistantHistoryStore  # noqa: E402
+from api_service.assistant.conversation_store import AssistantHistoryState, AssistantHistoryStore  # noqa: E402
 from api_service.assistant.loop import AssistantLoop  # noqa: E402
 from api_service.assistant.tools import AssistantToolBuilder  # noqa: E402
 from api_service.assistant.turn_store import AssistantTurnStore  # noqa: E402
@@ -19,7 +19,13 @@ from api_service.helpers import get_case_for_user, get_workspace_for_user  # noq
 from api_service.runtime.gui_runtime import GuiRuntime, gui_runtime  # noqa: E402
 from api_service.schemas import ChatMessageSummary  # noqa: E402
 from backend_common.auth import AuthContext  # noqa: E402
-from backend_common.db import AssistantScope, Case, Workspace, run_with_sqlite_lock_retry  # noqa: E402
+from backend_common.db import (  # noqa: E402
+    AssistantScope,
+    Case,
+    Workspace,
+    is_sqlite_storage_error,
+    run_with_sqlite_lock_retry,
+)
 from backend_common.providers import ModelConfig, provider_registry  # noqa: E402
 from backend_common.settings import ROOT_DIR, get_settings  # noqa: E402
 
@@ -162,6 +168,25 @@ class AssistantRuntime:
         _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)
         return self.history.list_history(db, user_id=context.user.id, scope=scope, workspace_id=workspace_id, case_id=case_id)
 
+    async def get_history_state(
+        self,
+        db: Session,
+        context: AuthContext,
+        *,
+        scope: str,
+        workspace_id: str,
+        case_id: str | None = None,
+    ) -> AssistantHistoryState:
+        """Return authorized display and approval state for one private thread."""
+        _ensure_scope_access(db, context, scope=scope, workspace_id=workspace_id, case_id=case_id)
+        return self.history.history_state(
+            db,
+            user_id=context.user.id,
+            scope=scope,
+            workspace_id=workspace_id,
+            case_id=case_id,
+        )
+
     async def clear_history(
         self,
         db: Session,
@@ -267,6 +292,7 @@ class AssistantRuntime:
                 message_count=len(latest_messages),
             )
         state["turn_id"] = turn.id if turn is not None else None
+        turn_id = state["turn_id"]
         if resume_checkpoint and turn is not None:
             state["conversation"] = self.loop.executions.hydrate_conversation(
                 db,
@@ -300,12 +326,26 @@ class AssistantRuntime:
         except asyncio.CancelledError:
             if db is not None:
                 db.rollback()
-                self.turns.finish(db, turn, status="canceled")
+                self.turns.finish(db, turn_id, status="canceled")
             raise
         except Exception as exc:
             if db is not None:
-                db.rollback()
-                self.turns.finish(db, turn, status="failed", error=str(exc))
+                if is_sqlite_storage_error(exc):
+                    recovered = await asyncio.to_thread(
+                        self.turns.recover_after_storage_error,
+                        db,
+                        turn_id,
+                        error=str(exc),
+                    )
+                    if not recovered:
+                        logger.critical(
+                            "assistant.runtime.storage_recovery_failed request_id=%s turn_id=%s",
+                            diagnostic_request_id,
+                            turn_id,
+                        )
+                else:
+                    db.rollback()
+                    self.turns.finish(db, turn_id, status="failed", error=str(exc))
             raise
         logger.info(
             "assistant.runtime.finished request_id=%s elapsed_ms=%s status=%s error=%s tool_call_count=%s",
@@ -353,6 +393,7 @@ class AssistantRuntime:
                     "approval_execution_id": (
                         (final_state.get("approval_request") or {}).get("execution_id")
                     ),
+                    "approval_request": final_state.get("approval_request"),
                 },
             )
         return _done_payload(

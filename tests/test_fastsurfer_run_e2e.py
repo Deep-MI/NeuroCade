@@ -17,6 +17,7 @@ Usage:
   pytest tests/test_fastsurfer_run_e2e.py -v
 """
 
+import os
 import time
 
 import pytest
@@ -68,6 +69,10 @@ class TestFastSurferRunCancel:
             time.sleep(2)
         return last_status
 
+    @pytest.mark.skipif(
+        os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
+        reason="Live assistant evaluations require RUN_LLM_E2E=1 and a reachable configured LLM backend.",
+    )
     def test_run_and_cancel_fastsurfer(self):
         """Full E2E: chat triggers FastSurfer, then we cancel after 20s."""
         # Step 1: Seed GUI state — idle, ready to run

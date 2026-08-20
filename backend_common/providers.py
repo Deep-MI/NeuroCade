@@ -164,6 +164,7 @@ def _probe_provider(
     provider_family: str,
     base_url: str | None,
     api_key: str | None,
+    model: str,
     cache_window: int,
 ) -> tuple[bool, str | None]:
     del cache_window
@@ -187,6 +188,18 @@ def _probe_provider(
     except requests.RequestException as exc:
         return False, str(exc)
     if response.ok:
+        if provider_family == "openai_compatible":
+            try:
+                payload = response.json()
+                available_models = {
+                    str(item.get("id"))
+                    for item in payload.get("data", [])
+                    if isinstance(item, dict) and item.get("id")
+                }
+            except (AttributeError, TypeError, ValueError):
+                available_models = set()
+            if available_models and model not in available_models:
+                return False, f"Configured model {model!r} is not listed by the provider"
         return True, None
     return False, f"Provider returned HTTP {response.status_code}"
 
@@ -199,5 +212,6 @@ def provider_reachability(config: ModelConfig) -> tuple[bool, str | None]:
         config.provider_family,
         config.base_url,
         config.api_key,
+        config.model,
         int(time.monotonic() // 30),
     )

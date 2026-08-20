@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
+from neurocade_runtime_tools.bridge_client import BridgeClient
 from sqlalchemy import desc, func, text
 from sqlalchemy.orm import Session
 
@@ -123,6 +124,16 @@ def _check_fastsurfer_queue() -> tuple[MonitoringStatusItem, dict[str, Any]]:
         return _service_status("NeuroCade FastSurfer queue", "down", str(exc)), payload
 
 
+def _check_runtime_bridge() -> MonitoringStatusItem:
+    try:
+        payload = BridgeClient.from_environment().health()
+        if payload.get("backend") != settings.neurocade_runtime:
+            return _service_status("Runtime bridge", "down", "Application and bridge runtimes do not match", payload)
+        return _service_status("Runtime bridge", "ok", details=payload)
+    except Exception as exc:  # noqa: BLE001 - monitoring reports dependency failures
+        return _service_status("Runtime bridge", "down", str(exc))
+
+
 def _active_users(db: Session, since: datetime) -> list[MonitoringUserSummary]:
     """List users with recent session activity since the given timestamp."""
     rows = (
@@ -191,6 +202,7 @@ def _build_summary(db: Session) -> MonitoringSummary:
     fastsurfer_status, fastsurfer_payload = _check_fastsurfer_queue()
     services = [
         _service_status("API service", "ok"),
+        _check_runtime_bridge(),
         database_status,
         job_worker_status,
         fastsurfer_status,
@@ -231,6 +243,7 @@ def _build_health(db: Session) -> MonitoringHealth:
     fastsurfer_status, fastsurfer_payload = _check_fastsurfer_queue()
     services = [
         _service_status("API service", "ok"),
+        _check_runtime_bridge(),
         database_status,
         job_worker_status,
         fastsurfer_status,

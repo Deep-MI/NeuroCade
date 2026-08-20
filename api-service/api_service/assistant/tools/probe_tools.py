@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from typing import Any
 
 from neurocade_runtime_tools.container_request import build_container_request
-from neurocade_runtime_tools.execution import RuntimeExecutionRequest, execute_runtime_request
+from neurocade_runtime_tools.execution import RuntimeExecutionRequest, execute_runtime_request_async
 from pydantic import BaseModel, Field, field_validator
 
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult
 from api_service.assistant.tools.registration import ToolRegistration
-from api_service.runtime_tools.neurodesk_images import resolve_or_prepare_image
+from api_service.runtime_tools.runtime_images import runtime_image_spec
 
 PROBE_TIMEOUT_SECONDS = 20.0
 PROBE_MAX_STREAM_CHARS = 32_768
@@ -104,30 +103,59 @@ class AssistantProbeTools:
 
     async def probe(
         self,
-        _state: dict[str, Any],
+        state: dict[str, Any],
         _execution: ToolExecutionContext,
         arguments: dict[str, Any],
     ) -> ToolResult:
         try:
             parsed = ToolProbeArgs.model_validate(arguments)
             image = _runtime_image(parsed.image)
-            runtime_image = await asyncio.to_thread(resolve_or_prepare_image, image, settings=self.settings)
             container_run = build_container_request(
-                image=runtime_image,
+                image=runtime_image_spec(image),
                 command=["bash", "-lc", _limited_script(parsed.script)],
                 env={"TMPDIR": "/tmp", "LC_ALL": "C"},
                 disable_network=True,
                 gpu=False,
             )
             container_run.isolated = True
-            result = await asyncio.to_thread(
-                execute_runtime_request,
+
+            async def report_progress(progress: dict[str, Any]) -> None:
+                event_sink = state.get("event_sink")
+                if event_sink is None:
+                    return
+                if progress.get("phase") == "ready":
+                    await event_sink(
+                        "activity",
+                        {"kind": "tool", "label": "tool_probe", "blocking": True},
+                    )
+                    return
+                await event_sink(
+                    "activity",
+                    {
+                        "kind": "image",
+                        "label": parsed.image,
+                        "blocking": True,
+                        "phase": progress.get("phase"),
+                        "progress": progress.get("progress"),
+                        "completed_layers": progress.get("completed_layers"),
+                        "total_layers": progress.get("total_layers"),
+                        "current_bytes": progress.get("current_bytes"),
+                        "total_bytes": progress.get("total_bytes"),
+                        "disk_free_bytes": progress.get("disk_free_bytes"),
+                        "disk_warning": progress.get("disk_warning"),
+                        "reclaimable_storage": progress.get("reclaimable_storage"),
+                        "stalled_seconds": progress.get("stalled_seconds"),
+                        "process_active": progress.get("process_active"),
+                    },
+                )
+
+            result = await execute_runtime_request_async(
                 RuntimeExecutionRequest(
-                    argv=[],
                     timeout_s=PROBE_TIMEOUT_SECONDS,
                     execution_mode="isolated-tool-probe",
                     container_run=container_run,
                 ),
+                progress_observer=report_progress,
             )
         except Exception as exc:
             return ToolResult.error(f"Error probing tool image: {exc}")

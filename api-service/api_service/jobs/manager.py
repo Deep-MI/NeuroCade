@@ -4,11 +4,11 @@ Jobs run on per-queue thread pools so the HTTP API stays responsive during the
 hour-long neuroimaging runs. Concurrency is bounded per queue
 (the GPU-bound ``fastsurfer`` queue defaults to a single worker to avoid GPU
 contention). Cancellation cooperates with the runtime execution layer: when a
-job launches a tool subprocess it registers the live process via
-``neurocade_runtime_tools.execution.process_observer`` so the manager can
-terminate the whole process group.
+job launches runtime work, the executor registers a backend-neutral cancellation
+callback so the manager can terminate a local process group or issue an
+authenticated bridge DELETE without knowing which backend is active.
 
-The manager keeps live process handles in memory and optionally persists job
+The manager keeps live cancellation callbacks in memory and optionally persists job
 submissions in SQLite. Queued durable jobs are restored on startup. Work that
 was already running is recorded as interrupted because arbitrary container
 processes cannot be resumed safely after process death.
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import threading
 import time
 import uuid
@@ -28,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from neurocade_runtime_tools.execution import _terminate_process_group, process_observer
+from neurocade_runtime_tools.execution import cancellation_observer
 
 from api_service.jobs.store import DurableJobStore
 
@@ -64,7 +63,7 @@ class JobHandle:
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     shutdown_requested: threading.Event = field(default_factory=threading.Event)
-    _process: subprocess.Popen | None = None
+    _cancel_callback: Callable[[], None] | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -189,13 +188,13 @@ class JobManager:
             return
         handle.state = JobState.running
 
-        def observe(process: subprocess.Popen) -> None:
+        def observe_cancellation(callback: Callable[[], None]) -> None:
             with handle._lock:
-                handle._process = process
+                handle._cancel_callback = callback
             if handle.cancel_requested.is_set():
-                _terminate_process_group(process)
+                callback()
 
-        token = process_observer.set(observe)
+        cancellation_token = cancellation_observer.set(observe_cancellation)
         try:
             handle.result = func(**kwargs)
             handle.state = JobState.canceled if handle.cancel_requested.is_set() else JobState.completed
@@ -206,9 +205,9 @@ class JobManager:
             logger.exception("job.failed id=%s task=%s", handle.id, name)
         finally:
             handle.finished_at = time.monotonic()
-            process_observer.reset(token)
+            cancellation_observer.reset(cancellation_token)
             with handle._lock:
-                handle._process = None
+                handle._cancel_callback = None
             if durable_store is not None and not handle.shutdown_requested.is_set():
                 durable_store.mark_terminal(
                     handle.id,
@@ -279,10 +278,12 @@ class JobManager:
             canceled_before_start = handle.future.cancel()  # false if already started
 
         with handle._lock:
-            process = handle._process
-        if process is not None:
-            _terminate_process_group(process)
-
+            cancel_callback = handle._cancel_callback
+        if cancel_callback is not None:
+            try:
+                cancel_callback()
+            except Exception:  # noqa: BLE001 - cancellation remains best effort
+                logger.exception("job.runtime_cancel_failed id=%s", handle.id)
         if canceled_before_start or (mark_terminal and handle.state not in _TERMINAL):
             handle.state = JobState.canceled
             handle.finished_at = time.monotonic()

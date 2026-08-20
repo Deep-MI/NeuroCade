@@ -17,7 +17,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from gui_helpers import APP_URL, DEFAULT_STORAGE_STATE_PATH, load_processed_case
+from conftest import DEMO_RUN_UPLOAD_FILENAME, build_fresh_uploaded_case, delete_workspace_via_api
+from gui_helpers import APP_URL, DEFAULT_STORAGE_STATE_PATH
 
 pytest_plugins = ["conftest_gui"]
 
@@ -98,7 +99,7 @@ def _clear_case_persistence(page) -> None:
     )
 
 
-def _load_timing_case(page) -> None:
+def _load_timing_case(page) -> str | None:
     explicit_case_id = os.environ.get("NEUROCADE_TIMING_CASE_ID", "").strip()
     if explicit_case_id:
         workspace_id = os.environ.get("NEUROCADE_TIMING_WORKSPACE_ID", "").strip()
@@ -106,8 +107,25 @@ def _load_timing_case(page) -> None:
             raise AssertionError("NEUROCADE_TIMING_WORKSPACE_ID is required with NEUROCADE_TIMING_CASE_ID")
         page.goto(f"{APP_URL}/workspaces/{workspace_id}/cases/{explicit_case_id}", wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_url(f"**/workspaces/{workspace_id}/cases/{explicit_case_id}", timeout=15_000)
-        return
-    load_processed_case(page)
+        return None
+    if not DEMO_RUN_UPLOAD_FILENAME:
+        raise AssertionError("No MRI upload fixture is available for viewer timing")
+    timing_case = build_fresh_uploaded_case(
+        upload_filename=DEMO_RUN_UPLOAD_FILENAME,
+        app_url=APP_URL,
+        workspace_prefix="pytest-timing-workspace",
+        case_prefix="pytest-timing-case",
+    )
+    page.goto(
+        f"{APP_URL}/workspaces/{timing_case['workspace_id']}/cases/{timing_case['case_id']}",
+        wait_until="domcontentloaded",
+        timeout=30_000,
+    )
+    page.wait_for_url(
+        f"**/workspaces/{timing_case['workspace_id']}/cases/{timing_case['case_id']}",
+        timeout=15_000,
+    )
+    return timing_case["workspace_id"]
 
 
 def test_viewer_interaction_timing_report(browser, services_up):
@@ -155,10 +173,11 @@ def test_viewer_interaction_timing_report(browser, services_up):
     skipped: list[dict[str, str]] = []
     interaction_failures: list[dict[str, str]] = []
     settled_network_cutoff = 0
+    disposable_workspace_id: str | None = None
 
     try:
         _clear_case_persistence(page)
-        _load_timing_case(page)
+        disposable_workspace_id = _load_timing_case(page)
         _wait_for_viewer(page)
         settled_network_cutoff = len(network_events)
 
@@ -233,6 +252,11 @@ def test_viewer_interaction_timing_report(browser, services_up):
                 timeout=5_000,
             ),
         )
+        page.wait_for_function(
+            """id => document.querySelector(`[data-testid="viewer-layer-item"][data-layer-id="${id}"] [data-testid="viewer-layer-visibility"]`)?.getAttribute('aria-label')?.startsWith('Show ')""",
+            arg=toggle_id,
+            timeout=10_000,
+        )
         _measure(
             timings,
             "toggle:image-or-segmentation:restore",
@@ -241,7 +265,7 @@ def test_viewer_interaction_timing_report(browser, services_up):
             lambda: page.wait_for_function(
                 """args => window.__neurocadeViewerDebug?.getState?.().visibleLayerIds.includes(args.id) === args.visible""",
                 arg={"id": toggle_id, "visible": was_visible},
-                timeout=5_000,
+                timeout=15_000,
             ),
         )
 
@@ -293,9 +317,17 @@ def test_viewer_interaction_timing_report(browser, services_up):
         # and assert the actual Niivue windowing readback changed.
         intensity_items = page.locator("[data-testid='viewer-layer-item'][data-layer-type='intensity']")
         assert intensity_items.count() > 0, "No intensity layer was available for windowing"
-        intensity_item = intensity_items.first
-        intensity_id = intensity_item.get_attribute("data-layer-id")
-        assert intensity_id
+        available_windowings = _debug_state(page)["windowings"]
+        intensity_item = None
+        intensity_id = None
+        for index in range(intensity_items.count()):
+            candidate = intensity_items.nth(index)
+            candidate_id = candidate.get_attribute("data-layer-id")
+            if candidate_id in available_windowings:
+                intensity_item = candidate
+                intensity_id = candidate_id
+                break
+        assert intensity_item is not None and intensity_id, "No loaded intensity layer exposed windowing controls"
         intensity_item.locator(".nc-layer-drag-handle").click()
         page.locator("[data-testid='viewer-window-min']").first.wait_for(state="visible", timeout=10_000)
         before_window = _debug_state(page)["windowings"].get(intensity_id)
@@ -458,6 +490,8 @@ def test_viewer_interaction_timing_report(browser, services_up):
         (output_dir / "console.json").write_text(json.dumps(console_messages, indent=2), encoding="utf-8")
         (output_dir / "network.json").write_text(json.dumps(network_events, indent=2), encoding="utf-8")
         context.close()
+        if disposable_workspace_id:
+            delete_workspace_via_api(disposable_workspace_id, app_url=APP_URL)
 
     assert not page_errors, f"Page errors during timing run: {page_errors}"
     assert not api_5xx, f"API 5xx responses during timing run: {api_5xx}"

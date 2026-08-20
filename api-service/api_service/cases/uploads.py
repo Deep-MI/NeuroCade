@@ -11,10 +11,11 @@ from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 from neurocade_runtime_tools.container_request import DCM2NIIX_IMAGE, RuntimeBind, build_container_request
-from neurocade_runtime_tools.execution import RuntimeExecutionPolicy, RuntimeExecutionRequest, execute_runtime_request
+from neurocade_runtime_tools.execution import RuntimeExecutionRequest, execute_runtime_request
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
+from api_service.runtime_tools.runtime_images import runtime_image_spec
 from backend_common.case_storage import (
     case_named_upload,
     ensure_case_storage_layout,
@@ -213,7 +214,7 @@ def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
         RuntimeBind(output_dir, "/output", "rw"),
     ]
     cmd = build_container_request(
-        image=os.environ.get("NEUROCADE_DCM2NIIX_IMAGE", DCM2NIIX_IMAGE),
+        image=runtime_image_spec(os.environ.get("NEUROCADE_DCM2NIIX_IMAGE", DCM2NIIX_IMAGE)),
         binds=binds,
         disable_network=True,
         command=command,
@@ -221,21 +222,16 @@ def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
     try:
         result = execute_runtime_request(
             RuntimeExecutionRequest(
-                argv=[],
                 cwd=output_dir,
                 timeout_s=settings.dicom_conversion_timeout_seconds,
                 execution_mode="container",
                 output_root=output_dir,
                 workdir_root=output_dir,
-                runtime_policy=RuntimeExecutionPolicy(
-                    network_disabled=True,
-                    gpu_enabled=False,
-                ),
                 container_run=cmd,
             )
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail="Apptainer is not installed or not on PATH") from exc
+        raise HTTPException(status_code=500, detail="The configured host runtime is not installed or not on PATH") from exc
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail="DICOM conversion timed out") from exc
     if result.returncode != 0:
@@ -327,7 +323,9 @@ async def _store_case_dicom_uploads(
 ) -> list[Artifact]:
     """Convert DICOM uploads to NIfTI files and register the resulting artifacts."""
     case_dir = ensure_case_storage_layout(settings, case, workspace)
-    with tempfile.TemporaryDirectory(prefix="dicom-upload-") as temp_root_name:
+    temporary_root = settings.fs_data_root / ".tmp"
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="dicom-upload-", dir=temporary_root) as temp_root_name:
         temp_root = Path(temp_root_name)
         input_dir = temp_root / "input"
         output_dir = temp_root / "converted"

@@ -186,7 +186,7 @@ class TestGuiAgentTriggeredRun:
         assert chat_input.get_attribute("placeholder") == "Ask about the workspace..."
         assert page.locator("button:has-text('Case Mode')").count() == 0
         assert page.locator("button:has-text('Workspace Mode')").count() == 0
-        assert page.locator("button:has-text('Clear')").count() == 1
+        assert page.get_by_role("button", name="Clear chat context").count() == 1
         take_screenshot(page, "agent_run_workspace_chat_ready", screenshot_dir)
 
     def test_case_chat_is_case_mode_without_toggle(self, page, screenshot_dir):
@@ -201,7 +201,7 @@ class TestGuiAgentTriggeredRun:
         assert chat_input.get_attribute("placeholder") == "Ask about the scan..."
         assert page.locator("button:has-text('Case Mode')").count() == 0
         assert page.locator("button:has-text('Workspace Mode')").count() == 0
-        assert page.locator("button:has-text('Clear')").count() == 1
+        assert page.get_by_role("button", name="Clear chat context").count() == 1
         take_screenshot(page, "agent_run_case_chat_ready", screenshot_dir)
 
     def test_clear_chat_ignores_stale_history_response(self, page, screenshot_dir):
@@ -254,7 +254,7 @@ class TestGuiAgentTriggeredRun:
         page.wait_for_selector("input.chat-input", state="visible", timeout=20_000)
         page.wait_for_function("() => window.__assistantHistoryRequested === true", timeout=10_000)
 
-        clear_button = page.locator("button:has-text('Clear')")
+        clear_button = page.get_by_role("button", name="Clear chat context")
         clear_button.click()
         page.wait_for_function("() => window.__assistantHistoryDeleteRequested === true", timeout=10_000)
         page.wait_for_function("() => document.querySelectorAll('div.chat-message.assistant').length === 0", timeout=10_000)

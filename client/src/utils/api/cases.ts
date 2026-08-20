@@ -13,6 +13,7 @@ import { appFetch, appFetchUrl, appJson, appOk, appUrl, expectOk, jsonRequest } 
 import { configuredOutputLayerType } from '../artifactOutputs';
 
 interface CaseRunItem {
+  id: string;
   status: string;
   run_type: string;
 }
@@ -59,6 +60,7 @@ export async function fetchStatus(caseId: string): Promise<StatusResponse> {
   const runs = await appJson<CaseRunItem[]>(`/cases/${caseId}/runs`, 'Failed to fetch case status');
   const latestRun = runs[0];
   return {
+    runId: latestRun?.id,
     status: latestRun?.status ?? 'uploaded',
     workflowId: latestRun?.run_type,
   };

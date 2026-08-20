@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session, sessionmaker
 
 from api_service.assistant.tool_execution_store import approval_digest
 from backend_common.auth import AuthContext
 from backend_common.db import AssistantThread, AssistantToolExecution, AssistantTurn
+
+logger = logging.getLogger(__name__)
+SQLITE_STORAGE_RECOVERY_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 
 
 def reconcile_interrupted_turns(
@@ -38,6 +45,12 @@ def reconcile_interrupted_turns(
 
 
 class AssistantTurnStore:
+    @staticmethod
+    def _turn_id(turn: AssistantTurn | str | None) -> str | None:
+        if turn is None or isinstance(turn, str):
+            return turn
+        return str(turn.id)
+
     def start(
         self,
         db: Session,
@@ -64,15 +77,16 @@ class AssistantTurnStore:
     def finish(
         self,
         db: Session,
-        turn: AssistantTurn | None,
+        turn: AssistantTurn | str | None,
         *,
         status: str,
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
-        if turn is None:
+        turn_id = self._turn_id(turn)
+        if turn_id is None:
             return
-        current = db.get(AssistantTurn, turn.id)
+        current = db.get(AssistantTurn, turn_id)
         if current is None:
             return
         current.status = status
@@ -87,15 +101,16 @@ class AssistantTurnStore:
     def checkpoint(
         self,
         db: Session,
-        turn: AssistantTurn | None,
+        turn: AssistantTurn | str | None,
         *,
         phase: str,
         state: dict[str, Any],
     ) -> None:
         """Persist the complete safe continuation point for a logical turn."""
-        if turn is None:
+        turn_id = self._turn_id(turn)
+        if turn_id is None:
             return
-        current = db.get(AssistantTurn, turn.id)
+        current = db.get(AssistantTurn, turn_id)
         if current is None:
             return
         result = dict(current.result_json or {})
@@ -103,6 +118,51 @@ class AssistantTurnStore:
         result["checkpoint"] = state
         current.result_json = result
         db.commit()
+
+    def recover_after_storage_error(
+        self,
+        db: Session,
+        turn: AssistantTurn | str | None,
+        *,
+        error: str,
+    ) -> bool:
+        """Reconnect, verify integrity, and fail a turn after transient SQLite I/O loss."""
+        turn_id = self._turn_id(turn)
+        if turn_id is None:
+            return False
+        bind = db.get_bind()
+        db.invalidate()
+        dispose = getattr(bind, "dispose", None)
+        if callable(dispose):
+            dispose()
+        recovery_session = sessionmaker(bind=bind, autoflush=False, autocommit=False, expire_on_commit=False)
+        for delay in SQLITE_STORAGE_RECOVERY_DELAYS_SECONDS:
+            if delay:
+                time.sleep(delay)
+            try:
+                with recovery_session() as recovery_db:
+                    integrity = recovery_db.execute(text("PRAGMA quick_check")).scalar_one()
+                    if integrity != "ok":
+                        logger.critical("SQLite integrity check failed during recovery: %s", integrity)
+                        return False
+                    current = recovery_db.get(AssistantTurn, turn_id)
+                    if current is None:
+                        return False
+                    result = dict(current.result_json or {})
+                    result.pop("checkpoint", None)
+                    result["phase"] = "storage_error"
+                    current.result_json = result
+                    current.status = "failed"
+                    current.error_message = error
+                    recovery_db.commit()
+                    return True
+            except DBAPIError as recovery_error:
+                logger.warning(
+                    "SQLite storage recovery attempt failed turn_id=%s error=%s",
+                    turn_id,
+                    recovery_error,
+                )
+        return False
 
     def consume_approvals(
         self,

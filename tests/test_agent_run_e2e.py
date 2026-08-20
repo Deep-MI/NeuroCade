@@ -16,6 +16,7 @@ Usage:
   pytest tests/test_agent_run_e2e.py -v
 """
 
+import os
 import time
 from uuid import uuid4
 
@@ -32,6 +33,11 @@ from conftest import (
     runtime_logs_since,
     seed_gui_state,
     utc_timestamp,
+)
+
+requires_live_llm = pytest.mark.skipif(
+    os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
+    reason="Live assistant evaluations require RUN_LLM_E2E=1 and a reachable configured LLM backend.",
 )
 
 
@@ -116,6 +122,7 @@ class TestAgentRunFastSurfer:
         assert current.get("current_intensity_volume") == self.demo_case["upload_filename"]
         assert current.get("case_id") == self.demo_case["case_id"]
 
+    @requires_live_llm
     def test_agent_chat_starts_configured_run(self):
         """Authenticated chat should create a durable configured workflow run."""
         seed_gui_state({
@@ -147,6 +154,7 @@ class TestAgentRunFastSurfer:
         )
         assert status in {"queued", "running", "completed", "failed"}
 
+    @requires_live_llm
     def test_agent_chat_triggers_run(self):
         """Full E2E: chat starts the catalog workflow without a GUI-command handoff."""
         # Seed state: demo case uploaded, idle
@@ -212,15 +220,9 @@ class TestAgentRunFastSurfer:
             f"{self.app_url}/api/app/runs",
             headers=self.app_headers,
             json={
-                "workspace_id": self.demo_case["workspace_id"],
+                "tool_id": "fastsurfer_fast",
                 "case_id": self.demo_case["id"],
-                "input_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
-                "seg_only": True,
-                "no_bias": False,
-                "no_cereb": True,
-                "no_asegdkt": False,
-                "no_hypothal": False,
-                "three_t": False,
+                "input_artifact_ids": [self.demo_case["gui_state"]["current_intensity_artifact_id"]],
             },
             timeout=30,
         )
@@ -229,16 +231,27 @@ class TestAgentRunFastSurfer:
         assert data.get("case_id") == self.demo_case["id"]
         assert data.get("status") == "queued"
 
-        # Poll for any non-queued status (running, error, finished, etc.)
-        final_status = self._poll_status(
+        # Wait until the bridge starts the real container, then cancel the
+        # long-running workflow so this remains a bounded smoke test.
+        observed_status = self._poll_status(
             self.demo_case["id"],
-            ["running", "starting", "finished", "completed", "error"],
+            ["running", "completed", "failed"],
             timeout=60,
         )
-        assert final_status != "unknown", (
-            f"Job never transitioned from queued, last status: {final_status}"
+        assert observed_status in {"running", "completed"}, (
+            f"Workflow did not start successfully, last status: {observed_status}"
         )
-        print(f"\n  Job final status: {final_status}")
+        if observed_status == "running":
+            cancel = requests.post(
+                f"{self.app_url}/api/app/cases/{self.demo_case['id']}/cancel",
+                headers=self.app_headers,
+                timeout=30,
+            )
+            assert cancel.status_code == 200, f"Cancel failed: {cancel.text}"
+            assert cancel.json().get("status") == "canceled"
+            observed_status = self._poll_status(self.demo_case["id"], ["canceled"], timeout=15)
+            assert observed_status == "canceled"
+        print(f"\n  Job final status: {observed_status}")
 
     def test_run_appears_in_case_runs(self):
         """The authenticated case runs endpoint should return runs for the selected case."""

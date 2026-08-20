@@ -15,6 +15,10 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from api_service.assistant.approval_presentations import (
+    file_edit_approval_presentation,
+    file_write_approval_presentation,
+)
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk
 from api_service.assistant.tools.registration import ToolRegistration
 from api_service.gui_state import build_gui_state_session_key
@@ -101,8 +105,22 @@ class AssistantFileTools:
         registrations = (
             ToolRegistration("read", _read_description, _read_schema, self.read_tool),
             ToolRegistration("search_text", _search_description, _search_schema, self.search_text_tool),
-            ToolRegistration("write", _write_description, _write_schema, self.write_tool, ToolRisk.write),
-            ToolRegistration("edit", _edit_description, _edit_schema, self.edit_tool, ToolRisk.write),
+            ToolRegistration(
+                "write",
+                _write_description,
+                _write_schema,
+                self.write_tool,
+                ToolRisk.write,
+                approval_presentation=file_write_approval_presentation,
+            ),
+            ToolRegistration(
+                "edit",
+                _edit_description,
+                _edit_schema,
+                self.edit_tool,
+                ToolRisk.write,
+                approval_presentation=file_edit_approval_presentation,
+            ),
         )
         return [registration.bind(state) for registration in registrations]
 

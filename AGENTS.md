@@ -12,9 +12,9 @@
 - `.runtime/` and `client/dist/`: generated local runtime/build artifacts. Do not treat these as source unless the task explicitly targets generated state.
 
 ## Architecture Overview
-NeuroCade is a **single-process monolith**. One FastAPI/uvicorn process serves the API **and** the built SPA (FastAPI `StaticFiles`) on `http://localhost:8000`; the frontend targets `/api/app`. It runs natively (`scripts/desktop/run_backend.sh`) or as one Docker container through `scripts/run.sh`. The Electron launcher in `client/electron/` spawns the native backend. There is no gateway, Celery, Redis, Postgres, Docker Compose stack, or runtime-runner sidecar.
+NeuroCade is a **single-process application monolith**. One FastAPI/uvicorn process serves the API **and** the built SPA (FastAPI `StaticFiles`) on `http://localhost:8000`; the frontend targets `/api/app`. `scripts/run.sh` launches the application through the selected matched Docker or rootless Apptainer profile and manages the host-native runtime bridge. Electron invokes that generic launcher. There is no gateway, Celery, Redis, Postgres, Docker Compose stack, or runtime-runner sidecar.
 
-Assistant orchestration enters through `api_service.assistant.runtime`, with prompts, history, tool registry, workspace inspection tools, and turn streaming kept in focused modules under `api_service/assistant/`. Pydantic-style runtime tool dispatch runs in-process and routes catalog-defined neuroimaging workflows through `api_service/runtime_tools/` and `packages/neurocade-runtime-tools/`. Long-running workflows run on an **in-process JobWorker** (`api_service/jobs/`, queue `fastsurfer` for the bundled background workflows); tools are launched via the selected **runtime backend** (Apptainer by default, Docker for dev — `neurocade_runtime_tools/runtime_backends.py`). Outputs land under `$HOST_DATA_DIR/output`, and **SQLite (WAL)** is the source of truth for metadata and authorization. Database bootstrapping uses Alembic migrations from `migrations/`.
+Assistant orchestration enters through `api_service.assistant.runtime`, with prompts, history, tool registry, workspace inspection tools, and turn streaming kept in focused modules under `api_service/assistant/`. Pydantic-style runtime tool dispatch runs in-process and routes catalog-defined neuroimaging workflows through `api_service/runtime_tools/` and `packages/neurocade-runtime-tools/`. Long-running workflows run on an **in-process JobWorker** (`api_service/jobs/`, queue `fastsurfer` for bundled background workflows); every container execution is sent to the authenticated host-native bridge, which directly launches Docker containers or verified rootless Apptainer SIFs. Outputs land under `$HOST_DATA_DIR/output`, and **SQLite (WAL)** is the source of truth for metadata and authorization.
 
 ## Build, Test, and Development Commands
 Frontend commands run from `client/`:
@@ -39,13 +39,12 @@ Python and integration work should start with the project configuration:
 - `./scripts/run.sh start -d`: start the local Docker app required for API and GUI tests.
 - `./scripts/run.sh build`: build the single Docker image.
 - `./scripts/desktop/run.sh`: run the local desktop launcher from the repository root.
-- `./scripts/install.sh --mode local`: perform the Docker-only local install flow.
+- `./scripts/install.sh --runtime docker --mode local`: perform the Docker local install flow.
 - `source .venv/bin/activate && pytest tests/ -v`: run the full test suite.
 - `source .venv/bin/activate && HEADED=1 pytest tests/test_gui_upload_run.py -v`: run a browser test with a visible window.
 
-## Docker Setup Notes
-There is one Docker container launched by `scripts/run.sh`. Keep `.env` aligned before startup, especially `HOST_DATA_DIR`, `DATABASE_URL` (defaults to a SQLite file), `NEUROCADE_RUNTIME_BACKEND`, `LLM_BACKEND_URL`, auth/provider tokens, and `FREESURFER_LICENSE`.
-Tools run via the in-process runtime backend (Apptainer by default; `NEUROCADE_RUNTIME_BACKEND=docker` for native dev). Running Apptainer inside the container needs a `--privileged` container with `/dev/fuse`. Workflow definitions are loaded from `config/neuroimaging_tools.yaml` by `tool_search` and `tool_call`.
+## Runtime Setup Notes
+Choose exactly one matched `NEUROCADE_RUNTIME=docker|apptainer` profile. Keep `.env` aligned before startup, especially `HOST_DATA_DIR`, `DATABASE_URL`, bridge URL/token settings, application image or SIF settings, `LLM_BACKEND_URL`, auth/provider tokens, and `FREESURFER_LICENSE`. Docker and Apptainer execute only on the host bridge; never add a runtime socket, privileged mode, FUSE device, fakeroot, or nested runtime to the application.
 Use `./scripts/admin/reset_app_state.sh` for local reset/debugging instead of manually deleting database or runtime data; it preserves `license.txt`.
 
 ## Backend Boundaries

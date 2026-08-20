@@ -78,6 +78,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish Docker image
+        id: app_image
         if: steps.release.outputs.should_release == 'true'
         uses: docker/build-push-action@v7
         with:
@@ -110,6 +111,29 @@ jobs:
             exit 1
           fi
 
+      - name: Install uv and rootless Apptainer
+        if: steps.release.outputs.should_release == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.17"
+
+      - name: Install Apptainer
+        if: steps.release.outputs.should_release == 'true'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/apptainer.deb" \
+            https://github.com/apptainer/apptainer/releases/download/v1.3.6/apptainer_1.3.6_amd64.deb
+          echo "2723b2928cfc30edf687723c49556ec4e013f0bf7cdb43a5a76bca7bd3c70792  $RUNNER_TEMP/apptainer.deb" | sha256sum -c -
+          sudo apt-get update
+          sudo apt-get install -y "$RUNNER_TEMP/apptainer.deb"
+
+      - name: Install release bridge
+        if: steps.release.outputs.should_release == 'true'
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/bridge-venv"
+          uv pip install --python "$RUNNER_TEMP/bridge-venv/bin/python" ./packages/neurocade-runtime-tools
+          "$RUNNER_TEMP/bridge-venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))' > "$RUNNER_TEMP/bridge-token"
+          chmod 600 "$RUNNER_TEMP/bridge-token"
+
       - name: Smoke-test published image
         if: steps.release.outputs.should_release == 'true'
         env:
@@ -117,11 +141,26 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           container=neurocade-release-smoke
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          mkdir -p "$RUNNER_TEMP/neurocade-data" "$RUNNER_TEMP/tool-images"
+          "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
+            --runtime docker --data-root "$RUNNER_TEMP/neurocade-data" --image-dir "$RUNNER_TEMP/tool-images" \
+            --host 0.0.0.0 --port 18765 --token-file "$RUNNER_TEMP/bridge-token" &
+          bridge_pid=$!
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true; kill "$bridge_pid" >/dev/null 2>&1 || true' EXIT
+          ./scripts/release/wait_for_http.sh http://127.0.0.1:18765/v1/health 30 1 \
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
           docker run --detach --name "$container" \
+            --user "$(id -u):$(id -g)" \
+            --add-host host.docker.internal:host-gateway \
+            -v "$RUNNER_TEMP/neurocade-data:/data" \
+            -v "$RUNNER_TEMP/bridge-token:/run/neurocade/bridge-token:ro" \
             -e DEPLOYMENT_PROFILE=local \
             -e LOCAL_AUTH_ENABLED=true \
-            -e HOST_DATA_DIR=/tmp/neurocade-data \
+            -e HOST_DATA_DIR=/data \
+            -e NEUROCADE_RUNTIME=docker \
+            -e NEUROCADE_BRIDGE_URL=http://host.docker.internal:18765 \
+            -e NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
+            -e NEUROCADE_GPU_MODE=cpu \
             "$RELEASE_IMAGE"
 
           healthy=false
@@ -149,6 +188,41 @@ jobs:
               assert config["local_auth_enabled"] is True
           '
           test "$(docker exec "$container" printenv NEUROCADE_BUILD_VERSION)" = "$RELEASE_VERSION"
+
+      - name: Convert exact release image to application SIF
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_DIGEST: ${{ steps.app_image.outputs.digest }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          app_sif="neurocade-app-${RELEASE_VERSION}-amd64.sif"
+          apptainer pull "$app_sif" "docker://${RELEASE_IMAGE}@${RELEASE_DIGEST}"
+          sha256sum "$app_sif" > "$app_sif.sha256"
+          chmod 0444 "$app_sif"
+          echo "APP_SIF=$app_sif" >> "$GITHUB_ENV"
+
+      - name: Smoke-test application SIF as non-root
+        if: steps.release.outputs.should_release == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/sif-data" "$RUNNER_TEMP/sif-images"
+          "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
+            --runtime apptainer --data-root "$RUNNER_TEMP/sif-data" --image-dir "$RUNNER_TEMP/sif-images" \
+            --host 127.0.0.1 --port 18766 --token-file "$RUNNER_TEMP/bridge-token" &
+          bridge_pid=$!
+          ./scripts/release/wait_for_http.sh http://127.0.0.1:18766/v1/health 30 1 \
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
+          apptainer exec --cleanenv --no-home --containall \
+            --bind "$RUNNER_TEMP/sif-data:/data" \
+            --bind "$RUNNER_TEMP/bridge-token:/run/neurocade/bridge-token:ro" \
+            --env NEUROCADE_RUNTIME=apptainer \
+            --env NEUROCADE_BRIDGE_URL=http://127.0.0.1:18766 \
+            --env NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
+            --env NEUROCADE_GPU_MODE=cpu --env HOST_DATA_DIR=/data \
+            "$APP_SIF" python -m uvicorn api_service.main:app --host 127.0.0.1 --port 18000 &
+          app_pid=$!
+          trap 'kill "$app_pid" "$bridge_pid" >/dev/null 2>&1 || true' EXIT
+          ./scripts/release/wait_for_http.sh http://127.0.0.1:18000/api/app/healthz 30 2
 
       - name: Publish channel tag
         if: steps.release.outputs.should_release == 'true'
@@ -188,7 +262,7 @@ jobs:
             args+=(--title "NeuroCade ${RELEASE_VERSION}" --latest)
           fi
 
-          gh release create "${args[@]}"
+          gh release create "${args[@]}" "$APP_SIF" "$APP_SIF.sha256"
 
       - name: Summarize release
         if: steps.release.outputs.should_release == 'true'
@@ -199,4 +273,5 @@ jobs:
             echo "- Tag: \`${{ steps.release.outputs.tag }}\`"
             echo "- Commit: \`${{ steps.release.outputs.head_sha }}\`"
             echo "- Docker image: \`ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}\`"
+            echo "- Application SIF: \`$APP_SIF\`"
           } >> "$GITHUB_STEP_SUMMARY"

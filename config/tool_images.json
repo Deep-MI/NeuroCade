@@ -1,21 +1,23 @@
 {
-  "version": 1,
+  "version": 2,
   "architecture": "amd64",
   "images": [
     {
       "id": "fastsurfer",
       "image": "deepmi/fastsurfer:cu128-v2.5.4",
+      "oci_digest": "sha256:283d5db0972743aef92a093705a26f0c9d7a2512d782f0f97dd859357a4588a0",
       "size_bytes": 5520117760,
-      "sha256": "15ef70db7c884ddc1f5ee5d7675597d1859e46b7ead820061e0ffc186da6b8eb",
+      "converted_sif_sha256": "15ef70db7c884ddc1f5ee5d7675597d1859e46b7ead820061e0ffc186da6b8eb",
       "gpu": true
     },
     {
       "id": "dcm2niix",
       "image": "vnmd/dcm2niix_v1.0.20240202:20260512",
-      "direct_url": "https://neurocontainers.neurodesk.workers.dev/dcm2niix_v1.0.20240202_20260512.simg",
-      "direct_sha256": "efb0404cdc3e7ff9e5e8ed3f2f4fbd7d95aec9e7a36e6153af90a755faadb73c",
+      "oci_digest": "sha256:bd58eecfa5a6b82918aea7a4970ac334b504c55f1c27af50f60c217b77aa24a0",
+      "sif_url": "https://neurocontainers.neurodesk.workers.dev/dcm2niix_v1.0.20240202_20260512.simg",
+      "sif_sha256": "efb0404cdc3e7ff9e5e8ed3f2f4fbd7d95aec9e7a36e6153af90a755faadb73c",
       "size_bytes": 41545728,
-      "sha256": "3a7b5d949b65ba5d2065801e387e38a8b4704a1aafe981152e97bb15dfd77c05",
+      "converted_sif_sha256": "3a7b5d949b65ba5d2065801e387e38a8b4704a1aafe981152e97bb15dfd77c05",
       "gpu": false
     }
   ]
