@@ -22,6 +22,9 @@ void test('creates a version 4 UUID when randomUUID is unavailable', () => {
   assert.equal(uuid, 'abababab-abab-4bab-abab-abababababab');
 });
 
-void test('creates a UUID when the Web Crypto API is unavailable', () => {
-  assert.match(createUuid(null), UUID_V4);
+void test('rejects environments without a secure random-number generator', () => {
+  assert.throws(
+    () => createUuid(null),
+    /secure random-number generator is unavailable/,
+  );
 });
