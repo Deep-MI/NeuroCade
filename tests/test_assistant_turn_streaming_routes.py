@@ -209,6 +209,17 @@ def test_active_assistant_turn_status_and_cancel(monkeypatch, test_client):
             "run_id": None,
             "mode": None,
             "device": None,
+            "phase": None,
+            "progress": None,
+            "completed_layers": None,
+            "total_layers": None,
+            "current_bytes": None,
+            "total_bytes": None,
+            "disk_free_bytes": None,
+            "disk_warning": None,
+            "reclaimable_storage": None,
+            "stalled_seconds": None,
+            "process_active": None,
         },
     }
     assert cancel_response.status_code == 200

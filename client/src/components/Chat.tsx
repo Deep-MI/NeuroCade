@@ -1,16 +1,8 @@
-import { Children, useCallback, useState, useRef, useEffect } from 'react';
-import { AlertTriangle } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+import { useCallback, useState, useRef, useEffect } from 'react';
 import type {
     AssistantApprovalRequest,
-    AssistantActivity,
     AssistantScope,
     ChatMessage,
-    ChatContentPart,
-    ChatTextPart,
-    ChatImagePart,
-    ToolCallEntry,
-    ReasoningEntry,
     LocationInfo,
     MriSnapshots,
 } from '../types';
@@ -18,16 +10,15 @@ import {
     appFetch,
     clearAssistantHistory,
     fetchAssistantHistory,
-    fetchProviders,
     parseError,
 } from '../utils/api';
+import { useAssistantProviderStatus } from '../hooks/useAssistantProviderStatus';
 import { useAssistantTurnMonitor } from '../hooks/useAssistantTurnMonitor';
-import { ChatToolCallsContent } from './ChatToolCallsContent';
 import { ChatApprovalContent } from './ChatApprovalContent';
+import { ChatMessageList } from './ChatMessageList';
+import { consumeAssistantTurnStream } from './assistantTurnStream';
 import { appendUniqueChatMessages } from './chatMessages';
 import {
-    type ApiResponse,
-    type AssistantMessageEvent,
     approvalButtonClass,
     approvalButtonLabel,
     buildUserContent,
@@ -36,33 +27,12 @@ import {
     createChatRequestId,
     defaultMessages,
     getRandomStatusMessage,
-    parseSsePart,
     reportChatEvent,
     STATUS_MESSAGES,
     upsertToolCallsMessage,
 } from './chatSupport';
-import { assistantActivityMessage, assistantActivityProgress } from './assistantActivity';
 
 export type { ChatMessage };
-
-interface CodeProps {
-    node?: unknown;
-    inline?: boolean;
-    className?: string;
-    children?: React.ReactNode;
-}
-
-function renderMarkdownCodeChildren(children: React.ReactNode): string {
-    return Children.toArray(children)
-        .map((child) => {
-            if (typeof child === 'string' || typeof child === 'number') {
-                return String(child);
-            }
-            return '';
-        })
-        .join('')
-        .replace(/\n$/, '');
-}
 
 interface ChatProps {
     externalMessages?: ChatMessage[];
@@ -85,9 +55,6 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     const [isLoading, setIsLoading] = useState(false);
     const [loadingMessage, setLoadingMessage] = useState<string>(STATUS_MESSAGES[1]);
     const [isClearing, setIsClearing] = useState(false);
-    const [assistantDisabledMessage, setAssistantDisabledMessage] = useState<string | null>(null);
-    const [providerRetryable, setProviderRetryable] = useState(false);
-    const [providerRefreshKey, setProviderRefreshKey] = useState(0);
     const [pendingApproval, setPendingApproval] = useState<AssistantApprovalRequest | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const abortRef = useRef<AbortController | null>(null);
@@ -96,6 +63,11 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     const lastClearRequestTokenRef = useRef(clearRequestToken);
     const externalMessagesRef = useRef(externalMessages);
     externalMessagesRef.current = externalMessages;
+    const {
+        disabledMessage: assistantDisabledMessage,
+        retryable: providerRetryable,
+        retry: retryProvider,
+    } = useAssistantProviderStatus();
 
     const loadPersistedChatState = useCallback(async () => {
         if (!workspaceId) return;
@@ -132,7 +104,6 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         onTurnComplete: handleBackgroundTurnComplete,
     });
     const isTurnActive = isLoading || activeTurnId !== null;
-    const assistantProgress = assistantActivityProgress(assistantActivity);
 
     useEffect(() => {
         if (!workspaceId) {
@@ -156,41 +127,6 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             }
         };
     }, []);
-
-    useEffect(() => {
-        let cancelled = false;
-        void fetchProviders()
-            .then((providers) => {
-                if (cancelled) return;
-                const chatProviders = providers;
-                const defaultChatProvider = chatProviders.find((provider) => provider.is_default);
-                if (defaultChatProvider?.provider === 'no-llm' || defaultChatProvider?.provider_family === 'none') {
-                    setAssistantDisabledMessage('Assistant is disabled because LLM setup was skipped. You can still upload, view, and process cases.');
-                    setProviderRetryable(false);
-                    return;
-                }
-                if (!defaultChatProvider?.configured) {
-                    setAssistantDisabledMessage('Assistant is disabled because no LLM provider is configured. You can still upload, view, and process cases.');
-                    setProviderRetryable(false);
-                    return;
-                }
-                if (!defaultChatProvider.reachable) {
-                    setAssistantDisabledMessage('The configured model provider is temporarily unreachable. Check the provider and try again.');
-                    setProviderRetryable(true);
-                    return;
-                }
-                setAssistantDisabledMessage(null);
-                setProviderRetryable(false);
-            })
-            .catch((error) => {
-                if (cancelled) return;
-                console.error('Failed to load provider configuration:', error);
-                setAssistantDisabledMessage(null);
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [providerRefreshKey]);
 
     useEffect(() => {
         if (isLoading) {
@@ -337,89 +273,39 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 throw new Error('Assistant response stream was empty.');
             }
 
-            // Read the SSE stream — tool calls arrive incrementally
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            const accumulated: ToolCallEntry[] = [];
-            const reasoningEntries: ReasoningEntry[] = [];
-            let receivedFinalEvent = false;
-            let streamedText = '';
-            let streamedRound: number | undefined;
-            const sseEventCounts: Record<string, number> = {};
-
-            const handleSsePart = (part: string) => {
-                const event = parseSsePart(part);
-                if (!event) return;
-                const { eventType, data } = event;
-                sseEventCounts[eventType] = (sseEventCounts[eventType] ?? 0) + 1;
-
-                if (eventType === 'text_delta') {
-                    const delta = JSON.parse(data) as AssistantMessageEvent;
-                    if (streamedRound !== delta.round) {
-                        streamedText = delta.content;
-                        streamedRound = delta.round;
+            const streamResult = await consumeAssistantTurnStream(response.body, {
+                onText: (streamedText, startsNewMessage) => {
+                    if (startsNewMessage) {
                         setMessages(prev => [...prev, { role: 'assistant', content: streamedText }]);
-                    } else {
-                        streamedText += delta.content;
-                        setMessages(prev => {
-                            const last = prev[prev.length - 1];
-                            return last?.role === 'assistant'
-                                ? [...prev.slice(0, -1), { ...last, content: streamedText }]
-                                : [...prev, { role: 'assistant', content: streamedText }];
-                        });
+                        return;
                     }
-                } else if (eventType === 'activity') {
-                    updateAssistantActivity(JSON.parse(data) as AssistantActivity);
-                } else if (eventType === 'assistant_message') {
-                    const assistantMessage = JSON.parse(data) as AssistantMessageEvent;
-                    if (assistantMessage.content.trim()) {
-                        setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage.content }]);
-                    }
-                } else if (eventType === 'reasoning') {
-                    const reasoning = JSON.parse(data) as ReasoningEntry;
-                    reasoningEntries.push(reasoning);
-                    setMessages(prev => upsertToolCallsMessage(prev, accumulated, reasoningEntries));
-                } else if (eventType === 'tool_call') {
-                    const tc = JSON.parse(data) as ToolCallEntry;
-                    accumulated.push(tc);
-                    setMessages(prev => upsertToolCallsMessage(prev, accumulated, reasoningEntries));
-                } else if (eventType === 'done') {
-                    receivedFinalEvent = true;
-                    const apiData = JSON.parse(data) as ApiResponse;
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        return last?.role === 'assistant'
+                            ? [...prev.slice(0, -1), { ...last, content: streamedText }]
+                            : [...prev, { role: 'assistant', content: streamedText }];
+                    });
+                },
+                onActivity: updateAssistantActivity,
+                onAssistantMessage: (content) => {
+                    setMessages(prev => [...prev, { role: 'assistant', content }]);
+                },
+                onToolUpdates: (toolCalls, reasoningEntries) => {
+                    setMessages(prev => upsertToolCallsMessage(prev, toolCalls, reasoningEntries));
+                },
+                onDone: (apiData, streamedText) => {
                     const assistantContent = apiData.message.content;
                     if (assistantContent !== streamedText) {
                         setMessages(prev => [...prev, { role: 'assistant', content: assistantContent }]);
                     }
                     setPendingApproval(apiData.approval_request ?? null);
-                } else if (eventType === 'error') {
-                    receivedFinalEvent = true;
-                    const errPayload = JSON.parse(data) as { error?: { message?: string } };
-                    throw new Error(errPayload.error?.message ?? 'API request failed');
-                }
-            };
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-
-                // Parse complete SSE events (separated by double newlines)
-                const parts = buffer.split('\n\n');
-                buffer = parts.pop()!; // last part may be incomplete
-
-                for (const part of parts) {
-                    handleSsePart(part);
-                }
-            }
-            if (buffer.trim()) {
-                handleSsePart(buffer);
-            }
-            if (!receivedFinalEvent) {
+                },
+            });
+            if (!streamResult.receivedFinalEvent) {
                 reportChatEvent('warning', 'frontend.assistant_turn.incomplete_stream', 'Assistant response stream ended before a final event', {
                     chat_request_id: chatRequestId,
                     elapsed_ms: Math.round(performance.now() - startedAt),
-                    sse_event_counts: sseEventCounts,
+                    sse_event_counts: streamResult.eventCounts,
                 });
                 setMessages(prev => [...prev, { role: 'info', content: 'Assistant response ended before a final message was received. Please try again.' }]);
             } else {
@@ -485,30 +371,6 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         }
     };
 
-    // Helper to render message content whether string or array
-    const renderContent = (content: string | ChatContentPart[]) => {
-        if (typeof content === 'string') return content;
-        // Extract text parts from multipart array
-        return content
-            .filter((item): item is ChatTextPart => item.type === 'text')
-            .map(item => item.text)
-            .join('\n');
-    };
-
-    // Render attached image thumbnails for vision messages
-    const renderImages = (content: string | ChatContentPart[]) => {
-        if (typeof content === 'string') return null;
-        const images = content.filter((item): item is ChatImagePart => item.type === 'image_url');
-        if (images.length === 0) return null;
-        return (
-            <div className="flex gap-2 mt-2 flex-wrap">
-                {images.map((img, idx) => (
-                    <img key={idx} src={img.image_url.url} alt="MRI View" className="h-16 w-16 object-cover rounded border border-white/20" />
-                ))}
-            </div>
-        );
-    };
-
     return (
         <div className="chat-container" style={style}>
             {!hideHeader && (
@@ -528,109 +390,17 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     </button>
                 </div>
             )}
-            <div className="chat-messages" ref={scrollRef}>
-                {messages.map((msg, i) => (
-                    <div
-                        key={i}
-                        className={`chat-message ${msg.role === 'user' ? 'user' :
-                            msg.role === 'info' ? 'info' :
-                                msg.role === 'system' ? 'system' :
-                                    msg.role === 'tool-calls' ? 'tool-calls' : 'assistant'
-                            }${msg.severity === 'warning' ? ' chat-message-warning' : ''}`}
-                        role={msg.severity === 'warning' ? 'status' : undefined}
-                    >
-                        {msg.severity === 'warning' && (
-                            <div className="chat-message-warning-label">
-                                <AlertTriangle size={14} aria-hidden="true" />
-                                <span>Warning</span>
-                            </div>
-                        )}
-                        {msg.role === 'tool-calls' && msg.toolCalls ? (
-                            <ChatToolCallsContent
-                                toolCalls={msg.toolCalls}
-                                reasoningEntries={msg.reasoningEntries}
-                            />
-                        ) : (
-                            <>
-                                <ReactMarkdown
-                                    components={{
-                                        code({ inline, className, children, ...props }: CodeProps) {
-                                            const match = /language-(\w+)/.exec(className ?? '');
-                                            return !inline && match ? (
-                                                <pre className={className} {...props}>
-                                                    <code>{renderMarkdownCodeChildren(children)}</code>
-                                                </pre>
-                                            ) : (
-                                                <code className={className} {...props}>
-                                                    {children}
-                                                </code>
-                                            );
-                                        }
-                                    }}
-                                >
-                                    {renderContent(msg.content)}
-                                </ReactMarkdown>
-                                {renderImages(msg.content)}
-                            </>
-                        )}
-                    </div>
-                ))}
-                {isTurnActive && (
-                    <div className="chat-message info italic chat-loading">
-                        <div className="chat-loading-label">
-                            <span>{assistantActivityMessage(assistantActivity, isLoading, loadingMessage)}</span>
-                            {assistantProgress == null && <span className="chat-spinner" aria-hidden="true" />}
-                        </div>
-                        {assistantActivity?.kind === 'image' && assistantActivity.disk_warning && (
-                            <div className="chat-download-warning" role="status">
-                                <AlertTriangle size={14} aria-hidden="true" />
-                                <div>
-                                    <span>{assistantActivity.disk_warning}</span>
-                                    {assistantActivity.reclaimable_storage
-                                        && Object.keys(assistantActivity.reclaimable_storage).length > 0 && (
-                                        <details>
-                                            <summary>Storage options</summary>
-                                            <span>
-                                                Docker reports{' '}
-                                                {Object.entries(assistantActivity.reclaimable_storage)
-                                                    .map(([type, size]) => `${type}: ${size}`)
-                                                    .join('; ')} reclaimable. Review unused items in Docker Desktop;
-                                                NeuroCade will not delete them automatically.
-                                            </span>
-                                        </details>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-                        {assistantProgress != null && (
-                            <div
-                                className="chat-download-progress"
-                                role="progressbar"
-                                aria-label="Container image download progress"
-                                aria-valuemin={0}
-                                aria-valuemax={100}
-                                aria-valuenow={Math.round(assistantProgress * 100)}
-                            >
-                                <span style={{ width: `${assistantProgress * 100}%` }} />
-                            </div>
-                        )}
-                    </div>
-                )}
-                {assistantDisabledMessage && (
-                    <div className="chat-message info">
-                        {assistantDisabledMessage}
-                        {providerRetryable && (
-                            <button
-                                type="button"
-                                className="nc-btn ml-3 px-2 py-1"
-                                onClick={() => setProviderRefreshKey((value) => value + 1)}
-                            >
-                                Retry
-                            </button>
-                        )}
-                    </div>
-                )}
-            </div>
+            <ChatMessageList
+                messages={messages}
+                isTurnActive={isTurnActive}
+                isLoading={isLoading}
+                loadingMessage={loadingMessage}
+                assistantActivity={assistantActivity}
+                assistantDisabledMessage={assistantDisabledMessage}
+                providerRetryable={providerRetryable}
+                onRetryProvider={retryProvider}
+                scrollRef={scrollRef}
+            />
 
             {pendingApproval && !isTurnActive && (
                 <div className="chat-approval" role="group" aria-label="Confirm assistant action">

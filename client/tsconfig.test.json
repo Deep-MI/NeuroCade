@@ -23,6 +23,7 @@
     "src/neurocadeViewer/viewerControls.ts",
     "src/types.ts",
     "src/components/assistantActivity.ts",
+    "src/components/assistantTurnStream.ts",
     "src/components/chatMessages.ts",
     "src/utils/caseLayers.ts",
     "src/utils/artifactOutputs.ts",
@@ -50,6 +51,7 @@
     "tests/caseLayers.test.ts",
     "tests/artifactOutputs.test.ts",
     "tests/assistantActivity.test.ts",
+    "tests/assistantTurnStream.test.ts",
     "tests/chatMessages.test.ts",
     "tests/runNotifications.test.ts",
     "tests/volumeColormap.test.ts"

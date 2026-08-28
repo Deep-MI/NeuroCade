@@ -1,5 +1,4 @@
 import type {
-    AssistantApprovalRequest,
     AssistantApprovalPresentation,
     AssistantScope,
     ChatContentPart,
@@ -20,23 +19,6 @@ export const STATUS_MESSAGES = [
 export const CHAT_REQUEST_TIMEOUT_MS = 300_000;
 export const CHAT_REQUEST_TIMEOUT_SECONDS = CHAT_REQUEST_TIMEOUT_MS / 1000;
 const VISION_COMMANDS = ['@sagittal', '@coronal', '@axial', '@mri'];
-
-export interface ApiResponse {
-    message: { content: string };
-    turn_id?: string;
-    tool_calls_log?: ToolCallEntry[];
-    approval_request?: AssistantApprovalRequest;
-}
-
-export interface AssistantMessageEvent {
-    content: string;
-    round?: number;
-}
-
-interface SseEvent {
-    eventType: string;
-    data: string;
-}
 
 export function getRandomStatusMessage(exclude?: string): string {
     const pool = exclude ? STATUS_MESSAGES.filter((message) => message !== exclude) : STATUS_MESSAGES;
@@ -117,17 +99,6 @@ export function buildUserContent(
     if (text.includes('@coronal') || text.includes('@mri')) parts.push({ type: 'image_url', image_url: { url: snapshots.coronal } });
     if (text.includes('@axial') || text.includes('@mri')) parts.push({ type: 'image_url', image_url: { url: snapshots.axial } });
     return { content: parts };
-}
-
-export function parseSsePart(part: string): SseEvent | null {
-    if (!part.trim()) return null;
-    let eventType = '';
-    let data = '';
-    for (const line of part.split('\n')) {
-        if (line.startsWith('event: ')) eventType = line.slice(7);
-        else if (line.startsWith('data: ')) data = line.slice(6);
-    }
-    return eventType && data ? { eventType, data } : null;
 }
 
 export function upsertToolCallsMessage(
