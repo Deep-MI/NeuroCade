@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service import main as main_module
 from neurocade_runtime_tools import bridge as bridge_module
 from neurocade_runtime_tools import execution as execution_module
+from neurocade_runtime_tools.apptainer_runtime import NvidiaCapability
 from neurocade_runtime_tools.bridge import BridgeRuntime
 from neurocade_runtime_tools.bridge_client import BridgeClient, BridgeError
 from neurocade_runtime_tools.bridge_server import BridgeHTTPServer
@@ -28,7 +29,7 @@ from neurocade_runtime_tools.execution import (
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
 )
-from neurocade_runtime_tools.images import _DockerPullProgress, _storage_preflight, download_verified_file
+from neurocade_runtime_tools.images import _DockerPullProgress, _storage_preflight, download_verified_file, prepare_image
 from neurocade_runtime_tools.protocol import PROTOCOL_VERSION, RuntimeImageSpec, relative_to_data_root
 from requests import Session
 
@@ -61,6 +62,40 @@ def test_runtime_image_spec_rejects_unpinned_tag_and_bad_checksums() -> None:
         RuntimeImageSpec("example/tool:1", oci_digest="latest")
     with pytest.raises(ValueError, match="together"):
         RuntimeImageSpec("example/tool:1", sif_url="https://example.test/tool.sif")
+
+
+def test_runtime_image_spec_uses_backend_compatible_digest_references() -> None:
+    digest = f"sha256:{'a' * 64}"
+    spec = RuntimeImageSpec("registry.example.test:5000/example/tool:1.0", oci_digest=digest)
+
+    assert spec.docker_reference == f"registry.example.test:5000/example/tool:1.0@{digest}"
+    assert spec.apptainer_reference == f"registry.example.test:5000/example/tool@{digest}"
+
+
+def test_apptainer_pull_uses_digest_without_tag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    digest = f"sha256:{'b' * 64}"
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs):  # noqa: ANN202
+        commands.append(command)
+        Path(command[3]).write_bytes(b"sif")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.run_managed_command", fake_run)
+    prepared = prepare_image(
+        RuntimeImageSpec("deepmi/fastsurfer:1.0", oci_digest=digest),
+        backend="apptainer",
+        image_dir=tmp_path,
+    )
+
+    assert Path(prepared).is_file()
+    assert commands == [[
+        "apptainer",
+        "pull",
+        "--force",
+        str(tmp_path / "deepmi_fastsurfer_1.0.sif.partial"),
+        f"docker://deepmi/fastsurfer@{digest}",
+    ]]
 
 
 def test_verified_download_uses_valid_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -207,7 +242,7 @@ def test_capability_resolution_does_not_pull_when_host_has_no_gpu(
     data_root = tmp_path / "data"
     data_root.mkdir()
     runtime = BridgeRuntime(backend="docker", data_root=data_root, image_dir=tmp_path / "images")
-    runtime.global_gpu = SimpleNamespace(available=False, reason="No host GPU")
+    runtime.global_gpu = NvidiaCapability(available=False, reason="No host GPU")
     monkeypatch.setattr(bridge_module, "prepare_image", lambda *_args, **_kwargs: pytest.fail("pulled image"))
 
     result = runtime.resolve_capability(RuntimeImageSpec("example/tool:1.0").to_dict())

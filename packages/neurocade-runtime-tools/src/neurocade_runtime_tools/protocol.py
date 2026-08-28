@@ -72,6 +72,19 @@ class RuntimeImageSpec:
         return f"{self.oci_reference}@{self.oci_digest}" if self.oci_digest else self.oci_reference
 
     @property
+    def apptainer_reference(self) -> str:
+        """Return an immutable OCI reference accepted by Apptainer.
+
+        Docker accepts ``repository:tag@digest`` while Apptainer rejects that
+        form. Preserve the human-readable tag in the manifest, but drop it
+        when pinning an Apptainer pull to the digest.
+        """
+        if not self.oci_digest:
+            return self.oci_reference
+        repository, _tag = self.oci_reference.rsplit(":", 1)
+        return f"{repository}@{self.oci_digest}"
+
+    @property
     def image(self) -> str:
         """Compatibility/readability alias for the tagged OCI reference."""
         return self.oci_reference

@@ -379,7 +379,7 @@ def prepare_image(
             partial.unlink(missing_ok=True)
             try:
                 run_managed_command(
-                    ["apptainer", "pull", "--force", str(partial), f"docker://{spec.docker_reference}"],
+                    ["apptainer", "pull", "--force", str(partial), f"docker://{spec.apptainer_reference}"],
                     check=True,
                     process_observer=process_observer,
                 )
