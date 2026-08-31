@@ -73,6 +73,8 @@ def build_container_argv(
         argv.extend(["--net", "--network", "none"])
     if request.gpu_enabled:
         argv.append("--nv")
+    for path in request.scratch_paths:
+        argv.extend(["--scratch", _container_path(path, label="Scratch path")])
     for bind in request.binds:
         if not isinstance(bind, BridgeBind):
             raise TypeError("Apptainer adapter requires root-relative bridge binds")

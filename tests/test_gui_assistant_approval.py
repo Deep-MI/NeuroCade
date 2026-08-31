@@ -6,6 +6,24 @@ pytest_plugins = ["conftest_gui"]
 
 
 def _mock_approval_response(page, approval):
+    page.route(
+        "**/api/app/providers",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps([{
+                "provider": "openai-compatible",
+                "provider_family": "openai_compatible",
+                "model": "test-model",
+                "is_default": True,
+                "vision": True,
+                "configured": True,
+                "reachable": True,
+                "configuration_reason": None,
+                "reachability_reason": None,
+            }]),
+        ),
+    )
     payload = {
         "message": {
             "role": "assistant",
@@ -21,6 +39,9 @@ def _mock_approval_response(page, approval):
             body=f"event: done\ndata: {json.dumps(payload)}\n\n",
         ),
     )
+    page.reload(wait_until="domcontentloaded")
+    page.locator("input.chat-input").wait_for(state="visible")
+    assert page.locator("input.chat-input").is_enabled()
 
 
 def test_assistant_mutation_confirmation_can_be_declined(page):

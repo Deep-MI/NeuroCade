@@ -5,12 +5,72 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TextIO
 
 from .bridge_server import serve_bridge
 from .execution import run_managed_command
 from .images import download_verified_file, load_image_manifest, prepare_image
+
+
+def _format_bytes(value: object) -> str | None:
+    if not isinstance(value, int) or value < 0:
+        return None
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(value)
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            return f"{amount:.1f} {unit}" if unit != "B" else f"{value} B"
+        amount /= 1024
+    return None
+
+
+class _CliImageProgress:
+    """Render image preparation progress without flooding captured install logs."""
+
+    def __init__(self, stream: TextIO = sys.stderr) -> None:
+        self.stream = stream
+        self.is_tty = stream.isatty()
+        self._last_phase: dict[str, str] = {}
+        self._last_bucket: dict[str, int] = {}
+
+    def __call__(self, payload: Mapping[str, object]) -> None:
+        image = str(payload.get("image") or "runtime image")
+        phase = str(payload.get("phase") or "preparing")
+        progress = payload.get("progress")
+        bucket = int(float(progress) * 20) if isinstance(progress, (int, float)) else -1
+        changed = self._last_phase.get(image) != phase or self._last_bucket.get(image) != bucket
+        if not self.is_tty and not changed:
+            return
+
+        details: list[str] = []
+        current = _format_bytes(payload.get("current_bytes"))
+        total = _format_bytes(payload.get("total_bytes"))
+        if current and total:
+            details.append(f"{current} / {total}")
+        elif current:
+            details.append(current)
+        completed = payload.get("completed_layers")
+        layer_total = payload.get("total_layers")
+        if isinstance(completed, int) and isinstance(layer_total, int) and layer_total > 0:
+            details.append(f"{completed}/{layer_total} layers")
+        if isinstance(progress, (int, float)):
+            details.append(f"{max(0, min(100, round(float(progress) * 100)))}%")
+        if payload.get("cached") is True:
+            details.append("cached")
+        suffix = f" ({', '.join(details)})" if details else ""
+        message = f"{phase.capitalize()} {image}{suffix}"
+
+        if self.is_tty:
+            end = "\n" if phase == "ready" else ""
+            print(f"\r\033[2K{message}", end=end, file=self.stream, flush=True)
+        else:
+            print(message, file=self.stream, flush=True)
+        self._last_phase[image] = phase
+        self._last_bucket[image] = bucket
 
 
 def _daemonize(*, pid_file: Path, log_file: Path) -> bool:
@@ -59,6 +119,8 @@ def _remove_owned_pid_file(pid_file: Path) -> None:
 
 
 def serve(args: argparse.Namespace) -> int:
+    if not args.launch_id.strip():
+        raise ValueError("--launch-id must not be empty")
     pid_file = Path(args.pid_file) if args.pid_file else None
     if args.daemonize:
         if pid_file is None or not args.log_file:
@@ -73,6 +135,7 @@ def serve(args: argparse.Namespace) -> int:
             host=args.host,
             port=args.port,
             token_file=Path(args.token_file),
+            launch_id=args.launch_id,
         )
     finally:
         if args.daemonize and pid_file is not None:
@@ -100,8 +163,16 @@ def doctor(args: argparse.Namespace) -> int:
 
 
 def prepare_images_command(args: argparse.Namespace) -> int:
+    progress = _CliImageProgress()
     for spec in load_image_manifest(Path(args.manifest)):
-        print(prepare_image(spec, backend=args.runtime, image_dir=Path(args.image_dir)))
+        print(
+            prepare_image(
+                spec,
+                backend=args.runtime,
+                image_dir=Path(args.image_dir),
+                progress_observer=progress,
+            )
+        )
     return 0
 
 
@@ -121,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--host", required=True)
     serve_parser.add_argument("--port", type=int, required=True)
     serve_parser.add_argument("--token-file", required=True)
+    serve_parser.add_argument("--launch-id", required=True)
     serve_parser.add_argument("--daemonize", action="store_true")
     serve_parser.add_argument("--pid-file")
     serve_parser.add_argument("--log-file")

@@ -22,7 +22,10 @@ _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 _RUN_ID_TOKEN = "{run_id}"
 _RUNTIME_VARIABLE_PATTERN = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(?:\[(\d+)\])?\}")
-_RUNTIME_VARIABLES = {"CASE_ROOT", "DEVICE", "INPUTS", "OUTPUTS", "RUN_DIR"}
+_RUNTIME_VARIABLES = {
+    "CASE_ROOT", "DEVICE", "INPUTS", "OUTPUTS", "RUN_DIR",
+    "OUTPUT_PARENT", "OUTPUT_NAME", "OUTPUT_ROOT",
+}
 _VALID_RETURN_FIELDS = ("return_code", "stdout", "stderr", "outputs")
 _USER_CATALOG_DIRECTORY = ".user-tool-configs"
 _USER_CATALOG_LOCK = threading.Lock()
@@ -124,10 +127,14 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
     details: str
     inputs: list[WorkflowInput] = Field(default_factory=list)
     outputs: list[WorkflowOutput] = Field(default_factory=list)
+    case_output_folder: str | None = Field(
+        default=None,
+        description="Optional user-visible case folder containing every declared output.",
+    )
     script: str = Field(
         description=(
             "Bash script. Available runtime variables are ${INPUTS[n]}, ${OUTPUTS[n]}, "
-            "${RUN_DIR}, ${CASE_ROOT}, and ${DEVICE}. Write declared files to their "
+            "${RUN_DIR}, ${CASE_ROOT}, ${OUTPUT_ROOT}, and ${DEVICE}. Write declared files to their "
             "${OUTPUTS[n]} paths. Every runtime path reference must be directly enclosed in "
             "double quotes, for example command \"${INPUTS[0]}\" \"${OUTPUTS[0]}\". "
             "Output {run_id} templates are resolved before execution; "
@@ -153,6 +160,19 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
         if ":" not in cleaned or cleaned.rsplit(":", 1)[1].lower() == "latest":
             raise ValueError("image must use an explicit non-latest tag")
         return cleaned
+
+    @field_validator("case_output_folder")
+    @classmethod
+    def validate_case_output_folder(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        path = PurePosixPath(cleaned)
+        if not cleaned or path.is_absolute() or ".." in path.parts or "." in path.parts:
+            raise ValueError("case_output_folder must be a normalized relative directory")
+        if path.parts[0] == ".runs" or "{" in cleaned or "}" in cleaned:
+            raise ValueError("case_output_folder uses a reserved or unsupported path")
+        return path.as_posix()
 
     @field_validator("description", "details", "script")
     @classmethod
@@ -209,6 +229,12 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
         if unsupported_runtime_variables:
             rendered = ", ".join(f"${{{name}}}" for name in unsupported_runtime_variables)
             raise ValueError(f"script references unsupported runtime variable(s): {rendered}")
+        output_variables = {"OUTPUT_PARENT", "OUTPUT_NAME", "OUTPUT_ROOT"}
+        referenced_variables = {name for name, _index in _RUNTIME_VARIABLE_PATTERN.findall(self.script)}
+        if self.case_output_folder is None and referenced_variables & output_variables:
+            raise ValueError(
+                "script references output-folder variables without declaring case_output_folder"
+            )
         return self
 
     @property
@@ -218,6 +244,21 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
     @property
     def neurodesk_image(self) -> str:
         return self.image if "/" in self.image else f"vnmd/{self.image}"
+
+
+def workflow_output_path(
+    workflow: NeuroimagingWorkflow,
+    path: str,
+    *,
+    run_id: str | None = None,
+) -> str:
+    """Resolve a declared output into its user-visible case-relative path."""
+    value = path.replace(_RUN_ID_TOKEN, run_id) if run_id is not None else path
+    return (
+        PurePosixPath(workflow.case_output_folder, value).as_posix()
+        if workflow.case_output_folder
+        else value
+    )
 
 
 class WorkflowCatalog(StrictWorkflowModel):
@@ -420,13 +461,18 @@ def inspect_workflow(
 ) -> dict[str, Any]:
     """Return the lazy-loaded workflow contract exposed to the assistant."""
     tool = resolve_workflow(tool_id, settings=settings, user_id=user_id)
+    outputs = []
+    for item in tool.outputs:
+        payload = item.model_dump()
+        payload["path"] = workflow_output_path(tool, item.path)
+        outputs.append(payload)
     return {
         "tool_id": tool.id,
         "image": tool.image,
         "description": tool.description,
         "details": tool.details,
         "inputs": [item.model_dump() for item in tool.inputs],
-        "outputs": [item.model_dump() for item in tool.outputs],
+        "outputs": outputs,
         "execution": tool.execution.model_dump(),
         "return": tool.return_policy.model_dump(),
     }
@@ -444,7 +490,10 @@ def run_analysis_workflows_payload(
             "label": tool.label,
             "description": tool.description,
             "inputs": [item.model_dump() for item in tool.inputs],
-            "outputs": [item.model_dump() for item in tool.outputs],
+            "outputs": [
+                {**item.model_dump(), "path": workflow_output_path(tool, item.path)}
+                for item in tool.outputs
+            ],
             "execution": tool.execution.model_dump(),
             "input_artifact_kind": "intensity_volume",
         }

@@ -4,11 +4,12 @@
   "images": [
     {
       "id": "fastsurfer",
-      "image": "deepmi/fastsurfer:cu128-v2.5.4",
-      "oci_digest": "sha256:283d5db0972743aef92a093705a26f0c9d7a2512d782f0f97dd859357a4588a0",
-      "size_bytes": 5520117760,
-      "converted_sif_sha256": "15ef70db7c884ddc1f5ee5d7675597d1859e46b7ead820061e0ffc186da6b8eb",
-      "gpu": true
+      "image": "vnmd/fastsurfer_2.4.2:20260115",
+      "oci_digest": "sha256:2d0a53486471e3ab93a9b810cecc1594b4432fb7f9ee6d5b46a9ad1be095fdbf",
+      "sif_url": "https://neurocontainers.neurodesk.workers.dev/fastsurfer_2.4.2_20260115.simg",
+      "sif_sha256": "ccc3aadd5dcf4b2a0a40d0865842e658aac7252d5e20aacd05106d5d833b36ef",
+      "size_bytes": 1290018816,
+      "gpu": false
     },
     {
       "id": "dcm2niix",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -14,6 +15,7 @@ def test_shell_entrypoints_parse() -> None:
     for name in (
         "scripts/install.sh",
         "scripts/run.sh",
+        "scripts/build_sif.sh",
         "scripts/desktop/run.sh",
         "scripts/admin/reset_app_state.sh",
         "scripts/release/compute_tag.sh",
@@ -33,6 +35,39 @@ def test_installer_selects_or_accepts_a_matched_runtime() -> None:
     assert 'managed_uv python install "$NEUROCADE_PYTHON_VERSION"' in text
     assert "bridge-token" in text
     assert "NEUROCADE_SIF_DIR" not in text
+
+
+def test_docker_desktop_user_install_adds_credential_helper_to_path(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    helper_dir = home / "Applications/Docker.app/Contents/Resources/bin"
+    helper_dir.mkdir(parents=True)
+    helper = helper_dir / "docker-credential-desktop"
+    helper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    helper.chmod(0o755)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uname = bin_dir / "uname"
+    uname.write_text('#!/usr/bin/env bash\necho Darwin\n', encoding="utf-8")
+    uname.chmod(0o755)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; configure_docker_cli_path; command -v docker-credential-desktop',
+            "docker-cli-test",
+            str(REPO_ROOT / "scripts/lib/docker_cli.sh"),
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(helper)
 
 
 def _run_managed_python_helper(tmp_path: Path, command: str, *, path: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -69,8 +104,10 @@ def test_managed_uv_ignores_conflicting_path_installation(tmp_path: Path) -> Non
         f'#!/usr/bin/env bash\nprintf "global %s\\n" "$*" >>"{calls}"\n',
         encoding="utf-8",
     )
+    (path_bin / "file").write_text('#!/usr/bin/env bash\nprintf "%s: Mach-O 64-bit executable arm64\\n" "$1"\n', encoding="utf-8")
     (local_bin / "uv").chmod(0o755)
     (path_bin / "uv").chmod(0o755)
+    (path_bin / "file").chmod(0o755)
 
     result = _run_managed_python_helper(
         tmp_path,
@@ -119,18 +156,26 @@ def _write_runtime_probe(bin_dir: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
-def _select_default_runtime(tmp_path: Path, *, os_name: str, apptainer_works: bool) -> subprocess.CompletedProcess[str]:
+def _select_default_runtime(
+    tmp_path: Path,
+    *,
+    os_name: str,
+    apptainer_works: bool,
+    docker_works: bool = True,
+) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     namespace_file = tmp_path / "max_user_namespaces"
     namespace_file.write_text("1024\n", encoding="utf-8")
     _write_runtime_probe(bin_dir, "uname", f'[[ "$1" == "-s" ]] && echo {os_name} || echo x86_64')
     _write_runtime_probe(bin_dir, "id", '[[ "$1" == "-u" ]] && echo 1000')
-    _write_runtime_probe(bin_dir, "docker", "exit 0")
+    if docker_works:
+        _write_runtime_probe(bin_dir, "docker", "exit 0")
     apptainer_body = 'echo "--no-home"' if apptainer_works else "exit 1"
     _write_runtime_probe(bin_dir, "apptainer", apptainer_body)
     env = os.environ.copy()
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    fallback_path = env["PATH"] if docker_works else f"/usr/bin{os.pathsep}/bin"
+    env["PATH"] = f"{bin_dir}{os.pathsep}{fallback_path}"
     return subprocess.run(
         [
             "bash",
@@ -153,18 +198,56 @@ def test_default_runtime_is_docker_on_macos(tmp_path: Path) -> None:
     assert result.stdout.strip() == "docker"
 
 
-def test_default_runtime_prefers_rootless_apptainer_on_linux(tmp_path: Path) -> None:
+def test_default_runtime_is_apptainer_on_linux_when_available(tmp_path: Path) -> None:
     result = _select_default_runtime(tmp_path, os_name="Linux", apptainer_works=True)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "apptainer"
 
 
-def test_default_runtime_falls_back_to_docker_on_linux(tmp_path: Path) -> None:
+def test_default_runtime_is_docker_on_linux_without_apptainer(tmp_path: Path) -> None:
     result = _select_default_runtime(tmp_path, os_name="Linux", apptainer_works=False)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "docker"
+
+
+def test_default_runtime_is_apptainer_without_docker(tmp_path: Path) -> None:
+    result = _select_default_runtime(
+        tmp_path,
+        os_name="Linux",
+        apptainer_works=True,
+        docker_works=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "apptainer"
+
+
+def test_apptainer_installer_discovers_release_or_builds_source() -> None:
+    text = (REPO_ROOT / "scripts/install.sh").read_text(encoding="utf-8")
+
+    assert "--build-from-source" in text
+    assert "install_latest_apptainer_release" in text
+    assert '"$ROOT_DIR/scripts/build_sif.sh"' in text
+    assert "--app-sif-url" not in text
+    assert "--app-sif-sha256" not in text
+
+
+def test_default_docker_install_builds_matching_application_revision() -> None:
+    text = (REPO_ROOT / "scripts/install.sh").read_text(encoding="utf-8")
+
+    build = '\"$ROOT_DIR/scripts/run.sh\" build'
+    start = '\"$ROOT_DIR/scripts/run.sh\" start -d'
+    assert '[[ "$RUNTIME" == "docker" && -z "$IMAGE_OVERRIDE" ]]' in text
+    assert text.index(build) < text.index(start)
+
+
+def test_vulnerability_scan_blocks_high_and_critical_findings() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/vulnerability-scan.yml").read_text(encoding="utf-8")
+
+    assert "continue-on-error: true" not in workflow
+    assert 'exit-code: "1"' in workflow
 
 
 def test_launcher_uses_managed_toolchain_and_reports_architecture() -> None:
@@ -189,7 +272,9 @@ def test_launcher_has_common_bridge_lifecycle() -> None:
     assert "chmod 600" in text
     assert "start_bridge" in text and "stop_bridge" in text
     assert "--daemonize --pid-file" in text
-    assert "prepare_tools\n    start_bridge" in text
+    assert "begin_launch_session" in text and "prepare_tools" in text and "start_bridge" in text
+    assert "X-NeuroCade-Launch-ID" in text
+    assert "--launch-id \"$LAUNCH_ID\"" in text
     assert "acquire_launcher_lock" in text
     assert 'port_in_use "$BRIDGE_PORT" && fail' in text
     assert "The existing runtime bridge process is not healthy" in text
@@ -328,7 +413,142 @@ def test_release_publishes_and_smoke_tests_application_sif() -> None:
     assert "Smoke-test application SIF as non-root" in workflow
     assert workflow.count("scripts/release/wait_for_http.sh") == 3
     assert "sha256sum \"$app_sif\"" in workflow
-    assert 'gh release create "${args[@]}" "$APP_SIF" "$APP_SIF.sha256"' in workflow
+    assert "Build release bridge artifact" in workflow
+    assert "Create and validate Apptainer release manifest" in workflow
+    assert "neurocade-release.json" in workflow
+    assert '"$APP_SIF.sha256"' in workflow
+    assert '"$BRIDGE_WHEEL.sha256"' in workflow
+    assert workflow.index("Publish GitHub release") < workflow.index("Publish channel tag")
+
+
+def test_release_manifest_round_trip(tmp_path: Path) -> None:
+    manifest = tmp_path / "neurocade-release.json"
+    script = REPO_ROOT / "scripts/release/release_manifest.py"
+    subprocess.run(
+        [
+            str(script),
+            "create",
+            "--tag",
+            "v2026.8.30",
+            "--version",
+            "2026.8.30",
+            "--sif",
+            "neurocade-app-2026.8.30-amd64.sif",
+            "--bridge",
+            "neurocade_runtime_tools-0.2.0-py3-none-any.whl",
+            "--output",
+            str(manifest),
+        ],
+        check=True,
+    )
+    result = subprocess.run([str(script), "read", str(manifest)], check=True, text=True, capture_output=True)
+    assert result.stdout.splitlines() == [
+        "v2026.8.30",
+        "2026.8.30",
+        "neurocade-app-2026.8.30-amd64.sif",
+        "neurocade-app-2026.8.30-amd64.sif.sha256",
+        "neurocade_runtime_tools-0.2.0-py3-none-any.whl",
+        "neurocade_runtime_tools-0.2.0-py3-none-any.whl.sha256",
+    ]
+
+
+def test_release_artifact_installer_downloads_and_verifies_matching_assets(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    release_scripts = checkout / "scripts/release"
+    release_scripts.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts/release/release_manifest.py", release_scripts)
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    sif_name = "neurocade-app-2026.8.30-amd64.sif"
+    bridge_name = "neurocade_runtime_tools-0.2.0-py3-none-any.whl"
+    (assets / sif_name).write_bytes(b"test-sif")
+    (assets / bridge_name).write_bytes(b"test-wheel")
+    for name in (sif_name, bridge_name):
+        digest = subprocess.check_output(["sha256sum", str(assets / name)], text=True).split()[0]
+        (assets / f"{name}.sha256").write_text(f"{digest}  {name}\n", encoding="utf-8")
+    subprocess.run(
+        [
+            sys.executable,
+            str(release_scripts / "release_manifest.py"),
+            "create",
+            "--tag",
+            "v2026.8.30",
+            "--version",
+            "2026.8.30",
+            "--sif",
+            sif_name,
+            "--bridge",
+            bridge_name,
+            "--output",
+            str(assets / "neurocade-release.json"),
+        ],
+        check=True,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "for ((i=1; i<=$#; i++)); do\n"
+        "  [[ \"${!i}\" == -o ]] && { j=$((i+1)); target=\"${!j}\"; }\n"
+        "  [[ \"${!i}\" == *://* ]] && url=\"${!i}\"\n"
+        "done\n"
+        'exec /bin/cp "$FAKE_ASSET_DIR/${url##*/}" "$target"\n',
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    env = os.environ.copy()
+    env.update({"FAKE_ASSET_DIR": str(assets), "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}"})
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -e; source "$1"; install_latest_apptainer_release "$2" "$3"; printf "%s\\n%s\\n" "$NEUROCADE_RESOLVED_BRIDGE_PACKAGE" "$NEUROCADE_RESOLVED_RELEASE_VERSION"',
+            "release-artifact-test",
+            str(REPO_ROOT / "scripts/lib/apptainer_artifacts.sh"),
+            str(checkout),
+            sys.executable,
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (checkout / ".runtime/images/neurocade-app-amd64.sif").read_bytes() == b"test-sif"
+    assert (checkout / ".runtime/images/neurocade-app-amd64.sif.mode").read_text(encoding="utf-8") == "release\n"
+    assert result.stdout.splitlines()[-2:] == [
+        str(checkout / ".runtime/release" / bridge_name),
+        "2026.8.30",
+    ]
+
+
+def test_release_artifact_installer_fails_clearly_when_no_release_exists(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 22\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; install_latest_apptainer_release "$2" "$3"',
+            "missing-release-test",
+            str(REPO_ROOT / "scripts/lib/apptainer_artifacts.sh"),
+            str(tmp_path / "checkout"),
+            sys.executable,
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "No stable NeuroCade release with Apptainer artifacts was found" in result.stderr
+    assert "--build-from-source" in result.stderr
 
 
 def test_env_example_documents_new_runtime_contract() -> None:
@@ -336,5 +556,7 @@ def test_env_example_documents_new_runtime_contract() -> None:
     assert "NEUROCADE_RUNTIME=docker" in text
     assert "NEUROCADE_BRIDGE_URL=" in text
     assert "NEUROCADE_BRIDGE_TOKEN_FILE=" in text
-    assert "NEUROCADE_APP_SIF_URL=" in text
+    assert "NEUROCADE_APP_SIF_MODE=" in text
+    assert "NEUROCADE_RELEASE_VERSION=" in text
+    assert "NEUROCADE_APP_SIF_URL=" not in text
     assert "NEUROCADE_SIF_DIR=" not in text

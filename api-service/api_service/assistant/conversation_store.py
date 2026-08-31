@@ -363,6 +363,38 @@ def persist_turn(
         run_with_sqlite_lock_retry(db, operation)
 
 
+def persist_incoming_messages(
+    db: Session,
+    context: AuthContext,
+    thread: AssistantThread,
+    *,
+    incoming_messages: list[dict[str, Any]],
+) -> None:
+    """Persist accepted user input before a potentially long assistant turn."""
+    if not incoming_messages:
+        return
+    thread_id = thread.id
+
+    def operation() -> None:
+        current_thread = db.get(AssistantThread, thread_id)
+        if current_thread is None:
+            raise ValueError(f"Assistant thread {thread_id} no longer exists")
+        _persist_turn_once(
+            db,
+            context,
+            current_thread,
+            incoming_messages=incoming_messages,
+            tool_calls_log=[],
+            reasoning_entries=[],
+            assistant_content=None,
+        )
+
+    # Saving the prompt separately makes an in-flight turn reconstructable after
+    # the chat component unmounts or the browser discards a background tab.
+    with _history_write_lock:
+        run_with_sqlite_lock_retry(db, operation)
+
+
 def _persist_turn_once(
     db: Session,
     context: AuthContext,
@@ -372,7 +404,7 @@ def _persist_turn_once(
     assistant_messages: list[str] | None = None,
     tool_calls_log: list[dict[str, Any]],
     reasoning_entries: list[dict[str, Any]],
-    assistant_content: str,
+    assistant_content: str | None,
 ) -> None:
     """Persist one completed assistant turn into the thread history.
 
@@ -443,19 +475,20 @@ def _persist_turn_once(
                 )
                 sequence += 1
 
-            content_json = serialize_content(assistant_content)
-            db.add(
-                AssistantMessage(
-                    thread_id=thread.id,
-                    workspace_id=thread.workspace_id,
-                    case_id=thread.case_id,
-                    created_by_user_id=context.user.id,
-                    role="assistant",
-                    sequence=sequence,
-                    content_json=content_json,
-                    metadata_json={},
+            if assistant_content is not None:
+                content_json = serialize_content(assistant_content)
+                db.add(
+                    AssistantMessage(
+                        thread_id=thread.id,
+                        workspace_id=thread.workspace_id,
+                        case_id=thread.case_id,
+                        created_by_user_id=context.user.id,
+                        role="assistant",
+                        sequence=sequence,
+                        content_json=content_json,
+                        metadata_json={},
+                    )
                 )
-            )
             db.commit()
             return
         except IntegrityError:
@@ -609,4 +642,20 @@ class AssistantHistoryStore:
             tool_calls_log=final_state.get("tool_calls_log", []),
             reasoning_entries=final_state.get("reasoning_entries", []),
             assistant_content=final_text,
+        )
+
+    def persist_incoming(
+        self,
+        db: Session,
+        context: AuthContext,
+        thread: AssistantThread,
+        *,
+        incoming_messages: list[dict[str, Any]],
+    ) -> None:
+        """Durably record accepted input independently from turn completion."""
+        persist_incoming_messages(
+            db,
+            context,
+            thread,
+            incoming_messages=incoming_messages,
         )

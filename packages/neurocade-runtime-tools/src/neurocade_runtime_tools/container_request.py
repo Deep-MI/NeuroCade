@@ -33,6 +33,7 @@ def build_container_request(
     image: str | RuntimeImageSpec,
     command: Sequence[str],
     binds: Sequence[RuntimeBind] = (),
+    scratch_paths: Sequence[str] = (),
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
     disable_network: bool = True,
@@ -62,6 +63,9 @@ def build_container_request(
         image=image if isinstance(image, RuntimeImageSpec) else RuntimeImageSpec(oci_reference=container_image_name(image)),
         command=[str(part) for part in command],
         binds=tuple(normalized_binds),
+        scratch_paths=tuple(
+            _validate_container_path(path, label="Scratch path") for path in scratch_paths
+        ),
         cwd=_validate_container_path(cwd, label="Container working directory") if cwd else None,
         env=dict(env or {}),
         network_disabled=disable_network,

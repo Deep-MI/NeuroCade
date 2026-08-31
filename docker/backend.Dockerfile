@@ -3,7 +3,7 @@
 
 FROM node:22-alpine AS client-build
 WORKDIR /app/client
-RUN npm install --global npm@11.10.0
+RUN npm install --global npm@10.9.9
 COPY client/package*.json ./
 RUN npm ci
 COPY client ./

@@ -17,6 +17,7 @@ from api_service.assistant.conversation_store import (  # noqa: E402
     AssistantHistoryStore,
     get_or_create_thread,
     load_thread_history,
+    persist_incoming_messages,
     persist_turn,
 )
 
@@ -105,6 +106,49 @@ def test_persist_turn_stores_display_history(monkeypatch):
         assert "TAIL" in bounded_history[-1]["content"]
         assert "omitted" in bounded_history[-1]["content"]
         assert sum(len(json.dumps(message)) for message in bounded_history) <= 500
+    finally:
+        db.close()
+
+
+def test_persist_incoming_messages_does_not_add_placeholder_response():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)()
+    try:
+        user = User(id="user-1", external_auth_id="user-1", email="user@example.com", full_name="User")
+        workspace = Workspace(
+            id="workspace-1",
+            owner_user_id=user.id,
+            name="personal-workspace",
+            kind="personal",
+            is_default=True,
+        )
+        db.add_all([user, workspace])
+        db.commit()
+        context = AuthContext(user=user, role=RoleEnum.owner, auth_mode="local")
+        thread = get_or_create_thread(
+            db,
+            context,
+            scope="workspace",
+            workspace_id=workspace.id,
+            case_id=None,
+            provider_name="provider",
+            model_name="model",
+        )
+
+        persist_incoming_messages(
+            db,
+            context,
+            thread,
+            incoming_messages=[{"role": "user", "content": "Download the image"}],
+        )
+
+        history = AssistantHistoryStore().list_history(
+            db, user_id=user.id, scope="workspace", workspace_id=workspace.id
+        )
+        assert [(message.role, message.content) for message in history] == [
+            ("user", "Download the image"),
+        ]
     finally:
         db.close()
 

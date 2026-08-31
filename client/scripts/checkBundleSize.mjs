@@ -8,7 +8,9 @@ if (niivueFiles.length !== 1) {
 }
 const bundlePath = join(assetsDir.pathname, niivueFiles[0]);
 const size = (await stat(bundlePath)).size;
-const limit = 1_500_000;
+// NiiVue is a deliberately isolated lazy chunk. Keep a regression ceiling with
+// enough headroom for dependency metadata changes while still catching bloat.
+const limit = 1_600_000;
 if (size > limit) {
   throw new Error(`NiiVue bundle is ${size} bytes; regression limit is ${limit} bytes`);
 }

@@ -61,6 +61,7 @@ class RuntimeContainerRunRequest:
     image: RuntimeImageSpec
     command: Sequence[str]
     binds: Sequence[RuntimeBind | BridgeBind] = field(default_factory=tuple)
+    scratch_paths: Sequence[str] = field(default_factory=tuple)
     env: Mapping[str, str] | None = None
     cwd: str | None = None
     network_disabled: bool = True
@@ -113,6 +114,7 @@ def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) ->
             }
             for bind in request.binds
         ],
+        "scratch_paths": list(request.scratch_paths),
         "env": dict(request.env or {}),
         "cwd": request.cwd,
         "network_disabled": request.network_disabled,

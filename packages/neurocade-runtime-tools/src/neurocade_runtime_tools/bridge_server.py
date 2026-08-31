@@ -21,10 +21,18 @@ logger = logging.getLogger(__name__)
 class BridgeHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], runtime: BridgeRuntime, token: str):
+    def __init__(
+        self,
+        address: tuple[str, int],
+        runtime: BridgeRuntime,
+        token: str,
+        *,
+        launch_id: str,
+    ):
         super().__init__(address, BridgeHandler)
         self.runtime = runtime
         self.token = token
+        self.launch_id = launch_id
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -44,10 +52,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         supplied = self.headers.get("Authorization", "")
         expected = f"Bearer {self.server.token}"
-        if hmac.compare_digest(supplied.encode(), expected.encode()):
-            return True
-        self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
-        return False
+        if not hmac.compare_digest(supplied.encode(), expected.encode()):
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return False
+        launch_id = self.headers.get("X-NeuroCade-Launch-ID", "")
+        if not hmac.compare_digest(launch_id.encode(), self.server.launch_id.encode()):
+            self._json(HTTPStatus.CONFLICT, {"error": "launch session mismatch"})
+            return False
+        return True
 
     def _body(self) -> dict[str, Any]:
         try:
@@ -123,16 +135,29 @@ def read_token(path: Path) -> str:
 
 
 def serve_bridge(
-    *, backend: str, data_root: Path, image_dir: Path, host: str, port: int, token_file: Path
+    *,
+    backend: str,
+    data_root: Path,
+    image_dir: Path,
+    host: str,
+    port: int,
+    token_file: Path,
+    launch_id: str,
 ) -> int:
-    runtime = BridgeRuntime(backend=backend, data_root=data_root, image_dir=image_dir)
-    server = BridgeHTTPServer((host, port), runtime, read_token(token_file))
+    runtime = BridgeRuntime(backend=backend, data_root=data_root, image_dir=image_dir, launch_id=launch_id)
+    server = BridgeHTTPServer(
+        (host, port),
+        runtime,
+        read_token(token_file),
+        launch_id=launch_id,
+    )
 
     def request_shutdown(_signum: int, _frame: Any) -> None:
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, request_shutdown)
     signal.signal(signal.SIGINT, request_shutdown)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

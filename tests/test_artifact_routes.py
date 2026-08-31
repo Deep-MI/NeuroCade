@@ -209,7 +209,7 @@ def test_startup_recovery_indexes_catalog_outputs_before_artifact_reads(seeded_c
     assert case is not None
     assert workspace is not None
     db_session.query(Artifact).filter(Artifact.case_id == CASE_ID).delete()
-    segmentation = case_storage_dir(storage_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    segmentation = case_storage_dir(storage_module.settings, workspace.id, case.id) / "fastsurfer_output" / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     segmentation.parent.mkdir(parents=True, exist_ok=True)
     segmentation.write_bytes(b"recovered segmentation")
     db_session.commit()
@@ -218,7 +218,7 @@ def test_startup_recovery_indexes_catalog_outputs_before_artifact_reads(seeded_c
     db_session.commit()
     artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
 
-    assert any(artifact.relative_path == "mri/aparc.DKTatlas+aseg.deep.mgz" for artifact in indexed)
+    assert any(artifact.relative_path == "fastsurfer_output/mri/aparc.DKTatlas+aseg.deep.mgz" for artifact in indexed)
     assert [artifact.name for artifact in artifacts] == ["aparc.DKTatlas+aseg.deep.mgz"]
 
 
@@ -279,9 +279,10 @@ def test_list_case_artifacts_indexes_typed_catalog_outputs_while_run_is_active(s
 
     case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
     workflow = resolve_workflow(run.run_type)
-    segmentation = case_dir / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
-    surface = case_dir / "surf" / "lh.white"
-    report = case_dir / "stats" / "aseg+DKT.VINN.stats"
+    output_dir = case_dir / "fastsurfer_output"
+    segmentation = output_dir / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    surface = output_dir / "surf" / "lh.white"
+    report = output_dir / "stats" / "aseg+DKT.VINN.stats"
     surface.parent.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
     surface.write_bytes(b"old surface")
@@ -292,7 +293,7 @@ def test_list_case_artifacts_indexes_typed_catalog_outputs_while_run_is_active(s
         run_dir,
         snapshot_workflow_outputs(
             workflow,
-            tuple(case_dir / output.path for output in workflow.outputs),
+                tuple(output_dir / output.path for output in workflow.outputs),
         ),
     )
     for path, contents in ((segmentation, b"seg"), (surface, b"new surface")):
@@ -322,7 +323,7 @@ def test_list_case_artifacts_indexes_typed_catalog_outputs_while_run_is_active(s
             for output in resolve_workflow(run.run_type).outputs
         ]
     }
-    final_callosum = case_dir / "mri" / "callosum.CC.orig.mgz"
+    final_callosum = case_dir / "fastsurfer_output" / "mri" / "callosum.CC.orig.mgz"
     final_callosum.parent.mkdir(parents=True, exist_ok=True)
     final_callosum.write_bytes(b"callosum")
     db_session.commit()
@@ -350,7 +351,7 @@ def test_manual_output_name_override_sets_display_metadata_without_renaming_file
     run.result_json = {
         "outputs": [{"name": "whole_brain_segmentation", "state": "created"}],
     }
-    segmentation = case_storage_dir(storage_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    segmentation = case_storage_dir(storage_module.settings, workspace.id, case.id) / "fastsurfer_output" / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     segmentation.parent.mkdir(parents=True, exist_ok=True)
     segmentation.write_bytes(b"segmentation")
     db_session.commit()
@@ -377,7 +378,7 @@ def test_catalog_retypes_existing_outputs_not_declared_by_latest_workflow(seeded
     run.status = RunStatus.completed
 
     case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
-    callosum_path = case_dir / "mri" / "callosum.CC.upright.mgz"
+    callosum_path = case_dir / "fastsurfer_output" / "mri" / "callosum.CC.upright.mgz"
     callosum_path.parent.mkdir(parents=True, exist_ok=True)
     callosum_path.write_bytes(b"callosum")
     db_session.commit()
@@ -404,7 +405,7 @@ def test_catalog_refresh_preserves_original_output_producer(seeded_case):
     run.status = RunStatus.completed
 
     case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
-    callosum_path = case_dir / "mri" / "callosum.CC.orig.mgz"
+    callosum_path = case_dir / "fastsurfer_output" / "mri" / "callosum.CC.orig.mgz"
     callosum_path.parent.mkdir(parents=True, exist_ok=True)
     callosum_path.write_bytes(b"callosum")
     relative_path = str(callosum_path.relative_to(case_dir))
@@ -446,7 +447,7 @@ def test_list_case_artifacts_indexes_only_config_declared_new_volumes(seeded_cas
     assert case is not None
     assert workspace is not None
 
-    seg_path = case_storage_dir(storage_module.settings, workspace.id, case.id) / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    seg_path = case_storage_dir(storage_module.settings, workspace.id, case.id) / "fastsurfer_output" / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     seg_path.parent.mkdir(parents=True, exist_ok=True)
     seg_path.write_bytes(b"seg")
 

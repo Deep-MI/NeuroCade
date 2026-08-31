@@ -19,7 +19,7 @@ Assistant orchestration enters through `api_service.assistant.runtime`, with pro
 ## Build, Test, and Development Commands
 Frontend commands run from `client/`:
 
-- Node `^20.19.0`, `^22.13.0`, or `>=24` and npm `>=11.10.0` are expected.
+- Node `^20.19.0`, `^22.13.0`, or `>=24` and npm `10.9.9` or `>=11.18.0` are expected.
 - `npm install`: install frontend and Electron dependencies.
 - `npm run dev`: start the Vite dev server.
 - `npm run build`: type-check and produce a production bundle.

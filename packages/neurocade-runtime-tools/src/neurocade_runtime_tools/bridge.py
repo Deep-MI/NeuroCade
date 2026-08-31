@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .apptainer_runtime import build_container_argv, nvidia_capability
-from .docker_runtime import build_docker_argv
+from .docker_runtime import build_docker_argv, configured_docker_platform
 from .execution import (
     BridgeBind,
     ProcessObserver,
@@ -150,12 +150,21 @@ class PreparedRunPaths:
 class BridgeRuntime:
     """Validated process registry. It intentionally has no queue or persistence."""
 
-    def __init__(self, *, backend: str, data_root: Path, image_dir: Path, terminal_ttl_s: int = TERMINAL_RESULT_TTL_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        backend: str,
+        data_root: Path,
+        image_dir: Path,
+        launch_id: str = "test-launch",
+        terminal_ttl_s: int = TERMINAL_RESULT_TTL_SECONDS,
+    ) -> None:
         if backend not in {"docker", "apptainer"}:
             raise ValueError("NEUROCADE_RUNTIME must be docker or apptainer")
         if backend == "apptainer" and os.geteuid() == 0:
             raise RuntimeError("The Apptainer bridge must run as the invoking non-root user")
         self.backend = backend
+        self.launch_id = launch_id
         self.data_root = data_root.expanduser().resolve(strict=True)
         self.image_dir = image_dir.expanduser().resolve()
         self.terminal_ttl_s = terminal_ttl_s
@@ -221,7 +230,11 @@ class BridgeRuntime:
             "protocol_version": PROTOCOL_VERSION,
             "build_version": BUILD_VERSION,
             "backend": self.backend,
+            "launch_id": self.launch_id,
             "architecture": platform.machine(),
+            "docker_platform": configured_docker_platform() if self.backend == "docker" else None,
+            "data_root": str(self.data_root),
+            "image_dir": str(self.image_dir),
             "gpu": {"available": self.global_gpu.available, "reason": self.global_gpu.reason},
             "active_runs": active,
         }
@@ -258,9 +271,14 @@ class BridgeRuntime:
             run_id="capability-probe-" + hashlib.sha256(key.encode()).hexdigest()[:16],
         )
         argv = (
-            build_docker_argv(probe, data_root=self.data_root)
+            build_docker_argv(
+                probe,
+                data_root=self.data_root,
+                platform=prepared.platform or "",
+                launch_id=self.launch_id,
+            )
             if self.backend == "docker"
-            else build_container_argv(probe, data_root=self.data_root, prepared_image=prepared)
+            else build_container_argv(probe, data_root=self.data_root, prepared_image=prepared.reference)
         )
         try:
             completed = run_managed_command(
@@ -313,12 +331,19 @@ class BridgeRuntime:
             binds.append(
                 BridgeBind(source_relative, _container_path(str(value.get("container_path") or ""), label="Bind target"), value["mode"])
             )
+        scratch_paths = tuple(
+            _container_path(str(value), label="Scratch path")
+            for value in container.get("scratch_paths", [])
+        )
+        if len(set(scratch_paths)) != len(scratch_paths) or "/" in scratch_paths:
+            raise ValueError("Scratch paths must be unique non-root container paths")
         if isolated and (binds or container.get("gpu_enabled")):
             raise ValueError("Isolated runs cannot use binds or GPUs")
         request = RuntimeContainerRunRequest(
             image=spec,
             command=[str(part) for part in command],
             binds=binds,
+            scratch_paths=scratch_paths,
             env=validate_environment(dict(container.get("env") or {})),
             cwd=_container_path(container["cwd"], label="Container working directory") if container.get("cwd") else None,
             network_disabled=bool(container.get("network_disabled", True)),
@@ -405,9 +430,14 @@ class BridgeRuntime:
                     record.finished_at = time.monotonic()
                     return
             argv = (
-                build_docker_argv(request, data_root=self.data_root)
+                build_docker_argv(
+                    request,
+                    data_root=self.data_root,
+                    platform=prepared.platform or "",
+                    launch_id=self.launch_id,
+                )
                 if self.backend == "docker"
-                else build_container_argv(request, data_root=self.data_root, prepared_image=prepared)
+                else build_container_argv(request, data_root=self.data_root, prepared_image=prepared.reference)
             )
             if self.backend == "docker":
                 record.docker_name = f"neurocade-tool-{request.run_id}"[:95]
@@ -450,9 +480,19 @@ class BridgeRuntime:
                 stdout_handle.close()
             if stderr_handle is not None:
                 stderr_handle.close()
+            diagnostic = _bounded(str(exc))
+            if paths.stderr is not None:
+                try:
+                    paths.stderr.parent.mkdir(parents=True, exist_ok=True)
+                    with paths.stderr.open("a", encoding="utf-8") as error_log:
+                        error_log.write(diagnostic.rstrip() + "\n")
+                except OSError:
+                    # The protocol response remains the authoritative fallback
+                    # when the requested host log itself cannot be written.
+                    pass
             with record.lock:
                 record.returncode = 1
-                record.stderr = _bounded(str(exc))
+                record.stderr = diagnostic
                 record.state = RunState.canceled if record.state == RunState.canceled else RunState.failed
                 record.finished_at = time.monotonic()
 

@@ -17,6 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 from conftest import DEMO_RUN_UPLOAD_FILENAME, build_fresh_uploaded_case, delete_workspace_via_api
 from gui_helpers import APP_URL, DEFAULT_STORAGE_STATE_PATH
 
@@ -109,7 +110,10 @@ def _load_timing_case(page) -> str | None:
         page.wait_for_url(f"**/workspaces/{workspace_id}/cases/{explicit_case_id}", timeout=15_000)
         return None
     if not DEMO_RUN_UPLOAD_FILENAME:
-        raise AssertionError("No MRI upload fixture is available for viewer timing")
+        pytest.skip(
+            "Viewer timing requires NEUROCADE_TIMING_WORKSPACE_ID/NEUROCADE_TIMING_CASE_ID "
+            "or an MRI upload fixture"
+        )
     timing_case = build_fresh_uploaded_case(
         upload_filename=DEMO_RUN_UPLOAD_FILENAME,
         app_url=APP_URL,

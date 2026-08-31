@@ -126,11 +126,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y "$RUNNER_TEMP/apptainer.deb"
 
+      - name: Build release bridge artifact
+        if: steps.release.outputs.should_release == 'true'
+        run: |
+          bridge_dist="$RUNNER_TEMP/bridge-dist"
+          mkdir -p "$bridge_dist"
+          uv build --wheel --out-dir "$bridge_dist" packages/neurocade-runtime-tools
+          bridge_wheel="$(find "$bridge_dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$bridge_wheel"
+          bridge_name="$(basename "$bridge_wheel")"
+          (cd "$bridge_dist" && sha256sum "$bridge_name" > "$bridge_name.sha256")
+          echo "BRIDGE_WHEEL=$bridge_wheel" >> "$GITHUB_ENV"
+          echo "BRIDGE_WHEEL_NAME=$bridge_name" >> "$GITHUB_ENV"
+
       - name: Install release bridge
         if: steps.release.outputs.should_release == 'true'
         run: |
           uv venv --python 3.12 "$RUNNER_TEMP/bridge-venv"
-          uv pip install --python "$RUNNER_TEMP/bridge-venv/bin/python" ./packages/neurocade-runtime-tools
+          uv pip install --python "$RUNNER_TEMP/bridge-venv/bin/python" "$BRIDGE_WHEEL"
           "$RUNNER_TEMP/bridge-venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))' > "$RUNNER_TEMP/bridge-token"
           chmod 600 "$RUNNER_TEMP/bridge-token"
 
@@ -202,6 +215,20 @@ jobs:
           chmod 0444 "$app_sif"
           echo "APP_SIF=$app_sif" >> "$GITHUB_ENV"
 
+      - name: Create and validate Apptainer release manifest
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          ./scripts/release/release_manifest.py create \
+            --tag "$RELEASE_TAG" \
+            --version "$RELEASE_VERSION" \
+            --sif "$APP_SIF" \
+            --bridge "$BRIDGE_WHEEL_NAME" \
+            --output neurocade-release.json
+          ./scripts/release/release_manifest.py read neurocade-release.json
+
       - name: Smoke-test application SIF as non-root
         if: steps.release.outputs.should_release == 'true'
         run: |
@@ -223,13 +250,6 @@ jobs:
           app_pid=$!
           trap 'kill "$app_pid" "$bridge_pid" >/dev/null 2>&1 || true' EXIT
           ./scripts/release/wait_for_http.sh http://127.0.0.1:18000/api/app/healthz 30 2
-
-      - name: Publish channel tag
-        if: steps.release.outputs.should_release == 'true'
-        env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
-          CHANNEL_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.prerelease == 'true' && 'beta' || 'latest' }}
-        run: docker buildx imagetools create --tag "$CHANNEL_IMAGE" "$RELEASE_IMAGE"
 
       - name: Tag release commit
         if: steps.release.outputs.should_release == 'true'
@@ -262,7 +282,19 @@ jobs:
             args+=(--title "NeuroCade ${RELEASE_VERSION}" --latest)
           fi
 
-          gh release create "${args[@]}" "$APP_SIF" "$APP_SIF.sha256"
+          gh release create "${args[@]}" \
+            "$APP_SIF" \
+            "$APP_SIF.sha256" \
+            "$BRIDGE_WHEEL" \
+            "$BRIDGE_WHEEL.sha256" \
+            neurocade-release.json
+
+      - name: Publish channel tag
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          CHANNEL_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.prerelease == 'true' && 'beta' || 'latest' }}
+        run: docker buildx imagetools create --tag "$CHANNEL_IMAGE" "$RELEASE_IMAGE"
 
       - name: Summarize release
         if: steps.release.outputs.should_release == 'true'
@@ -274,4 +306,5 @@ jobs:
             echo "- Commit: \`${{ steps.release.outputs.head_sha }}\`"
             echo "- Docker image: \`ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}\`"
             echo "- Application SIF: \`$APP_SIF\`"
+            echo "- Release manifest: \`neurocade-release.json\`"
           } >> "$GITHUB_STEP_SUMMARY"

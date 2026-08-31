@@ -831,7 +831,7 @@ def test_add_case_upload_preserves_existing_case_outputs(seeded_context, monkeyp
 
 @pytest.mark.parametrize(
     ("tool_id", "expected_gpu"),
-    [("fastsurfer_segmentation", True), ("fastsurfer_fast", True)],
+    [("fastsurfer_segmentation", False), ("fastsurfer_fast", False)],
 )
 def test_start_run_persists_queued_run_before_runtime_handoff(
     seeded_context,

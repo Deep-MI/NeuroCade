@@ -19,13 +19,13 @@ From a checkout:
 
 Options:
   --runtime docker|apptainer      Override automatic runtime selection.
-                                  Defaults to Docker on macOS; rootless Apptainer
-                                  on Linux when available, otherwise Docker.
+                                  Defaults to Docker on macOS and rootless
+                                  Apptainer on Linux when available.
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
   --image IMAGE                   Published image tag or digest. Default: ghcr.io/deep-mi/neurocade:latest.
-  --app-sif-url URL               Published application SIF (apptainer profile).
-  --app-sif-sha256 SHA256         Published application SIF checksum.
+  --build-from-source             Build Docker from this checkout and convert it
+                                  to an Apptainer SIF. Requires Docker.
   --bridge-port PORT              Host bridge port. Default: 8765.
   --no-start                      Prepare required images without launching the app.
   --yes                           Noninteractive: preserve configured values and accept defaults.
@@ -193,7 +193,7 @@ require_option_value() {
 }
 
 write_env() {
-  local root="$1" mode="$2" provider="$3" runtime="$4" image_override="${5:-}" app_sif_url="${6:-}" app_sif_sha256="${7:-}" bridge_port="${8:-8765}" env_path
+  local root="$1" mode="$2" provider="$3" runtime="$4" image_override="${5:-}" app_sif_mode="${6:-}" bridge_package="${7:-}" release_version="${8:-}" bridge_port="${9:-8765}" env_path
   env_path="$root/.env"
   local host_data_dir database_volume app_base_url app_bind app_port docker_platform image local_auth
   local clerk_publishable="" clerk_secret="" clerk_jwks="" clerk_issuer="" clerk_audience="" clerk_jwt_template=""
@@ -294,9 +294,10 @@ write_env() {
     env_line NEUROCADE_BRIDGE_URL "http://127.0.0.1:$bridge_port"
     env_line NEUROCADE_BRIDGE_TOKEN_FILE "$root/.runtime/bridge-token"
     env_line NEUROCADE_BRIDGE_PORT "$bridge_port"
+    env_line NEUROCADE_BRIDGE_PACKAGE "$bridge_package"
     env_line NEUROCADE_IMAGE "$image"
-    env_line NEUROCADE_APP_SIF_URL "$app_sif_url"
-    env_line NEUROCADE_APP_SIF_SHA256 "$app_sif_sha256"
+    env_line NEUROCADE_APP_SIF_MODE "$app_sif_mode"
+    env_line NEUROCADE_RELEASE_VERSION "$release_version"
     env_line NEUROCADE_DOCKER_PLATFORM "$docker_platform"
     env_line NEUROCADE_GPU_MODE "$(configured_or_default "$root" NEUROCADE_GPU_MODE "auto")"
     env_line LOCAL_AUTH_ENABLED "$local_auth"
@@ -329,8 +330,10 @@ MODE="local"
 RUNTIME=""
 LLM_PROVIDER=""
 IMAGE_OVERRIDE=""
-APP_SIF_URL=""
-APP_SIF_SHA256=""
+APP_SIF_MODE=""
+BRIDGE_PACKAGE=""
+RELEASE_VERSION=""
+BUILD_FROM_SOURCE=0
 BRIDGE_PORT="8765"
 START=1
 ASSUME_YES=0
@@ -357,16 +360,7 @@ while [[ $# -gt 0 ]]; do
       IMAGE_OVERRIDE="$2"
       shift 2
       ;;
-    --app-sif-url)
-      require_option_value "$1" "${2:-}"
-      APP_SIF_URL="$2"
-      shift 2
-      ;;
-    --app-sif-sha256)
-      require_option_value "$1" "${2:-}"
-      APP_SIF_SHA256="$2"
-      shift 2
-      ;;
+    --build-from-source) BUILD_FROM_SOURCE=1; shift ;;
     --bridge-port)
       require_option_value "$1" "${2:-}"
       BRIDGE_PORT="$2"
@@ -383,6 +377,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/lib/managed_python.sh"
 source "$ROOT_DIR/scripts/lib/runtime_selection.sh"
+source "$ROOT_DIR/scripts/lib/docker_cli.sh"
+source "$ROOT_DIR/scripts/lib/apptainer_artifacts.sh"
+configure_docker_cli_path
 if [[ -z "$RUNTIME" ]]; then
   RUNTIME="$(configured_or_default "$ROOT_DIR" NEUROCADE_RUNTIME "")"
   if [[ -n "$RUNTIME" ]]; then
@@ -394,10 +391,18 @@ if [[ -z "$RUNTIME" ]]; then
 fi
 validate_runtime "$RUNTIME" || exit 1
 if [[ "$RUNTIME" == "apptainer" ]]; then
-  [[ -n "$APP_SIF_URL" ]] || APP_SIF_URL="$(configured_or_default "$ROOT_DIR" NEUROCADE_APP_SIF_URL "")"
-  [[ -n "$APP_SIF_SHA256" ]] || APP_SIF_SHA256="$(configured_or_default "$ROOT_DIR" NEUROCADE_APP_SIF_SHA256 "")"
-  require_value "Application SIF URL" "$APP_SIF_URL"
-  [[ "$APP_SIF_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "A 64-character application SIF SHA-256 is required." >&2; exit 2; }
+  if [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
+    command -v docker >/dev/null 2>&1 || {
+      echo "Docker is required for --build-from-source. Remove the flag to install the latest release." >&2
+      exit 1
+    }
+    APP_SIF_MODE="source"
+  else
+    APP_SIF_MODE="release"
+  fi
+elif [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
+  echo "--build-from-source is only valid with the Apptainer runtime." >&2
+  exit 2
 fi
 [[ "$BRIDGE_PORT" =~ ^[0-9]+$ ]] && (( BRIDGE_PORT > 0 && BRIDGE_PORT < 65536 )) || { echo "Invalid bridge port: $BRIDGE_PORT" >&2; exit 2; }
 MODE="$(normalize_mode "$MODE")"
@@ -421,7 +426,24 @@ install_managed_uv
 echo "Ensuring managed Python $NEUROCADE_PYTHON_VERSION..."
 managed_uv python install "$NEUROCADE_PYTHON_VERSION"
 
-write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$RUNTIME" "$IMAGE_OVERRIDE" "$APP_SIF_URL" "$APP_SIF_SHA256" "$BRIDGE_PORT"
+if [[ "$APP_SIF_MODE" == "release" ]]; then
+  python_bin="$(managed_python_path)"
+  install_latest_apptainer_release "$ROOT_DIR" "$python_bin"
+  BRIDGE_PACKAGE="$NEUROCADE_RESOLVED_BRIDGE_PACKAGE"
+  RELEASE_VERSION="$NEUROCADE_RESOLVED_RELEASE_VERSION"
+elif [[ "$APP_SIF_MODE" == "source" ]]; then
+  BRIDGE_PACKAGE="$ROOT_DIR/packages/neurocade-runtime-tools"
+fi
+
+write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$RUNTIME" "$IMAGE_OVERRIDE" "$APP_SIF_MODE" "$BRIDGE_PACKAGE" "$RELEASE_VERSION" "$BRIDGE_PORT"
+
+if [[ "$RUNTIME" == "docker" && -z "$IMAGE_OVERRIDE" ]]; then
+  # Build the application from this checkout so the in-image bridge client and
+  # the host bridge installed below always use the same protocol revision.
+  "$ROOT_DIR/scripts/run.sh" build
+elif [[ "$APP_SIF_MODE" == "source" ]]; then
+  "$ROOT_DIR/scripts/build_sif.sh"
+fi
 
 if [[ "$START" -eq 1 ]]; then
   "$ROOT_DIR/scripts/run.sh" start -d

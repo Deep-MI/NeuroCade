@@ -321,11 +321,29 @@ class AssistantRuntime:
             persist,
         )
         started_at = time.monotonic()
+        incoming_persisted = False
         try:
+            if persist and db is not None and context is not None and thread is not None:
+                self.history.persist_incoming(
+                    db,
+                    context,
+                    thread,
+                    incoming_messages=latest_messages,
+                )
+                incoming_persisted = True
             final_state = await self.loop.run(state)
         except asyncio.CancelledError:
             if db is not None:
                 db.rollback()
+                if persist and context is not None and thread is not None:
+                    self.history.persist_success(
+                        db,
+                        context,
+                        thread,
+                        incoming_messages=[] if incoming_persisted else latest_messages,
+                        final_state=state,
+                        final_text="Assistant turn was interrupted before completion.",
+                    )
                 self.turns.finish(db, turn_id, status="canceled")
             raise
         except Exception as exc:
@@ -345,6 +363,15 @@ class AssistantRuntime:
                         )
                 else:
                     db.rollback()
+                    if persist and context is not None and thread is not None:
+                        self.history.persist_success(
+                            db,
+                            context,
+                            thread,
+                            incoming_messages=[] if incoming_persisted else latest_messages,
+                            final_state=state,
+                            final_text=f"Assistant turn failed: {exc}",
+                        )
                     self.turns.finish(db, turn_id, status="failed", error=str(exc))
             raise
         logger.info(
@@ -366,7 +393,7 @@ class AssistantRuntime:
                     db,
                     context,
                     thread,
-                    incoming_messages=latest_messages,
+                    incoming_messages=[] if incoming_persisted else latest_messages,
                     final_state=final_state,
                     final_text=f"Assistant turn failed: {detail}",
                 )
@@ -380,7 +407,7 @@ class AssistantRuntime:
                 db,
                 context,
                 thread,
-                incoming_messages=latest_messages,
+                incoming_messages=[] if incoming_persisted else latest_messages,
                 final_state=final_state,
                 final_text=final_text,
             )

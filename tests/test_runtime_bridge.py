@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
+import io
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -20,16 +23,26 @@ from neurocade_runtime_tools import bridge as bridge_module
 from neurocade_runtime_tools import execution as execution_module
 from neurocade_runtime_tools.apptainer_runtime import NvidiaCapability
 from neurocade_runtime_tools.bridge import BridgeRuntime
+from neurocade_runtime_tools.bridge_cli import _CliImageProgress
 from neurocade_runtime_tools.bridge_client import BridgeClient, BridgeError
 from neurocade_runtime_tools.bridge_server import BridgeHTTPServer
-from neurocade_runtime_tools.docker_runtime import build_docker_argv
+from neurocade_runtime_tools.docker_runtime import build_docker_argv, configured_docker_platform
 from neurocade_runtime_tools.execution import (
     BridgeBind,
     RuntimeContainerRunRequest,
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
 )
-from neurocade_runtime_tools.images import _DockerPullProgress, _storage_preflight, download_verified_file, prepare_image
+from neurocade_runtime_tools.images import (
+    PreparedImage,
+    _DockerPullProgress,
+    _progress_frames,
+    _pull_docker_image,
+    _storage_preflight,
+    download_verified_file,
+    prepare_image,
+    resolve_docker_image_platform,
+)
 from neurocade_runtime_tools.protocol import PROTOCOL_VERSION, RuntimeImageSpec, relative_to_data_root
 from requests import Session
 
@@ -98,6 +111,39 @@ def test_apptainer_pull_uses_digest_without_tag(monkeypatch: pytest.MonkeyPatch,
     ]]
 
 
+def test_apptainer_prefers_verified_direct_sif(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checksum = hashlib.sha256(b"direct-sif").hexdigest()
+    downloads: list[tuple[str, Path, str | None]] = []
+
+    def fake_download(url: str, target: Path, *, expected_sha256=None, **_kwargs):  # noqa: ANN202
+        downloads.append((url, target, expected_sha256))
+        target.write_bytes(b"direct-sif")
+        return target
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.download_verified_file", fake_download)
+    monkeypatch.setattr(
+        "neurocade_runtime_tools.images.run_managed_command",
+        lambda *_args, **_kwargs: pytest.fail("converted OCI image instead of downloading direct SIF"),
+    )
+    prepared = prepare_image(
+        RuntimeImageSpec(
+            "vnmd/fastsurfer_2.4.2:20260115",
+            oci_digest=f"sha256:{'a' * 64}",
+            sif_url="https://example.test/fastsurfer.simg",
+            sif_sha256=checksum,
+        ),
+        backend="apptainer",
+        image_dir=tmp_path,
+    )
+
+    assert prepared == str(tmp_path / "vnmd_fastsurfer_2.4.2_20260115.sif")
+    assert downloads == [(
+        "https://example.test/fastsurfer.simg",
+        tmp_path / "vnmd_fastsurfer_2.4.2_20260115.sif",
+        checksum,
+    )]
+
+
 def test_verified_download_uses_valid_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "tool.sif"
     target.write_bytes(b"verified")
@@ -141,6 +187,64 @@ def test_docker_pull_progress_tracks_download_and_extraction() -> None:
     assert "progress" not in updates[-1]
 
 
+def test_docker_pull_progress_handles_cursor_redraws_and_digest_layer_ids() -> None:
+    updates: list[dict] = []
+    tracker = _DockerPullProgress("example/tool:1.0", updates.append)
+    chunks = (
+        "\x1b[?25l\x1b[2Ksha256:aaaa: Downloading [====>] 3.5MB / 10MB\x1b[1A",
+        "\x1b[2Kbbbb: Downloading [=>] 1MB/5MB\rpartial",
+    )
+    pending = ""
+    for chunk in chunks:
+        frames, pending = _progress_frames(pending + chunk)
+        for frame in frames:
+            tracker.feed(frame)
+
+    assert pending == "partial"
+    assert updates[-1]["current_bytes"] == 4_500_000
+    assert updates[-1]["total_bytes"] == 15_000_000
+    assert updates[-1]["progress"] == 0.3
+
+
+def test_docker_pull_unknown_output_refreshes_activity_without_false_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates: list[dict] = []
+    clock = iter((10.0, 13.0, 13.0))
+    monkeypatch.setattr("neurocade_runtime_tools.images.time.monotonic", lambda: next(clock))
+    tracker = _DockerPullProgress("example/tool:1.0", updates.append)
+
+    tracker.publish(phase="downloading", progress=0.0)
+    assert tracker.feed("new Docker progress format") is False
+    tracker.note_output()
+
+    assert updates[-1]["phase"] == "downloading"
+    assert "progress" not in updates[-1]
+
+
+def test_cli_image_progress_reports_phases_bytes_and_cache_status() -> None:
+    stream = io.StringIO()
+    progress = _CliImageProgress(stream)
+
+    progress({"image": "example/tool:1", "phase": "waiting"})
+    progress({
+        "image": "example/tool:1",
+        "phase": "downloading",
+        "progress": 0.5,
+        "current_bytes": 5 * 1024**2,
+        "total_bytes": 10 * 1024**2,
+        "completed_layers": 2,
+        "total_layers": 4,
+    })
+    progress({"image": "example/tool:1", "phase": "ready", "progress": 1.0, "cached": True})
+
+    assert stream.getvalue().splitlines() == [
+        "Waiting example/tool:1",
+        "Downloading example/tool:1 (5.0 MiB / 10.0 MiB, 2/4 layers, 50%)",
+        "Ready example/tool:1 (100%, cached)",
+    ]
+
+
 def test_image_storage_preflight_warns_and_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "neurocade_runtime_tools.images._docker_reclaimable_summary",
@@ -176,29 +280,187 @@ def test_relative_path_conversion_rejects_escape_and_symlink(tmp_path: Path) -> 
         relative_to_data_root(root / "link" / "file", root, label="case")
 
 
-def test_docker_builder_is_hardened_and_has_no_nested_privilege(tmp_path: Path) -> None:
+def test_docker_builder_is_hardened_and_has_no_nested_privilege(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("NEUROCADE_DOCKER_PLATFORM", raising=False)
     source = tmp_path / "case"
     source.mkdir()
     request = RuntimeContainerRunRequest(
         image=RuntimeImageSpec("example/tool:1"),
         command=["tool", "--version"],
         binds=[BridgeBind("case", "/case", "ro")],
+        scratch_paths=["/workflow_output"],
         cwd="/case",
         network_disabled=True,
         gpu_enabled=True,
         run_id="abc",
     )
-    argv = build_docker_argv(request, data_root=tmp_path)
+    argv = build_docker_argv(request, data_root=tmp_path, platform="linux/arm64")
     rendered = " ".join(argv)
-    assert argv[:3] == ["docker", "run", "--rm"]
+    assert argv[:5] == ["docker", "run", "--platform", "linux/arm64", "--rm"]
     assert "--network none" in rendered
     assert "--read-only" in argv and "--cap-drop ALL" in rendered
     assert "no-new-privileges" in argv and "--gpus all" in rendered
     assert "readonly" in rendered
+    assert f"/workflow_output:rw,nosuid,nodev,noexec,uid={os.getuid()},gid={os.getgid()},mode=0755" in argv
     entrypoint_index = argv.index("--entrypoint")
     assert argv[entrypoint_index + 1] == "tool"
     assert argv[-2:] == ["example/tool:1", "--version"]
     assert "--privileged" not in argv and "/dev/fuse" not in rendered
+
+
+def test_docker_builder_propagates_resolved_tool_platform(tmp_path: Path) -> None:
+    request = RuntimeContainerRunRequest(
+        image=RuntimeImageSpec("vnmd/freesurfer_8.2.0:20260818"),
+        command=["mri_info", "--help"],
+        run_id="probe",
+    )
+
+    argv = build_docker_argv(
+        request,
+        data_root=tmp_path,
+        platform="linux/amd64",
+        launch_id="test-launch",
+    )
+
+    assert argv[:5] == ["docker", "run", "--platform", "linux/amd64", "--rm"]
+    assert "org.neurocade.launch-id=test-launch" in argv
+
+
+def test_configured_docker_platform_rejects_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEUROCADE_DOCKER_PLATFORM", "--privileged")
+    with pytest.raises(ValueError, match="os/architecture"):
+        configured_docker_platform()
+
+
+def test_prepare_image_uses_native_platform_for_pull_and_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("NEUROCADE_DOCKER_PLATFORM", "linux/amd64")
+    results = iter([
+        SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"manifests": [
+                {"platform": {"os": "linux", "architecture": "arm64", "variant": "v8"}},
+                {"platform": {"os": "linux", "architecture": "amd64"}},
+            ]}),
+            stderr="",
+        ),
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
+    ])
+    monkeypatch.setattr("neurocade_runtime_tools.images.detected_docker_host_platform", lambda: "linux/arm64")
+    monkeypatch.setattr("neurocade_runtime_tools.images.run_managed_command", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr("neurocade_runtime_tools.images._storage_preflight", lambda: {})
+
+    def fake_pull(reference: str, **kwargs) -> None:  # noqa: ANN003
+        captured["reference"] = reference
+        captured.update(kwargs)
+
+    monkeypatch.setattr("neurocade_runtime_tools.images._pull_docker_image", fake_pull)
+
+    prepared = prepare_image(
+        RuntimeImageSpec("vnmd/freesurfer_8.2.0:20260818"),
+        backend="docker",
+        image_dir=tmp_path,
+    )
+
+    assert prepared == "vnmd/freesurfer_8.2.0:20260818"
+    assert prepared.platform == "linux/arm64/v8"
+    assert captured["platform"] == prepared.platform
+    assert captured["metadata"] == {
+        "host_platform": "linux/arm64",
+        "platform": "linux/arm64/v8",
+        "supported_platforms": ["linux/amd64", "linux/arm64/v8"],
+    }
+    run_argv = build_docker_argv(
+        RuntimeContainerRunRequest(
+            image=RuntimeImageSpec(str(prepared)),
+            command=["mri_info", "--help"],
+        ),
+        data_root=tmp_path,
+        platform=prepared.platform,
+    )
+    assert run_argv[2:4] == ["--platform", captured["platform"]]
+
+
+def test_docker_platform_resolution_falls_back_to_amd64(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("neurocade_runtime_tools.images.detected_docker_host_platform", lambda: "linux/arm64")
+    monkeypatch.setattr(
+        "neurocade_runtime_tools.images.run_managed_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}}}),
+            stderr="",
+        ),
+    )
+
+    resolved, supported = resolve_docker_image_platform("example/tool:1")
+
+    assert resolved == "linux/amd64"
+    assert supported == {"linux/amd64"}
+
+
+def test_docker_platform_resolution_rejects_unsupported_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("neurocade_runtime_tools.images.detected_docker_host_platform", lambda: "linux/arm64")
+    monkeypatch.setattr(
+        "neurocade_runtime_tools.images.run_managed_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"manifests": [
+                {"platform": {"os": "linux", "architecture": "ppc64le"}},
+                {"platform": {"os": "windows", "architecture": "amd64"}},
+            ]}),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"detected host linux/arm64.*linux/ppc64le, windows/amd64",
+    ):
+        resolve_docker_image_platform("example/tool:1")
+
+
+def test_docker_pull_failure_preserves_registry_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    chunks = iter([b"Error response from daemon: no matching manifest for linux/arm64/v8\r"])
+
+    class FakeProcess:
+        def __init__(self, args, **_kwargs):  # noqa: ANN001, ANN003
+            captured["args"] = args
+            self.args = args
+
+        @staticmethod
+        def wait() -> int:
+            return 1
+
+    def fake_read(_fd: int, _size: int) -> bytes:
+        try:
+            return next(chunks)
+        except StopIteration as exc:
+            raise OSError(errno.EIO, "end of pseudo-terminal") from exc
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.subprocess.Popen", FakeProcess)
+    monkeypatch.setattr("neurocade_runtime_tools.images.os.read", fake_read)
+    monkeypatch.setattr("neurocade_runtime_tools.images._terminate_process_group", lambda _process: None)
+
+    with pytest.raises(RuntimeError, match="no matching manifest for linux/arm64/v8"):
+        _pull_docker_image(
+            "vnmd/freesurfer_8.2.0:20260818",
+            platform="linux/amd64",
+            process_observer=None,
+            progress_observer=None,
+        )
+
+    assert captured["args"] == [
+        "docker",
+        "pull",
+        "--platform",
+        "linux/amd64",
+        "vnmd/freesurfer_8.2.0:20260818",
+    ]
 
 
 def test_docker_builder_requires_explicit_command(tmp_path: Path) -> None:
@@ -207,14 +469,18 @@ def test_docker_builder_requires_explicit_command(tmp_path: Path) -> None:
         command=[],
     )
     with pytest.raises(ValueError, match="explicit command"):
-        build_docker_argv(request, data_root=tmp_path)
+        build_docker_argv(request, data_root=tmp_path, platform="linux/amd64")
 
 
 def test_bridge_duplicate_run_ids_and_lifecycle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     (data_root / "case").mkdir(parents=True)
     runtime = BridgeRuntime(backend="docker", data_root=data_root, image_dir=tmp_path / "images")
-    monkeypatch.setattr(bridge_module, "prepare_image", lambda *_args, **_kwargs: "example/tool:1")
+    monkeypatch.setattr(
+        bridge_module,
+        "prepare_image",
+        lambda *_args, **_kwargs: PreparedImage("example/tool:1", "linux/amd64"),
+    )
     monkeypatch.setattr(
         bridge_module,
         "build_docker_argv",
@@ -234,6 +500,30 @@ def test_bridge_duplicate_run_ids_and_lifecycle(monkeypatch: pytest.MonkeyPatch,
             break
         threading.Event().wait(0.01)
     assert run.public()["stdout"].strip() == "bridge-ok"
+
+
+def test_bridge_writes_image_preparation_failure_to_requested_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    data_root = tmp_path / "data"
+    (data_root / "case" / "runs").mkdir(parents=True)
+    runtime = BridgeRuntime(backend="docker", data_root=data_root, image_dir=tmp_path / "images")
+
+    def fail_prepare(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise RuntimeError('exec: "docker-credential-desktop": executable file not found in $PATH')
+
+    monkeypatch.setattr(bridge_module, "prepare_image", fail_prepare)
+    payload = _payload(data_root, run_id="failed-pull")
+    payload["stderr_relative"] = "case/runs/stderr.log"
+    run, _created = runtime.start(payload)
+    for _ in range(100):
+        if run.public()["state"] == "failed":
+            break
+        threading.Event().wait(0.01)
+
+    diagnostic = (data_root / "case" / "runs" / "stderr.log").read_text(encoding="utf-8")
+    assert "docker-credential-desktop" in diagnostic
+    assert run.public()["stderr"].strip() == diagnostic.strip()
 
 
 def test_capability_resolution_does_not_pull_when_host_has_no_gpu(
@@ -268,7 +558,7 @@ def _client_request(tmp_path: Path) -> RuntimeExecutionRequest:
 
 
 def test_bridge_client_recovers_from_transient_poll_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, poll_interval_s=0)
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
     responses: list[dict | Exception] = [
         {},
         BridgeError("temporary disconnect"),
@@ -291,7 +581,7 @@ def test_bridge_client_recovers_from_transient_poll_failure(monkeypatch: pytest.
 
 
 def test_bridge_client_publishes_changed_progress(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, poll_interval_s=0)
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
     progress = {"kind": "image", "phase": "downloading", "progress": 0.5}
     responses = [
         {},
@@ -313,7 +603,7 @@ def test_bridge_client_publishes_changed_progress(monkeypatch: pytest.MonkeyPatc
 def test_bridge_client_republishes_unchanged_progress_as_heartbeat(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, poll_interval_s=0)
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
     progress = {
         "kind": "image",
         "phase": "downloading",
@@ -344,7 +634,7 @@ def test_bridge_client_republishes_unchanged_progress_as_heartbeat(
 def test_bridge_client_cancels_nonterminal_run_after_protocol_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, poll_interval_s=0)
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
     calls: list[tuple[str, str]] = []
 
     def request(method: str, path: str, **_kwargs):  # noqa: ANN003, ANN202
@@ -427,7 +717,7 @@ def test_cancel_terminates_an_image_pull(monkeypatch: pytest.MonkeyPatch, tmp_pa
             check=True,
             process_observer=process_observer,
         )
-        return "example/tool:1"
+        return PreparedImage("example/tool:1", "linux/amd64")
 
     monkeypatch.setattr(bridge_module, "prepare_image", slow_prepare)
     run, _created = runtime.start(_payload(data_root, run_id="cancel-pull"))
@@ -450,7 +740,12 @@ def test_http_bridge_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     data_root.mkdir()
     runtime = BridgeRuntime(backend="docker", data_root=data_root, image_dir=tmp_path / "images")
     try:
-        server = BridgeHTTPServer(("127.0.0.1", 0), runtime, "x" * 43)
+        server = BridgeHTTPServer(
+            ("127.0.0.1", 0),
+            runtime,
+            "x" * 43,
+            launch_id="test-launch",
+        )
     except PermissionError:
         pytest.skip("sandbox does not permit loopback listeners")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -459,9 +754,19 @@ def test_http_bridge_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     session = Session()
     try:
         assert session.get(url, timeout=2).status_code == 401
-        response = session.get(url, headers={"Authorization": f"Bearer {'x' * 43}"}, timeout=2)
+        assert session.get(
+            url,
+            headers={"Authorization": f"Bearer {'x' * 43}", "X-NeuroCade-Launch-ID": "wrong-launch"},
+            timeout=2,
+        ).status_code == 409
+        response = session.get(
+            url,
+            headers={"Authorization": f"Bearer {'x' * 43}", "X-NeuroCade-Launch-ID": "test-launch"},
+            timeout=2,
+        )
         assert response.status_code == 200
         assert response.json()["protocol_version"] == PROTOCOL_VERSION
+        assert response.json()["launch_id"] == "test-launch"
     finally:
         server.shutdown()
         server.server_close()

@@ -29,27 +29,46 @@ class RuntimeGpuUnavailableError(RuntimeError):
 
 
 class BridgeClient:
-    def __init__(self, base_url: str, token: str, data_root: Path, *, poll_interval_s: float = 0.25) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        data_root: Path,
+        *,
+        launch_id: str | None = None,
+        poll_interval_s: float = 0.25,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token.strip()
         self.data_root = data_root.expanduser().resolve()
+        self.launch_id = (launch_id or os.environ.get("NEUROCADE_LAUNCH_ID", "")).strip()
         self.poll_interval_s = poll_interval_s
         self.session = requests.Session()
         if not self.token:
             raise BridgeError("Runtime bridge token is empty")
+        if not self.launch_id:
+            raise BridgeError("NEUROCADE_LAUNCH_ID is required")
 
     @classmethod
     def from_environment(cls) -> BridgeClient:
         url = os.environ.get("NEUROCADE_BRIDGE_URL", "").strip()
         token_file = os.environ.get("NEUROCADE_BRIDGE_TOKEN_FILE", "").strip()
         data_root = os.environ.get("HOST_DATA_DIR", "").strip()
-        if not url or not token_file or not data_root:
-            raise BridgeError("NEUROCADE_BRIDGE_URL, NEUROCADE_BRIDGE_TOKEN_FILE, and HOST_DATA_DIR are required")
-        return cls(url, Path(token_file).read_text(encoding="utf-8"), Path(data_root))
+        launch_id = os.environ.get("NEUROCADE_LAUNCH_ID", "").strip()
+        if not url or not token_file or not data_root or not launch_id:
+            raise BridgeError(
+                "NEUROCADE_BRIDGE_URL, NEUROCADE_BRIDGE_TOKEN_FILE, "
+                "NEUROCADE_LAUNCH_ID, and HOST_DATA_DIR are required"
+            )
+        return cls(url, Path(token_file).read_text(encoding="utf-8"), Path(data_root), launch_id=launch_id)
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "X-NeuroCade-Launch-ID": self.launch_id,
+        }
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         timeout = kwargs.pop("request_timeout", 10)
@@ -87,6 +106,8 @@ class BridgeClient:
         payload = self._request("GET", "/v1/health")
         if payload.get("protocol_version") != PROTOCOL_VERSION:
             raise BridgeError(f"Incompatible runtime bridge protocol: {payload.get('protocol_version')!r}")
+        if payload.get("launch_id") != self.launch_id:
+            raise BridgeError("Runtime bridge launch session does not match the application")
         return payload
 
     def resolve_capability(self, image: object) -> dict[str, Any]:
@@ -124,6 +145,7 @@ class BridgeClient:
             "run_id": run.run_id,
             "container": {
                 "image": run.image.to_dict(), "command": list(run.command), "binds": binds,
+                "scratch_paths": list(run.scratch_paths),
                 "env": dict(run.env or {}), "cwd": run.cwd,
                 "network_disabled": run.network_disabled, "gpu_enabled": run.gpu_enabled,
                 "isolated": run.isolated,

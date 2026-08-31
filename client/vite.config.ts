@@ -6,6 +6,9 @@ export default defineConfig({
   plugins: [react()],
   cacheDir: '/tmp/vite-cache',
   build: {
+    // NiiVue is intentionally isolated as one lazy viewer chunk. Its exact size
+    // is enforced separately by scripts/checkBundleSize.mjs.
+    chunkSizeWarningLimit: 1_600,
     rollupOptions: {
       output: {
         manualChunks(id) {

@@ -30,8 +30,9 @@ def live_cases(disposable_workspace, tmp_path_factory):
             title=f"assistant-eval-{index}",
             content_type="application/gzip",
         )
+        filename = case["filenames"][0]
         cases.append(
-            {"id": case["case_id"], "workspace_id": disposable_workspace["id"], "filename": case["filename"]}
+            {"id": case["case_id"], "workspace_id": disposable_workspace["id"], "filename": filename}
         )
     return cases
 

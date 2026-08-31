@@ -21,6 +21,21 @@ def _settings_without_env_file() -> Settings:
     return cast(Any, Settings)(_env_file=None)
 
 
+def test_browser_startup_message_highlights_url_and_honors_no_color(monkeypatch):
+    from api_service.main import browser_startup_message
+
+    url = "http://127.0.0.1:8000"
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    colored = browser_startup_message(url)
+    assert "\033[1;32m" in colored
+    assert f"\033[1;36m{url}\033[0m" in colored
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    plain = browser_startup_message(url)
+    assert "\033[" not in plain
+    assert plain == "Open NeuroCade in a browser at http://127.0.0.1:8000"
+
+
 def test_provider_registry_exposes_chat_models():
     assert {model.provider for model in provider_registry.list_models()} >= {"openai-compatible", "no-llm"}
 
@@ -53,6 +68,7 @@ def test_openai_compatible_provider_allows_blank_api_key(monkeypatch):
 
 
 def test_openai_compatible_provider_disables_qwen_thinking_by_default(monkeypatch):
+    monkeypatch.setattr(provider_module.settings, "llm_provider_default", "openai-compatible")
     monkeypatch.setattr(provider_module.settings, "llm_backend_url", "http://127.0.0.1:11434")
     monkeypatch.setattr(provider_module.settings, "llm_disable_thinking", True)
     monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "backend-token")

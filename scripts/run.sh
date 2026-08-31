@@ -7,7 +7,9 @@ ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/lib/env.sh"
 source "$ROOT_DIR/scripts/lib/managed_python.sh"
+source "$ROOT_DIR/scripts/lib/docker_cli.sh"
 load_env_file
+configure_docker_cli_path
 
 RUNTIME="${NEUROCADE_RUNTIME:-}"
 HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
@@ -20,6 +22,7 @@ BRIDGE_BIN="$BRIDGE_VENV/bin/neurocade-runtime-bridge"
 BRIDGE_TOKEN_FILE="$RUNTIME_DIR/bridge-token"
 BRIDGE_PID_FILE="$RUNTIME_DIR/bridge.pid"
 BRIDGE_LOG="$RUNTIME_DIR/bridge.log"
+LAUNCH_ID_FILE="$RUNTIME_DIR/launch-id"
 LAUNCHER_LOCK_DIR="$RUNTIME_DIR/launcher.lock"
 APP_PID_FILE="$RUNTIME_DIR/app.pid"
 APP_LOG="$RUNTIME_DIR/app.log"
@@ -32,9 +35,9 @@ IMAGE="${NEUROCADE_IMAGE:-ghcr.io/deep-mi/neurocade:latest}"
 CONTAINER_NAME="${NEUROCADE_CONTAINER_NAME:-neurocade}"
 DATABASE_VOLUME="${NEUROCADE_DATABASE_VOLUME:-neurocade-database}"
 DOCKER_PLATFORM="${NEUROCADE_DOCKER_PLATFORM:-}"
-APP_SIF_URL="${NEUROCADE_APP_SIF_URL:-}"
-APP_SIF_SHA256="${NEUROCADE_APP_SIF_SHA256:-}"
+APP_SIF_MODE="${NEUROCADE_APP_SIF_MODE:-}"
 APP_SIF="$IMAGE_DIR/neurocade-app-amd64.sif"
+BRIDGE_PACKAGE="${NEUROCADE_BRIDGE_PACKAGE:-$ROOT_DIR/packages/neurocade-runtime-tools}"
 TOOL_MANIFEST="$ROOT_DIR/config/tool_images.json"
 SAMPLE_CASE_DIR="$ROOT_DIR/sample_case"
 SAMPLE_CASE_NAME="${NEUROCADE_SAMPLE_CASE_NAME:-FastSurfer_Rhineland_0000}"
@@ -53,6 +56,15 @@ EOF
 fail() { echo "ERROR: $*" >&2; exit 1; }
 truthy() { case "${1:-}" in 1|true|TRUE|yes|YES|on|ON) return 0 ;; *) return 1 ;; esac; }
 
+print_browser_url() {
+  local browser_url="$1"
+  if [[ -n "${NO_COLOR+x}" || ! -t 1 ]]; then
+    printf 'Open NeuroCade in a browser at %s\n' "$browser_url"
+    return
+  fi
+  printf '\033[1;32mOpen NeuroCade in a browser at\033[0m \033[1;36m%s\033[0m\n' "$browser_url"
+}
+
 validate_configuration() {
   case "$RUNTIME" in docker|apptainer) ;; *) fail "NEUROCADE_RUNTIME=docker|apptainer is required. Rerun scripts/install.sh --runtime docker|apptainer." ;; esac
   [[ "$BRIDGE_PORT" =~ ^[0-9]+$ ]] && (( BRIDGE_PORT > 0 && BRIDGE_PORT < 65536 )) || fail "Invalid NEUROCADE_BRIDGE_PORT"
@@ -61,6 +73,7 @@ validate_configuration() {
   if [[ "$RUNTIME" == "docker" ]]; then
     command -v docker >/dev/null 2>&1 || fail "Docker is required for the docker profile"
   else
+    case "$APP_SIF_MODE" in release|source) ;; *) fail "The Apptainer artifact mode is missing; rerun scripts/install.sh" ;; esac
     [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] || fail "Apptainer profile currently requires Linux amd64"
     [[ "$(id -u)" -ne 0 ]] || fail "The rootless Apptainer profile must be run as a non-root user"
     [[ -r /proc/sys/user/max_user_namespaces ]] && (( $(cat /proc/sys/user/max_user_namespaces) > 0 )) || fail "User namespaces are required"
@@ -84,7 +97,8 @@ ensure_bridge_environment() {
   if [[ "$bridge_identity" != "$managed_identity" ]]; then
     managed_uv venv --clear --python "$python_bin" "$BRIDGE_VENV"
   fi
-  managed_uv pip install --python "$BRIDGE_VENV/bin/python" "$ROOT_DIR/packages/neurocade-runtime-tools"
+  [[ -e "$BRIDGE_PACKAGE" ]] || fail "The matched runtime bridge package is missing; rerun scripts/install.sh"
+  managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$BRIDGE_PACKAGE"
   [[ -x "$BRIDGE_BIN" ]] || fail "Managed runtime bridge installation failed"
 }
 
@@ -116,6 +130,19 @@ ensure_token() {
     "$BRIDGE_VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))' >"$BRIDGE_TOKEN_FILE"
   fi
   chmod 600 "$BRIDGE_TOKEN_FILE"
+}
+
+load_launch_id() {
+  LAUNCH_ID=""
+  [[ -s "$LAUNCH_ID_FILE" ]] && LAUNCH_ID="$(sed -n '1p' "$LAUNCH_ID_FILE")"
+  return 0
+}
+
+new_launch_id() {
+  umask 077
+  LAUNCH_ID="$("$BRIDGE_VENV/bin/python" -c 'import uuid; print(uuid.uuid4())')"
+  printf '%s\n' "$LAUNCH_ID" >"$LAUNCH_ID_FILE"
+  chmod 600 "$LAUNCH_ID_FILE"
 }
 
 port_in_use() {
@@ -153,7 +180,31 @@ pid_matches() {
 }
 
 bridge_health() {
-  "$BRIDGE_VENV/bin/python" -c 'import sys,requests; r=requests.get(sys.argv[1]+"/v1/health",headers={"Authorization":"Bearer "+open(sys.argv[2]).read().strip()},timeout=5); r.raise_for_status(); p=r.json(); raise SystemExit(0 if p.get("protocol_version")=="1" and p.get("backend")==sys.argv[3] else 1)' "http://127.0.0.1:$BRIDGE_PORT" "$BRIDGE_TOKEN_FILE" "$RUNTIME" >/dev/null 2>&1
+  [[ -n "${LAUNCH_ID:-}" ]] || return 1
+  "$BRIDGE_VENV/bin/python" -c 'import sys,requests; from neurocade_runtime_tools.protocol import PROTOCOL_VERSION; h={"Authorization":"Bearer "+open(sys.argv[2]).read().strip(),"X-NeuroCade-Launch-ID":sys.argv[4]}; r=requests.get(sys.argv[1]+"/v1/health",headers=h,timeout=5); r.raise_for_status(); p=r.json(); expected={"protocol_version":PROTOCOL_VERSION,"backend":sys.argv[3],"launch_id":sys.argv[4],"docker_platform":sys.argv[5] or None,"data_root":sys.argv[6],"image_dir":sys.argv[7]}; raise SystemExit(0 if all(p.get(k)==v for k,v in expected.items()) else 1)' \
+    "http://127.0.0.1:$BRIDGE_PORT" "$BRIDGE_TOKEN_FILE" "$RUNTIME" "$LAUNCH_ID" \
+    "$DOCKER_PLATFORM" "$HOST_DATA_DIR" "$IMAGE_DIR" >/dev/null 2>&1
+}
+
+bridge_active_runs() {
+  local launch_header="${LAUNCH_ID:-}"
+  "$BRIDGE_VENV/bin/python" -c 'import sys,requests; h={"Authorization":"Bearer "+open(sys.argv[2]).read().strip()}; sys.argv[3] and h.update({"X-NeuroCade-Launch-ID":sys.argv[3]}); r=requests.get(sys.argv[1]+"/v1/health",headers=h,timeout=5); r.raise_for_status(); print(int(r.json().get("active_runs",0)))' \
+    "http://127.0.0.1:$BRIDGE_PORT" "$BRIDGE_TOKEN_FILE" "$launch_header" 2>/dev/null
+}
+
+begin_launch_session() {
+  local active_runs=""
+  load_launch_id
+  if pid_matches "$BRIDGE_PID_FILE" "neurocade-runtime-bridge"; then
+    active_runs="$(bridge_active_runs || true)"
+    [[ "$active_runs" =~ ^[0-9]+$ ]] || fail \
+      "The existing runtime bridge cannot be identified safely; run ./scripts/run.sh stop before restarting"
+    (( active_runs == 0 )) || fail \
+      "The previous application stopped while $active_runs workflow(s) remain active; wait for them to finish before restarting"
+    echo "Restarting the runtime bridge for a new application launch session."
+    stop_bridge
+  fi
+  new_launch_id
 }
 
 start_bridge() {
@@ -174,6 +225,7 @@ start_bridge() {
   [[ "$RUNTIME" == "docker" ]] && bind_host=0.0.0.0
   "$BRIDGE_BIN" serve --runtime "$RUNTIME" --data-root "$HOST_DATA_DIR" --image-dir "$IMAGE_DIR" \
     --host "$bind_host" --port "$BRIDGE_PORT" --token-file "$BRIDGE_TOKEN_FILE" \
+    --launch-id "$LAUNCH_ID" \
     --daemonize --pid-file "$BRIDGE_PID_FILE" --log-file "$BRIDGE_LOG"
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
@@ -291,6 +343,8 @@ case "$COMMAND" in
   doctor)
     ensure_bridge_environment
     ensure_token
+    load_launch_id
+    [[ -n "$LAUNCH_ID" ]] || new_launch_id
     report_managed_toolchain
     "$BRIDGE_BIN" doctor --runtime "$RUNTIME" --data-root "$HOST_DATA_DIR" --image-dir "$IMAGE_DIR"
     BRIDGE_WAS_RUNNING=0
@@ -298,14 +352,15 @@ case "$COMMAND" in
     [[ "$BRIDGE_WAS_RUNNING" -eq 1 ]] || trap 'stop_bridge' EXIT INT TERM
     start_bridge
     bridge_health || fail "Bridge health check failed"
-    echo "OK: bridge protocol 1, backend $RUNTIME"
+    echo "OK: bridge protocol $("$BRIDGE_VENV/bin/python" -c 'from neurocade_runtime_tools.protocol import PROTOCOL_VERSION; print(PROTOCOL_VERSION)'), backend $RUNTIME"
     if [[ "$BRIDGE_WAS_RUNNING" -eq 0 ]]; then
       stop_bridge
       trap - EXIT INT TERM
     fi
     ;;
-  stop) stop_application; stop_bridge ;;
+  stop) stop_application; stop_bridge; rm -f "$LAUNCH_ID_FILE" ;;
   status)
+    load_launch_id
     if bridge_health; then echo "Runtime bridge: running"; else echo "Runtime bridge: stopped"; fi
     if application_health; then
       if [[ -s "$APP_URL_FILE" ]]; then echo "NeuroCade: running at $(sed -n '1p' "$APP_URL_FILE")"; else echo "NeuroCade: running at http://127.0.0.1:$HTTP_PORT"; fi
@@ -323,17 +378,26 @@ case "$COMMAND" in
     ensure_application
     runtime_prepare_database
     ensure_sample_case
-    prepare_tools
-    start_bridge
+    load_launch_id
     if application_health; then
-      [[ -s "$APP_URL_FILE" ]] || write_application_url
-      echo "NeuroCade is already running at $(sed -n '1p' "$APP_URL_FILE")"
+      [[ -n "$LAUNCH_ID" ]] || fail "The running application has no launch-session identity; stop and restart NeuroCade"
+      start_bridge
+      print_browser_url "$(sed -n '1p' "$APP_URL_FILE")"
       exit 0
     fi
+    begin_launch_session
+    prepare_tools
+    start_bridge
     rm -f "$APP_URL_FILE"
     select_http_port
     write_application_url
+    if [[ "$DETACH" -eq 0 ]]; then
+      # A foreground application outlives the short launcher operation. Release
+      # the lock before waiting so a second terminal can stop or inspect it.
+      release_launcher_lock
+      trap - EXIT
+    fi
     runtime_start_application
-    if [[ "$DETACH" -eq 1 ]]; then wait_for_application; echo "NeuroCade is ready at $(sed -n '1p' "$APP_URL_FILE")"; fi
+    if [[ "$DETACH" -eq 1 ]]; then wait_for_application; print_browser_url "$(sed -n '1p' "$APP_URL_FILE")"; fi
     ;;
 esac

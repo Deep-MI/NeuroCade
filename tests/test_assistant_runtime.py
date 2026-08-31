@@ -672,7 +672,7 @@ def test_catalog_tool_call_returns_background_run_immediately(monkeypatch, seede
             "blocking": False,
             "run_id": "stable-assistant-run",
             "mode": "background",
-            "device": "gpu",
+                "device": "cpu",
         },
     )
 
@@ -1010,7 +1010,7 @@ def test_run_analysis_tools_come_from_workflow_catalog():
     assert {tool["execution"]["mode"] for tool in payload} == {"background"}
     fastsurfer = next(tool for tool in payload if tool["id"] == "fastsurfer_fast")
     assert fastsurfer["outputs"][0]["name"] == "whole_brain_segmentation"
-    assert fastsurfer["outputs"][0]["path"] == "mri/aparc.DKTatlas+aseg.deep.mgz"
+    assert fastsurfer["outputs"][0]["path"] == "fastsurfer_output/mri/aparc.DKTatlas+aseg.deep.mgz"
 
 
 def test_case_catalog_tool_call_passes_case_to_worker(monkeypatch, seeded_context):
@@ -1529,7 +1529,7 @@ def test_workflow_confirmation_uses_catalog_presentation():
         "Run FastSurfer segmentation without cortical surface reconstruction."
     )
     assert approval["presentation"]["inputs"][0]["path"] == "/case/mri/001.mgz"
-    assert approval["presentation"]["execution"] == {"mode": "background", "gpu": True}
+    assert approval["presentation"]["execution"] == {"mode": "background", "gpu": False}
 
 
 def test_run_chat_persists_history(monkeypatch, seeded_context):
@@ -1560,6 +1560,41 @@ def test_run_chat_persists_history(monkeypatch, seeded_context):
     assert db_session.query(AssistantTurn).one().status == "completed"
     thread_key = asyncio.run(runtime.get_thread_key(db_session, context, scope="case", workspace_id=workspace.id, case_id=case_a.id))
     assert thread_key is not None and thread_key.startswith("private:")
+
+
+def test_run_chat_persists_interrupted_turn(monkeypatch, seeded_context):
+    db_session, context, workspace, case_a, _case_b = seeded_context
+    runtime = AssistantRuntime(FakeGuiRuntime())
+
+    async def cancel_turn(_state):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runtime.loop, "run", cancel_turn)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            runtime.run_chat(
+                db=db_session,
+                context=context,
+                messages=[{"role": "user", "content": "Download the image"}],
+                workspace_id=workspace.id,
+                case_id=case_a.id,
+                gui_session_id="gui-test",
+                scope="case",
+                provider=None,
+                model=None,
+                persist=True,
+            )
+        )
+
+    history = asyncio.run(
+        runtime.list_history(db_session, context, scope="case", workspace_id=workspace.id, case_id=case_a.id)
+    )
+    assert [(message.role, message.content) for message in history] == [
+        ("user", "Download the image"),
+        ("assistant", "Assistant turn was interrupted before completion."),
+    ]
+    assert db_session.query(AssistantTurn).one().status == "canceled"
 
 
 def test_run_chat_streams_and_persists_interim_assistant_message(monkeypatch, seeded_context):
@@ -2064,7 +2099,7 @@ def test_tool_inspect_returns_image_but_hides_script():
         {}, ToolExecutionContext("inspect-1"), {"tool_id": "fastsurfer_fast"}
     ).content)
 
-    assert inspected["image"] == "deepmi/fastsurfer:cu128-v2.5.4"
+    assert inspected["image"] == "vnmd/fastsurfer_2.4.2:20260115"
     assert "script" not in inspected
     assert inspected["tool_id"] == "fastsurfer_fast"
 

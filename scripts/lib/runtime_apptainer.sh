@@ -2,12 +2,12 @@
 # shellcheck shell=bash
 
 runtime_application_exists() {
-  return 1
+  [[ -s "$APP_SIF" && -f "$APP_SIF.mode" && "$(sed -n '1p' "$APP_SIF.mode")" == "$APP_SIF_MODE" ]]
 }
 
 runtime_pull_application() {
-  [[ -n "$APP_SIF_URL" && "$APP_SIF_URL" == https://* && "$APP_SIF_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "NEUROCADE_APP_SIF_URL and NEUROCADE_APP_SIF_SHA256 are required"
-  "$BRIDGE_BIN" download-verified --url "$APP_SIF_URL" --sha256 "$APP_SIF_SHA256" --target "$APP_SIF"
+  runtime_application_exists && return
+  fail "The application SIF is missing; rerun scripts/install.sh to download the latest release or build from source"
 }
 
 runtime_prepare_database() {
@@ -24,6 +24,7 @@ build_apptainer_application_command() {
   APPTAINER_APP_COMMAND+=(
     --env NEUROCADE_RUNTIME=apptainer --env NEUROCADE_BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
     --env NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token --env HOST_DATA_DIR=/data
+    --env NEUROCADE_LAUNCH_ID="$LAUNCH_ID"
     --env DATABASE_URL=sqlite+pysqlite:////database/neurocade.db
     --env NEUROCADE_ACCESS_URL="$(sed -n '1p' "$APP_URL_FILE")" "$APP_SIF"
     python -m uvicorn api_service.main:app --host "$HTTP_BIND" --port "$HTTP_PORT"

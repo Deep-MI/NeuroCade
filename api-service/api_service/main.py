@@ -32,11 +32,21 @@ startup_logger = logging.getLogger("uvicorn.error")
 settings = get_settings()
 
 
-def validate_runtime_bridge() -> dict:
+def browser_startup_message(browser_url: str) -> str:
+    """Make the browser URL prominent in interactive startup logs."""
+    if "NO_COLOR" in os.environ:
+        return f"Open NeuroCade in a browser at {browser_url}"
+    return (
+        "\033[1;32mOpen NeuroCade in a browser at\033[0m "
+        f"\033[1;36m{browser_url}\033[0m"
+    )
+
+
+def validate_runtime_bridge(client: BridgeClient | None = None) -> dict:
     """Require a protocol-compatible bridge using the selected matched runtime."""
     if settings.neurocade_runtime not in {"docker", "apptainer"}:
         raise RuntimeError("NEUROCADE_RUNTIME=docker|apptainer is required")
-    health = BridgeClient.from_environment().health()
+    health = (client or BridgeClient.from_environment()).health()
     if health.get("build_version") != BUILD_VERSION:
         raise RuntimeError(
             f"Runtime bridge build mismatch: application expects {BUILD_VERSION}, bridge provides {health.get('build_version')}"
@@ -44,6 +54,12 @@ def validate_runtime_bridge() -> dict:
     if health.get("backend") != settings.neurocade_runtime:
         raise RuntimeError(
             f"Runtime mismatch: application selected {settings.neurocade_runtime}, bridge provides {health.get('backend')}"
+        )
+    expected_platform = os.environ.get("NEUROCADE_DOCKER_PLATFORM", "").strip() or None
+    if settings.neurocade_runtime == "docker" and health.get("docker_platform") != expected_platform:
+        raise RuntimeError(
+            "Runtime bridge Docker platform mismatch: "
+            f"application expects {expected_platform!r}, bridge provides {health.get('docker_platform')!r}"
         )
     return health
 
@@ -109,10 +125,7 @@ async def lifespan(_app: FastAPI):
             os.environ.get("NEUROCADE_ACCESS_URL")
             or settings.app_base_url
         )
-        startup_logger.info(
-            "Open NeuroCade in a browser at %s (0.0.0.0 is a server bind address, not a browser URL).",
-            browser_url,
-        )
+        startup_logger.info("%s", browser_startup_message(browser_url))
         startup_logger.info("NeuroCade backend startup checks complete.")
     except Exception:
         job_manager.configure_persistence(None)

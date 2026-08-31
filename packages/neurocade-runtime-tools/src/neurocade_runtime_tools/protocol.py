@@ -9,7 +9,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-PROTOCOL_VERSION = "1"
+PROTOCOL_VERSION = "2"
 try:
     BUILD_VERSION = version("neurocade-runtime-tools")
 except PackageNotFoundError:  # Source-tree execution before installation.

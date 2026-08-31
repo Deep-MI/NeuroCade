@@ -42,7 +42,7 @@ def test_workflow_approval_presentation_comes_from_catalog_config():
         "description": "T1-weighted input volume.",
         "path": "/case/mri/001.mgz",
     }]
-    assert presentation.execution.model_dump() == {"mode": "background", "gpu": True}
+    assert presentation.execution.model_dump() == {"mode": "background", "gpu": False}
     assert any(output.name == "whole_brain_segmentation" for output in presentation.outputs)
 
 

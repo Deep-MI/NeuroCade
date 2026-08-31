@@ -3,30 +3,35 @@
 NeuroCade uses a host-native runtime bridge and requires one matched profile:
 
 - `docker`: the application is a Docker container and tools run as direct host Docker containers.
-- `apptainer`: the application is a published SIF and tools run as verified SIFs with rootless Apptainer (Linux amd64).
+- `apptainer`: the application is a verified release SIF, or a SIF converted from the local source build, and tools run as verified SIFs with rootless Apptainer (Linux amd64).
 
 Mixed profiles, nested container runtimes, and legacy runtime settings are not supported.
 
 ## Install
 
-Docker (Linux or macOS):
+Automatic install:
 
 ```bash
 ./scripts/install.sh --mode local
 ```
 
-The runtime is optional. macOS selects Docker. Linux selects rootless Apptainer
-when it passes the host capability checks and otherwise falls back to Docker.
+Fresh Linux installs prefer rootless Apptainer and automatically download the
+latest stable NeuroCade release, its checksum, and its matching host bridge.
+The install fails clearly when no stable release exists. Linux falls back to
+Docker when rootless Apptainer is unavailable; macOS uses Docker.
 An existing `NEUROCADE_RUNTIME` setting is preserved on reinstall; pass
 `--runtime docker|apptainer` to override it.
 
-Rootless Apptainer (Linux amd64):
+Build an Apptainer installation from the current checkout:
 
 ```bash
-./scripts/install.sh --runtime apptainer --mode local \
-  --app-sif-url https://github.com/Deep-MI/NeuroCade/releases/download/VERSION/neurocade-app-VERSION-amd64.sif \
-  --app-sif-sha256 SHA256
+./scripts/install.sh --runtime apptainer --mode local --build-from-source
 ```
+
+This special path requires Docker. It builds the canonical Linux/amd64 OCI
+image from local files, converts it to a SIF with Apptainer, and installs the
+host bridge from the same checkout. Without Docker, only the release-download
+Apptainer path is supported.
 
 The installer pins `uv`, installs managed Python 3.12, creates
 `.runtime/bridge-venv`, generates `.runtime/bridge-token` with mode `0600`,
@@ -34,6 +39,12 @@ writes a fresh `.env`, prepares the default tool images, and starts the matched
 application and bridge. Rerun the installer to migrate an older installation;
 existing data, SQLite state, outputs, uploads, image caches, and `license.txt`
 are preserved.
+
+Docker installs build the application from the current checkout by default, so
+the application and host bridge always share one protocol revision. Pass
+`--image IMAGE` to opt into a prebuilt image. Apptainer must be selected
+explicitly only when it is not the automatically selected Linux runtime.
+Release artifacts and checksums are discovered automatically.
 
 The managed `uv` executable and Python installation live under `.runtime` and
 are used directly by the launcher. They do not need to be added to `PATH` and
@@ -50,7 +61,7 @@ all prompts, preserves configured values, and accepts defaults.
 ./scripts/run.sh stop
 ./scripts/run.sh status
 ./scripts/run.sh logs
-./scripts/run.sh pull
+./scripts/run.sh pull           # Docker pull; Apptainer artifacts are installer-managed
 ./scripts/run.sh build          # canonical Docker application image
 ./scripts/run.sh prepare-tools
 ./scripts/run.sh doctor
@@ -77,9 +88,9 @@ NEUROCADE_DATABASE_VOLUME=neurocade-database
 NEUROCADE_GPU_MODE=auto
 ```
 
-For Apptainer, also set the published `NEUROCADE_APP_SIF_URL` and
-`NEUROCADE_APP_SIF_SHA256`. Tool OCI digests and SIF checksums/URLs are in
-`config/tool_images.json`.
+Apptainer release selection is installer-managed. Rerun `scripts/install.sh`
+to update to the latest stable release. Tool OCI digests and SIF checksums/URLs
+are in `config/tool_images.json`.
 
 `NEUROCADE_GPU_MODE=auto` selects CUDA only after the bridge validates the host
 and selected tool image. `cuda` requires it; `cpu` disables it. Neither profile

@@ -11,7 +11,13 @@ from typing import Literal, TypedDict
 from sqlalchemy.orm import Session
 
 from api_service.file_utils import safe_write_json
-from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, WorkflowOutput, resolve_workflow, workflows
+from api_service.runtime_tools.workflow_catalog import (
+    NeuroimagingWorkflow,
+    WorkflowOutput,
+    resolve_workflow,
+    workflow_output_path,
+    workflows,
+)
 from backend_common.artifact_classification import classify_artifact
 from backend_common.artifact_upsert import insert_artifact_if_missing
 from backend_common.db import Artifact, Case, Run, RunStatus
@@ -162,7 +168,7 @@ def index_workflow_outputs(
     output_name_overrides = raw_overrides if isinstance(raw_overrides, dict) else {}
 
     for output in workflow.outputs:
-        relative_text = output.path.replace("{run_id}", run_id)
+        relative_text = workflow_output_path(workflow, output.path, run_id=run_id)
         candidate = case_dir / Path(*PurePosixPath(relative_text).parts)
         try:
             candidate_stat = candidate.lstat()
@@ -233,9 +239,10 @@ def index_case_catalog_outputs(db: Session, settings: Settings, case: Case) -> l
     for workflow in workflows():
         unique_outputs = []
         for output in workflow.outputs:
-            if "{run_id}" in output.path or output.path in seen_paths:
+            resolved_path = workflow_output_path(workflow, output.path)
+            if "{run_id}" in output.path or resolved_path in seen_paths:
                 continue
-            seen_paths.add(output.path)
+            seen_paths.add(resolved_path)
             unique_outputs.append(output)
         if not unique_outputs:
             continue

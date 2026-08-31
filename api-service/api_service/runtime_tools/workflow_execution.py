@@ -16,7 +16,12 @@ from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
 from api_service.runtime_tools.runtime_images import runtime_image_spec
-from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, resolve_workflow, workflows
+from api_service.runtime_tools.workflow_catalog import (
+    NeuroimagingWorkflow,
+    resolve_workflow,
+    workflow_output_path,
+    workflows,
+)
 from api_service.runtime_tools.workflow_outputs import (
     OutputBaseline,
     OutputState,
@@ -52,9 +57,11 @@ class PreparedWorkflow:
     container_inputs: tuple[str, ...]
     host_outputs: tuple[Path, ...]
     container_outputs: tuple[str, ...]
+    runtime_outputs: tuple[str, ...]
     container_run_dir: str
     host_run_dir: Path
     gpu_enabled: bool
+    host_output_root: Path | None
 
 
 def _path_under_container_root(path: str, container_root: str) -> PurePosixPath:
@@ -114,13 +121,26 @@ def prepare_workflow(
 
     host_outputs: list[Path] = []
     container_outputs: list[str] = []
+    runtime_outputs: list[str] = []
+    host_output_root = (
+        (host_root / tool.case_output_folder).resolve()
+        if tool.case_output_folder is not None
+        else None
+    )
+    if host_output_root is not None:
+        host_output_root.relative_to(host_root)
     for output in tool.outputs:
-        relative_text = output.path.replace("{run_id}", resolved_run_id)
+        relative_text = workflow_output_path(tool, output.path, run_id=resolved_run_id)
         relative = PurePosixPath(relative_text)
         host_output = (host_root / Path(*relative.parts)).resolve()
         host_output.relative_to(host_root)
         host_outputs.append(host_output)
         container_outputs.append(f"{container_root}/{relative.as_posix()}")
+        runtime_outputs.append(
+            f"/workflow_output/output/{output.path.replace('{run_id}', resolved_run_id)}"
+            if tool.case_output_folder is not None
+            else f"{container_root}/{relative.as_posix()}"
+        )
 
     return PreparedWorkflow(
         tool=tool,
@@ -131,6 +151,7 @@ def prepare_workflow(
         container_inputs=tuple(inputs),
         host_outputs=tuple(host_outputs),
         container_outputs=tuple(container_outputs),
+        runtime_outputs=tuple(runtime_outputs),
         container_run_dir=container_run_dir,
         host_run_dir=host_run_dir,
         gpu_enabled=(
@@ -138,6 +159,7 @@ def prepare_workflow(
             if gpu_enabled is None
             else gpu_enabled
         ),
+        host_output_root=host_output_root,
     )
 
 
@@ -149,17 +171,25 @@ def _readonly_array(name: str, values: tuple[str, ...] | list[str]) -> str:
 def workflow_script(prepared: PreparedWorkflow) -> str:
     """Build the trusted Bash program with safely quoted readonly context."""
     output_directories = sorted(
-        {str(PurePosixPath(path).parent) for path in prepared.container_outputs}
+        {str(PurePosixPath(path).parent) for path in prepared.runtime_outputs}
     )
     tool = prepared.tool
     prologue = [
         _readonly_array("INPUTS", prepared.container_inputs),
-        _readonly_array("OUTPUTS", prepared.container_outputs),
+        _readonly_array("OUTPUTS", prepared.runtime_outputs),
         f"readonly RUN_DIR={shlex.quote(prepared.container_run_dir)}",
         f"readonly CASE_ROOT={shlex.quote(prepared.container_root)}",
         f"readonly DEVICE={'cuda' if prepared.gpu_enabled else 'cpu'}",
         'mkdir -p "${RUN_DIR}"',
     ]
+    if prepared.host_output_root is not None:
+        prologue.extend(
+            [
+                "readonly OUTPUT_PARENT=/workflow_output",
+                "readonly OUTPUT_NAME=output",
+                "readonly OUTPUT_ROOT=/workflow_output/output",
+            ]
+        )
     if output_directories:
         prologue.append(
             "mkdir -p -- " + " ".join(shlex.quote(path) for path in output_directories)
@@ -257,10 +287,20 @@ def execute_prepared_workflow(
     prepared.host_run_dir.mkdir(parents=True, exist_ok=True)
     baseline = snapshot_workflow_outputs(prepared.tool, prepared.host_outputs)
     write_output_baseline(prepared.host_run_dir, baseline)
+    binds = [prepared.bind]
+    scratch_paths: list[str] = []
+    if prepared.host_output_root is not None:
+        prepared.host_output_root.mkdir(parents=True, exist_ok=True)
+        # Bind only the chosen output directory below a user-owned scratch
+        # parent. Tools can rely on honest parent ownership while outputs still
+        # persist directly in the active case on the host.
+        binds.append(RuntimeBind(prepared.host_output_root, "/workflow_output/output", "rw"))
+        scratch_paths.append("/workflow_output")
     command = build_container_request(
         image=runtime_image_spec(prepared.tool.neurodesk_image),
         command=["/bin/bash", "-euo", "pipefail", "-c", workflow_script(prepared)],
-        binds=[prepared.bind],
+        binds=binds,
+        scratch_paths=scratch_paths,
         cwd=prepared.container_root,
         disable_network=True,
         gpu=prepared.gpu_enabled,
@@ -289,6 +329,13 @@ def execute_prepared_workflow(
         result = execute_runtime_request(request)
         stdout = result.stdout if stdout_path is None else _read_log(stdout_path, policy.max_stream_chars)
         stderr = result.stderr if stderr_path is None else _read_log(stderr_path, policy.max_stream_chars)
+        # Image preparation happens before the bridge opens container log files.
+        # Preserve its diagnostic even when an older bridge only returned it in
+        # the protocol response instead of writing it to the requested log path.
+        if not stdout and result.stdout:
+            stdout = result.stdout
+        if not stderr and result.stderr:
+            stderr = result.stderr
         output_records = _output_records(prepared, baseline)
         missing = [record["name"] for record in output_records if record["required"] and not record["exists"]]
         return_code = result.returncode

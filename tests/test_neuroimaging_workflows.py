@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service.runtime import neuroimaging_tasks as neuroimaging_tasks_module  # noqa: E402
 from api_service.runtime_tools import workflow_execution as execution_module  # noqa: E402
 from api_service.runtime_tools.workflow_catalog import (  # noqa: E402
+    NeuroimagingWorkflow,
     WorkflowExecution,
     WorkflowReturn,
     delete_user_workflow,
@@ -58,14 +59,15 @@ def test_default_catalog_has_fixed_workflows_and_defaults():
     defaults = WorkflowExecution()
 
     assert set(tools) == {"fastsurfer_full", "fastsurfer_segmentation", "fastsurfer_fast"}
-    assert tools["fastsurfer_full"].neurodesk_image == "deepmi/fastsurfer:cu128-v2.5.4"
-    assert tools["fastsurfer_full"].execution.gpu is True
+    assert tools["fastsurfer_full"].neurodesk_image == "vnmd/fastsurfer_2.4.2:20260115"
+    assert tools["fastsurfer_full"].execution.gpu is False
     assert tools["fastsurfer_full"].execution.mode == "background"
     for tool_id in ("fastsurfer_full", "fastsurfer_segmentation", "fastsurfer_fast"):
         assert all(output.path != "." for output in tools[tool_id].outputs)
         assert all(output.type in {"intensity_volume", "segmentation_volume", "surface", "other"} for output in tools[tool_id].outputs)
-        assert '--sd "${subjects_dir}"' in tools[tool_id].script
-        assert '--sid "${subject_id}"' in tools[tool_id].script
+        assert tools[tool_id].case_output_folder == "fastsurfer_output"
+        assert '--sd "${OUTPUT_PARENT}"' in tools[tool_id].script
+        assert '--sid "${OUTPUT_NAME}"' in tools[tool_id].script
         assert "${RUN_DIR}/subjects" not in tools[tool_id].script
         assert "cp " not in tools[tool_id].script
     assert {output.type for output in tools["fastsurfer_full"].outputs} == {
@@ -106,8 +108,9 @@ def test_search_payload_is_compact_and_inspect_is_lazy():
     assert {tool["input_artifact_kind"] for tool in payload} == {"intensity_volume"}
     inspected = inspect_workflow("fastsurfer_full")
     assert "details" in inspected
-    assert inspected["image"] == "deepmi/fastsurfer:cu128-v2.5.4"
+    assert inspected["image"] == "vnmd/fastsurfer_2.4.2:20260115"
     assert inspected["inputs"][0]["name"] == "t1"
+    assert inspected["outputs"][0]["path"] == "fastsurfer_output/mri/aparc.DKTatlas+aseg.deep.mgz"
     assert "script" not in inspected
 
 
@@ -205,10 +208,10 @@ def test_background_submission_captures_effective_workflow_definition(monkeypatc
 def test_default_image_manifest_contains_workflows_and_dicom_conversion():
     manifest = load_image_manifest(ROOT / "config" / "tool_images.json")
     assert [spec.image for spec in manifest] == [
-        "deepmi/fastsurfer:cu128-v2.5.4",
+        "vnmd/fastsurfer_2.4.2:20260115",
         "vnmd/dcm2niix_v1.0.20240202:20260512",
     ]
-    assert all(spec.converted_sif_sha256 for spec in manifest)
+    assert all(spec.sif_url and spec.sif_sha256 for spec in manifest)
 
 
 def test_warm_gpu_capabilities_probes_each_gpu_workflow_image_once(monkeypatch):
@@ -220,11 +223,8 @@ def test_warm_gpu_capabilities_probes_each_gpu_workflow_image_once(monkeypatch):
 
     monkeypatch.setattr(execution_module, "resolve_gpu_enabled", fake_resolve)
 
-    assert execution_module.warm_workflow_gpu_capabilities() == {
-        "deepmi/fastsurfer:cu128-v2.5.4": True,
-    }
-    assert calls[0][0] is True
-    assert getattr(calls[0][1], "oci_reference", None) == "deepmi/fastsurfer:cu128-v2.5.4"
+    assert execution_module.warm_workflow_gpu_capabilities() == {}
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -389,26 +389,28 @@ def test_typed_output_maps_to_declared_case_file_and_is_reported(tmp_path):
         gpu_enabled=False,
     )
 
-    output_path = case_root / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    output_path = case_root / "fastsurfer_output" / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     output_path.parent.mkdir(parents=True)
     output_path.write_bytes(b"segmentation")
 
     assert prepared.host_outputs[0] == output_path.resolve()
-    assert prepared.container_outputs[0] == "/case/mri/aparc.DKTatlas+aseg.deep.mgz"
+    assert prepared.container_outputs[0] == "/case/fastsurfer_output/mri/aparc.DKTatlas+aseg.deep.mgz"
+    assert prepared.runtime_outputs[0] == "/workflow_output/output/mri/aparc.DKTatlas+aseg.deep.mgz"
     output_record = execution_module._output_records(prepared)[0]
     assert output_record == {
         "name": "whole_brain_segmentation",
         "type": "segmentation_volume",
-        "path": "/case/mri/aparc.DKTatlas+aseg.deep.mgz",
+        "path": "/case/fastsurfer_output/mri/aparc.DKTatlas+aseg.deep.mgz",
         "exists": True,
         "size_bytes": 12,
         "required": True,
         "state": "created",
     }
     script = execution_module.workflow_script(prepared)
-    assert 'subjects_dir="$(dirname "${CASE_ROOT}")"' in script
-    assert 'subject_id="$(basename "${CASE_ROOT}")"' in script
-    assert "mkdir -p -- /case/label /case/mri /case/stats /case/surf" in script
+    assert "readonly OUTPUT_PARENT=/workflow_output" in script
+    assert "readonly OUTPUT_NAME=output" in script
+    assert "readonly OUTPUT_ROOT=/workflow_output/output" in script
+    assert "mkdir -p -- /workflow_output/output/label /workflow_output/output/mri" in script
     assert "cp " not in script
 
 
@@ -448,6 +450,57 @@ def test_fixed_command_is_quoted_and_streams_are_truncated(monkeypatch, tmp_path
     assert not (case_root / ".runs" / "run-1").exists()
 
 
+def test_case_output_folder_mount_plan_is_image_agnostic(monkeypatch, tmp_path):
+    case_root = tmp_path / "case"
+    case_root.mkdir()
+    (case_root / "input.mgz").write_bytes(b"volume")
+    captured = {}
+
+    def fake_execute(request):
+        captured["request"] = request
+        return RuntimeExecutionResult(request=request, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(execution_module, "execute_runtime_request", fake_execute)
+    workflow = resolve_workflow("fastsurfer_fast").model_copy(
+        update={
+            "id": "generic_output_tool",
+            "image": "example/tool:1.0",
+            "case_output_folder": "generic_results",
+            "script": 'generic_tool --input "${INPUTS[0]}" --output "${OUTPUTS[0]}"',
+        }
+    )
+    execution_module.execute_workflow(
+        workflow.id,
+        ["/case/input.mgz"],
+        RuntimeBind(case_root, "/case", "rw"),
+        workflow=workflow,
+        run_id="run-1",
+        gpu_enabled=False,
+    )
+
+    run = captured["request"].container_run
+    assert run is not None
+    assert run.scratch_paths == ("/workflow_output",)
+    assert [(Path(bind.host_path), bind.container_path, bind.mode) for bind in run.binds] == [
+        (case_root.resolve(), "/case", "rw"),
+        ((case_root / "generic_results").resolve(), "/workflow_output/output", "rw"),
+    ]
+    assert (case_root / "generic_results").is_dir()
+    script = run.command[-1]
+    assert "readonly OUTPUT_PARENT=/workflow_output" in script
+    assert "readonly OUTPUT_NAME=output" in script
+    assert "readonly OUTPUT_ROOT=/workflow_output/output" in script
+    assert "dirname" not in script and "basename" not in script
+
+
+@pytest.mark.parametrize("value", ["../escape", "/absolute", ".runs", "folder/{run_id}"])
+def test_case_output_folder_rejects_unsafe_paths(value):
+    payload = resolve_workflow("fastsurfer_fast").model_dump(mode="json", by_alias=True)
+    payload["case_output_folder"] = value
+    with pytest.raises(ValueError, match="case_output_folder"):
+        NeuroimagingWorkflow.model_validate(payload)
+
+
 def test_failed_workflow_returns_code_and_stderr(monkeypatch, tmp_path):
     case_root = tmp_path / "case"
     case_root.mkdir()
@@ -470,13 +523,45 @@ def test_failed_workflow_returns_code_and_stderr(monkeypatch, tmp_path):
     assert result["stderr"] == "invalid header"
 
 
+def test_failed_workflow_preserves_preparation_error_with_empty_log_file(monkeypatch, tmp_path):
+    case_root = tmp_path / "case"
+    case_root.mkdir()
+    (case_root / "input.mgz").write_bytes(b"volume")
+    stdout_path = case_root / "stdout.log"
+    stderr_path = case_root / "stderr.log"
+    stdout_path.touch()
+    stderr_path.touch()
+
+    def fake_execute(request):
+        return RuntimeExecutionResult(
+            request=request,
+            returncode=1,
+            stdout="",
+            stderr='Docker image pull failed: exec: "docker-credential-desktop": executable file not found',
+        )
+
+    monkeypatch.setattr(execution_module, "execute_runtime_request", fake_execute)
+    workflow = header_probe_workflow()
+    result = execution_module.execute_workflow(
+        workflow.id,
+        ["/case/input.mgz"],
+        RuntimeBind(case_root, "/case", "rw"),
+        workflow=workflow,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+
+    assert result["status"] == "failed"
+    assert "docker-credential-desktop" in result["stderr"]
+
+
 def test_failed_direct_root_workflow_retains_partial_outputs(monkeypatch, tmp_path):
     case_root = tmp_path / "case"
     case_root.mkdir()
     (case_root / "input.mgz").write_bytes(b"volume")
 
     def fake_execute(request):
-        partial = case_root / "mri" / "orig.mgz"
+        partial = case_root / "fastsurfer_output" / "mri" / "orig.mgz"
         partial.parent.mkdir(parents=True)
         partial.write_bytes(b"partial")
         return RuntimeExecutionResult(request=request, returncode=7, stdout="", stderr="segmentation failed")
@@ -491,7 +576,7 @@ def test_failed_direct_root_workflow_retains_partial_outputs(monkeypatch, tmp_pa
     )
 
     assert result["status"] == "failed"
-    assert (case_root / "mri" / "orig.mgz").read_bytes() == b"partial"
+    assert (case_root / "fastsurfer_output" / "mri" / "orig.mgz").read_bytes() == b"partial"
     states = {output["name"]: output["state"] for output in result["outputs"]}
     assert states["conformed_input"] == "created"
     assert states["whole_brain_segmentation"] == "missing"
@@ -500,7 +585,7 @@ def test_failed_direct_root_workflow_retains_partial_outputs(monkeypatch, tmp_pa
 
 def test_workflow_reports_unchanged_existing_output_as_preexisting(monkeypatch, tmp_path):
     case_root = tmp_path / "case"
-    output_path = case_root / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
+    output_path = case_root / "fastsurfer_output" / "mri" / "aparc.DKTatlas+aseg.deep.mgz"
     output_path.parent.mkdir(parents=True)
     (case_root / "input.mgz").write_bytes(b"volume")
     output_path.write_bytes(b"old segmentation")

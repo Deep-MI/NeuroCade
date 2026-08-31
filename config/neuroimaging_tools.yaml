@@ -2,13 +2,15 @@ version: 1
 
 tools:
   - id: fastsurfer_full
-    image: deepmi/fastsurfer:cu128-v2.5.4
+    image: vnmd/fastsurfer_2.4.2:20260115
+    case_output_folder: fastsurfer_output
     description: Run complete FastSurfer segmentation and surface reconstruction.
     details: |
       Use for a complete FastSurfer analysis including whole-brain segmentation,
       statistics, and cortical surfaces. The complete generated subject directory
-      is written directly into the case. Partial outputs and FastSurfer logs remain
-      available if the run fails or is canceled. This is a long-running background job.
+      is written under fastsurfer_output in the case. Partial outputs and FastSurfer
+      logs remain available if the run fails or is canceled. This is a long-running
+      background job.
     inputs:
       - name: t1
         description: T1-weighted input volume.
@@ -142,28 +144,28 @@ tools:
         metadata: {layer_role: surface-annotation, surface_format: freesurfer-annot, hemisphere: rh}
     execution:
       mode: background
+      gpu: false
       queue: fastsurfer
     ui:
       label: FastSurfer — Full
     script: |
-      subjects_dir="$(dirname "${CASE_ROOT}")"
-      subject_id="$(basename "${CASE_ROOT}")"
       /fastsurfer/run_fastsurfer.sh \
         --t1 "${INPUTS[0]}" \
-        --sd "${subjects_dir}" \
-        --sid "${subject_id}" \
+        --sd "${OUTPUT_PARENT}" \
+        --sid "${OUTPUT_NAME}" \
         --allow_root \
         --device "${DEVICE}" \
         --viewagg_device "${DEVICE}"
 
   - id: fastsurfer_segmentation
-    image: deepmi/fastsurfer:cu128-v2.5.4
+    image: vnmd/fastsurfer_2.4.2:20260115
+    case_output_folder: fastsurfer_output
     description: Run FastSurfer segmentation without cortical surface reconstruction.
     details: |
       Use when whole-brain segmentation and statistics are required but cortical
       surface reconstruction is not. The complete generated subject directory is
-      written directly into the case, including partial outputs from failed or
-      canceled runs.
+      written under fastsurfer_output in the case, including partial outputs from
+      failed or canceled runs.
     inputs:
       - name: t1
         description: T1-weighted input volume.
@@ -221,29 +223,30 @@ tools:
         metadata: {lut: binary, visible: false}
     execution:
       mode: background
+      gpu: false
       queue: fastsurfer
     ui:
       label: FastSurfer — Segmentation
     script: |
-      subjects_dir="$(dirname "${CASE_ROOT}")"
-      subject_id="$(basename "${CASE_ROOT}")"
       /fastsurfer/run_fastsurfer.sh \
         --t1 "${INPUTS[0]}" \
-        --sd "${subjects_dir}" \
-        --sid "${subject_id}" \
+        --sd "${OUTPUT_PARENT}" \
+        --sid "${OUTPUT_NAME}" \
         --seg_only \
         --allow_root \
         --device "${DEVICE}" \
         --viewagg_device "${DEVICE}"
 
   - id: fastsurfer_fast
-    image: deepmi/fastsurfer:cu128-v2.5.4
+    image: vnmd/fastsurfer_2.4.2:20260115
+    case_output_folder: fastsurfer_output
     description: Run the minimal FastSurfer whole-brain segmentation workflow.
     details: |
       Use when the primary whole-brain segmentation is needed quickly. This skips
       bias-field correction, cerebellum and hypothalamus segmentation, statistics,
-      and cortical surface reconstruction. Outputs are written directly into the
-      case, including partial outputs from failed or canceled runs.
+      and cortical surface reconstruction. Outputs are written under
+      fastsurfer_output in the case, including partial outputs from failed or
+      canceled runs.
     inputs:
       - name: t1
         description: T1-weighted input volume.
@@ -273,16 +276,15 @@ tools:
         metadata: {lut: freesurfer, visible: false}
     execution:
       mode: background
+      gpu: false
       queue: fastsurfer
     ui:
       label: FastSurfer — Fast
     script: |
-      subjects_dir="$(dirname "${CASE_ROOT}")"
-      subject_id="$(basename "${CASE_ROOT}")"
       /fastsurfer/run_fastsurfer.sh \
         --t1 "${INPUTS[0]}" \
-        --sd "${subjects_dir}" \
-        --sid "${subject_id}" \
+        --sd "${OUTPUT_PARENT}" \
+        --sid "${OUTPUT_NAME}" \
         --seg_only \
         --no_biasfield \
         --no_cereb \

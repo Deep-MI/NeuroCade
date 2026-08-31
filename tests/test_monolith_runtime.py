@@ -19,6 +19,7 @@ def _apptainer_fixture(tmp_path: Path) -> tuple[RuntimeContainerRunRequest, Path
         image=RuntimeImageSpec("example/tool:1"),
         command=["tool", "--version"],
         binds=[BridgeBind("case", "/case", "ro")],
+        scratch_paths=["/workflow_output"],
         env={"LC_ALL": "C"},
         cwd="/case",
         network_disabled=True,
@@ -35,6 +36,7 @@ def test_apptainer_builds_rootless_verified_sif_argv(tmp_path: Path) -> None:
     assert "--cleanenv --no-home --containall" in rendered
     assert "--net --network none" in rendered and "--nv" in argv
     assert f"{tmp_path / 'case'}:/case:ro" in argv
+    assert "--scratch /workflow_output" in rendered
     assert "--fakeroot" not in argv and "--writable" not in argv and "sudo" not in argv
 
 

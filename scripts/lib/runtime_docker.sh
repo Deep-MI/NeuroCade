@@ -26,7 +26,7 @@ runtime_prepare_database() {
 }
 
 docker_run_args() {
-  DOCKER_APP_ARGS=(docker run --name "$CONTAINER_NAME" --user "$(id -u):$(id -g)" --add-host host.docker.internal:host-gateway)
+  DOCKER_APP_ARGS=(docker run --name "$CONTAINER_NAME" --label "org.neurocade.launch-id=$LAUNCH_ID" --user "$(id -u):$(id -g)" --add-host host.docker.internal:host-gateway)
   [[ -n "$DOCKER_PLATFORM" ]] && DOCKER_APP_ARGS+=(--platform "$DOCKER_PLATFORM")
   DOCKER_APP_ARGS+=(
     -v "$HOST_DATA_DIR:/data" -v "$DATABASE_VOLUME:/database"
@@ -34,6 +34,7 @@ docker_run_args() {
     -p "$HTTP_BIND:$HTTP_PORT:8000" --env-file "$ENV_FILE"
     -e NEUROCADE_RUNTIME=docker -e NEUROCADE_BRIDGE_URL="http://host.docker.internal:$BRIDGE_PORT"
     -e NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token -e HOST_DATA_DIR=/data
+    -e NEUROCADE_LAUNCH_ID="$LAUNCH_ID"
     -e DATABASE_URL=sqlite+pysqlite:////database/neurocade.db -e HOME=/tmp
     -e NEUROCADE_ACCESS_URL="$(sed -n '1p' "$APP_URL_FILE")"
   )
