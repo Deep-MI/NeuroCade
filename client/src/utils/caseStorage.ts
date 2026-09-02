@@ -1,10 +1,10 @@
 /* ------------------------------------------------------------------ */
 /*  localStorage persistence helpers for per-case volume display state */
 /* ------------------------------------------------------------------ */
-import type { Volume, CaseState, PersistedVolume } from '../types';
+import type { Volume, CaseState, PersistedVolume } from '../types.js';
 
-const CASE_KEY_PREFIX = 'fastsurfer-case-';
-const CASE_CLOSED_KEY_PREFIX = 'fastsurfer-case-closed-';
+const CASE_KEY_PREFIX = 'neurocade-case-v1-';
+const CASE_CLOSED_KEY_PREFIX = 'neurocade-case-closed-v1-';
 
 /**
  * Persist the current volume display state for a case.
@@ -14,6 +14,7 @@ const CASE_CLOSED_KEY_PREFIX = 'fastsurfer-case-closed-';
 export function saveCaseState(caseId: string, volumes: Volume[]): void {
   const persistable = volumes.filter(v => !v.url.startsWith('blob:'));
   const cs: CaseState = {
+    version: 1,
     caseId,
     volumes: persistable.map((v): PersistedVolume => {
       const base = {
@@ -69,7 +70,18 @@ export function loadCaseState(caseId: string): CaseState | null {
   try {
     const raw = localStorage.getItem(CASE_KEY_PREFIX + caseId);
     if (!raw) return null;
-    return JSON.parse(raw) as CaseState;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !parsed
+      || typeof parsed !== 'object'
+      || (parsed as Partial<CaseState>).version !== 1
+      || (parsed as Partial<CaseState>).caseId !== caseId
+      || !Array.isArray((parsed as Partial<CaseState>).volumes)
+    ) {
+      localStorage.removeItem(CASE_KEY_PREFIX + caseId);
+      return null;
+    }
+    return parsed as CaseState;
   } catch {
     return null;
   }

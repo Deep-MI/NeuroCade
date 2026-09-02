@@ -1,8 +1,15 @@
+import { createUuid } from './randomUuid';
+
 export function createGuiSessionId(): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
+  const storageKey = 'neurocade.gui-session-id';
+  if (typeof window !== 'undefined') {
+    const existing = window.sessionStorage.getItem(storageKey);
+    if (existing) return existing;
+    const created = `gui-${createUuid()}`;
+    window.sessionStorage.setItem(storageKey, created);
+    return created;
   }
-  return `gui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `gui-${createUuid()}`;
 }
 
 export function defaultPaneWidth(compactWidth: number, largeWidth: number): number {

@@ -2,7 +2,7 @@
 /*  Shared type definitions for the NeuroCade frontend                 */
 /* ------------------------------------------------------------------ */
 
-export type LayerType = 'intensity' | 'segmentation' | 'surface';
+export type LayerType = 'intensity' | 'segmentation' | 'drawing' | 'surface';
 export type SurfaceColorMode = 'solid' | 'curvature' | 'annotation';
 
 interface BaseViewerLayer {
@@ -18,7 +18,7 @@ interface BaseViewerLayer {
 }
 
 export interface IntensityVolumeLayer extends BaseViewerLayer {
-  type?: 'intensity';
+  type: 'intensity';
   /** Brightness adjustment, –100 to 100, default 0. */
   brightness?: number;
   /** Contrast multiplier, 0.0 to 2.0, default 1.0. */
@@ -45,9 +45,9 @@ export interface SurfaceLayer extends BaseViewerLayer {
   curvatureUrl?: string;
   /** Optional FreeSurfer annotation file for parcellation vertex coloring. */
   annotationUrl?: string;
-  /** Curvature magnitude that maps negative values to the bright gyri color. */
+  /** Absolute negative-curvature endpoint mapped to bright green. */
   curvatureNegativeThreshold?: number;
-  /** Curvature magnitude that maps positive values to the dark sulci color. */
+  /** Positive-curvature endpoint mapped to bright red. */
   curvaturePositiveThreshold?: number;
 }
 
@@ -64,15 +64,15 @@ export function isSegmentationLayer(volume: Volume): volume is SegmentationVolum
 
 /** A case returned by the workspace case listing endpoint. */
 export interface CaseSummary {
-  case_id: string;
-  subject_name: string;
+  id: string;
+  title: string;
   description?: string | null;
   modalities?: string[];
   tags?: string[];
   notes?: string | null;
-  status: string;
-  created_at: number;
-  workspace_id?: string;
+  latest_run_status: string | null;
+  created_at: string;
+  workspace_id: string;
   thread_id?: string | null;
   artifact_count?: number;
 }
@@ -84,17 +84,26 @@ export interface StatusConfig {
   badge: string;
 }
 
-/** FastSurfer run parameters configured via the confirmation modal. */
-export interface FastSurferParams {
-  input_artifact_id: string;
-  seg_only: boolean;
-  no_bias: boolean;
-  no_cereb: boolean;
-  no_asegdkt: boolean;
-  no_hypothal: boolean;
-  three_t: boolean;
-  vox_size?: string;
-  case_name?: string;
+/** One ordered input declared by a configured analysis workflow. */
+interface AnalysisToolInput {
+  name: string;
+  description: string;
+}
+
+/** One typed output declared by a configured analysis workflow. */
+interface AnalysisToolOutput {
+  name: string;
+  type: 'intensity_volume' | 'segmentation_volume' | 'surface' | 'other';
+  path: string;
+  description: string;
+  required: boolean;
+}
+
+/** Parameters submitted by the generated Run Analysis form. */
+export interface AnalysisRunParams {
+  tool_id: string;
+  input_artifact_ids: string[];
+  output_name_overrides: Record<string, string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -107,24 +116,39 @@ export interface QueueStatus {
   queued: number;
 }
 
+export interface AnalysisToolSummary {
+  id: string;
+  label: string;
+  description: string;
+  inputs: AnalysisToolInput[];
+  outputs: AnalysisToolOutput[];
+  input_artifact_kind: 'intensity_volume';
+  execution: {
+    mode: 'synchronous' | 'background';
+    gpu: boolean;
+    timeout_s: number | null;
+    queue: string;
+  };
+}
+
 export interface CaseListResponse {
   cases: CaseSummary[];
 }
 
 export interface StatusResponse {
+  runId?: string;
   status: string;
-}
-
-export interface LogsResponse {
-  logs: string;
+  workflowId?: string;
 }
 
 export interface OutputVolume {
-  id?: string;
+  id: string;
+  name?: string;
   filename: string;
   downloadUrl: string;
-  kind?: string;
-  type?: LayerType;
+  kind: string;
+  outputType?: 'intensity_volume' | 'segmentation_volume' | 'surface';
+  type: Exclude<LayerType, 'drawing'>;
   lut?: 'freesurfer' | 'binary';
   customLutDownloadUrl?: string;
   curvatureDownloadUrl?: string;
@@ -137,30 +161,40 @@ export interface OutputsListResponse {
 }
 
 export interface RunResult {
-  task_id: string;
+  run_id: string;
   case_id: string;
   status: string;
-  workspace_id?: string | null;
+  workspace_id: string;
 }
 
 export interface GuiStateSyncResponse {
-  requested_cursor_position?: [number, number, number];
-  requested_load_volume?: {
-    download_path: string;
-    filename: string;
-    name: string;
-    type: string;
-    lut?: string;
-    custom_lut_download_path?: string;
-    curvature_download_path?: string;
-    annotation_download_path?: string;
-    visible?: boolean;
+  commands: GuiCommand[];
+}
+
+export interface GuiLayerState {
+  id: string;
+  artifact_id?: string;
+  filename: string;
+  name: string;
+  type: Exclude<LayerType, 'drawing'>;
+  role?: string;
+  hemisphere?: 'left' | 'right';
+  loaded: true;
+  visible: boolean;
+  opacity: number;
+  display: {
+    brightness?: number;
+    contrast?: number;
+    surface_color_mode?: SurfaceColorMode;
   };
-  requested_close_volume?: { volume_id: string };
-  requested_close_volumes?: { volume_id: string }[];
-  requested_select_volumes?: { intensity_volume: string; segmentation_volume: string };
-  requested_run_fastsurfer?: { case_id: string; input_artifact_id?: string; input_volume?: string; seg_only?: boolean; case_name?: string };
-  requested_adjust_display?: { opacity?: number; brightness?: number; contrast?: number };
+}
+
+export interface GuiCommand {
+  id: string;
+  type: 'load_layer' | 'remove_layers' | 'reorder_layer' | 'set_layer_visibility' | 'set_layer_display' | 'move_cursor';
+  payload: Record<string, unknown>;
+  created_at: string;
+  expires_at: string;
 }
 
 export interface ErrorResponse {
@@ -169,28 +203,47 @@ export interface ErrorResponse {
   detail?: string;
 }
 
+export interface AssistantActiveTurnResponse {
+  active: boolean;
+  turn_id: string | null;
+  elapsed_seconds: number | null;
+  activity: AssistantActivity | null;
+}
+
+export interface AssistantActivity {
+  kind: 'model' | 'tool' | 'workflow' | 'image';
+  label: string;
+  blocking: boolean;
+  run_id?: string | null;
+  mode?: 'synchronous' | 'background' | null;
+  device?: 'cpu' | 'gpu' | null;
+  phase?: 'waiting' | 'downloading' | 'extracting' | 'preparing' | 'verifying' | 'ready' | null;
+  progress?: number | null;
+  completed_layers?: number | null;
+  total_layers?: number | null;
+  current_bytes?: number | null;
+  total_bytes?: number | null;
+  disk_free_bytes?: number | null;
+  disk_warning?: string | null;
+  reclaimable_storage?: Record<string, string> | null;
+  stalled_seconds?: number | null;
+  process_active?: boolean | null;
+}
+
+export interface AssistantTurnCancelResponse {
+  status: 'canceling' | 'not_active';
+  turn_id: string;
+}
+
 export interface SessionBootstrap {
   user: {
     id: string;
     email: string;
     full_name: string;
   };
-  role: string;
-  auth_mode: string;
-  deployment_profile: 'local' | 'internal' | 'demo';
-  public_url: string;
   features: Record<string, boolean>;
-  limits: Record<string, number>;
-  sample_data: {
-    enabled?: boolean;
-    scope?: 'per_user' | 'global';
-    label?: string;
-    provenance?: string;
-    modifiable_copy?: boolean;
-  };
   workspaces: WorkspaceSummary[];
   default_workspace_id: string | null;
-  active_workspace_id: string | null;
 }
 
 export interface WorkspaceSummary {
@@ -200,7 +253,6 @@ export interface WorkspaceSummary {
   role: string;
   kind: string;
   is_default: boolean;
-  status: string;
   case_count?: number;
 }
 
@@ -211,7 +263,7 @@ export interface MonitoringStatusItem {
   details: Record<string, unknown>;
 }
 
-export interface MonitoringUserSummary {
+interface MonitoringUserSummary {
   id: string;
   email: string;
   full_name: string;
@@ -251,53 +303,9 @@ export interface MonitoringSummary {
   totals: Record<string, number>;
   active_users: MonitoringUserSummary[];
   services: MonitoringStatusItem[];
-  redis: Record<string, unknown>;
-  celery: Record<string, unknown>;
+  jobs: Record<string, unknown>;
   recent_errors: MonitoringEventSummary[];
   recent_activity: MonitoringAuditEventSummary[];
-}
-
-export interface MonitoringEventsResponse {
-  events: MonitoringEventSummary[];
-  audit_events: MonitoringAuditEventSummary[];
-}
-
-export interface WorkspaceBatchCaseRun {
-  run_id: string;
-  case_id: string;
-  case_title: string;
-  status: string;
-  external_task_id?: string | null;
-  error_message?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceBatchRunSummary {
-  run_id: string;
-  workspace_id: string;
-  status: string;
-  run_type: string;
-  execution_mode: 'workspace_wide' | 'per_case';
-  command: string;
-  report_name: string;
-  analysis_id?: string | null;
-  selected_case_count: number;
-  total_cases: number;
-  queued_cases: number;
-  running_cases: number;
-  completed_cases: number;
-  failed_cases: number;
-  canceled_cases: number;
-  external_task_id?: string | null;
-  artifact_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceBatchRunDetail extends WorkspaceBatchRunSummary {
-  cases: WorkspaceBatchCaseRun[];
-  artifacts: ArtifactListItem[];
 }
 
 export type AssistantScope = 'case' | 'workspace';
@@ -316,13 +324,13 @@ interface PersistedBaseLayer {
   opacity: number;
 }
 
-export interface PersistedIntensityVolumeLayer extends PersistedBaseLayer {
+interface PersistedIntensityVolumeLayer extends PersistedBaseLayer {
   type: 'intensity';
   brightness: number;
   contrast: number;
 }
 
-export interface PersistedSegmentationVolumeLayer extends PersistedBaseLayer {
+interface PersistedSegmentationVolumeLayer extends PersistedBaseLayer {
   type: 'segmentation';
   lut?: 'freesurfer' | 'binary';
   customLutUrl?: string;
@@ -330,7 +338,7 @@ export interface PersistedSegmentationVolumeLayer extends PersistedBaseLayer {
   contrast: number;
 }
 
-export interface PersistedSurfaceLayer extends PersistedBaseLayer {
+interface PersistedSurfaceLayer extends PersistedBaseLayer {
   type: 'surface';
   surfaceColorMode?: SurfaceColorMode;
   curvatureUrl?: string;
@@ -344,6 +352,7 @@ export type PersistedVolume = PersistedIntensityVolumeLayer | PersistedSegmentat
 
 /** Per-case persistence envelope stored in localStorage. */
 export interface CaseState {
+  version: 1;
   caseId: string;
   volumes: PersistedVolume[];
   lastAccessed: number;
@@ -365,10 +374,74 @@ export interface ChatTextPart {
 
 export type ChatContentPart = ChatTextPart | ChatImagePart;
 
+export interface WorkflowApprovalPresentation {
+  kind: 'workflow';
+  title: string;
+  description: string;
+  details: string;
+  inputs: {
+    name: string;
+    description: string;
+    path: string;
+  }[];
+  outputs: {
+    name: string;
+    description: string;
+    path: string;
+  }[];
+  execution: {
+    mode: 'background' | 'synchronous';
+    gpu: boolean;
+  };
+}
+
+export interface ActionApprovalPresentation {
+  kind: 'action';
+  action: 'config_upsert' | 'config_delete' | 'run_cancel' | 'file_write' | 'file_edit';
+  title: string;
+  description: string;
+  confirm_label: string;
+  tone: 'warning' | 'danger';
+  sections: {
+    label: string;
+    rows: {
+      label: string;
+      value: string;
+      code: boolean;
+    }[];
+  }[];
+  details: {
+    summary: string;
+    content: string;
+    language?: string | null;
+  }[];
+}
+
+export type AssistantApprovalPresentation = WorkflowApprovalPresentation | ActionApprovalPresentation;
+
+export interface AssistantApprovalRequest {
+  name: string;
+  call_id?: string | null;
+  execution_id?: string | null;
+  arguments: Record<string, unknown>;
+  digest: string;
+  description: string;
+  presentation?: AssistantApprovalPresentation | null;
+}
+
 export interface ToolCallEntry {
+  call_id?: string | null;
+  execution_id?: string | null;
+  ledger_status?: string | null;
+  external_run_id?: string | null;
   name: string;
   arguments: Record<string, unknown>;
   result: string;
+  is_error?: boolean;
+  details?: Record<string, unknown>;
+  artifacts?: Record<string, unknown>[];
+  terminal?: boolean;
+  elapsed_ms?: number | null;
 }
 
 export interface ReasoningEntry {
@@ -378,8 +451,10 @@ export interface ReasoningEntry {
 }
 
 export interface ChatMessage {
+  notificationId?: string;
   role: 'user' | 'assistant' | 'system' | 'info' | 'tool-calls';
   content: string | ChatContentPart[];
+  severity?: 'warning';
   toolCalls?: ToolCallEntry[];
   reasoningEntries?: ReasoningEntry[];
 }
@@ -387,28 +462,44 @@ export interface ChatMessage {
 export interface AssistantHistoryResponse {
   thread_id: string | null;
   messages: ChatMessage[];
+  pending_approval?: AssistantApprovalRequest | null;
 }
 
 export interface ProviderSummary {
   provider: string;
   provider_family: string;
   model: string;
-  role: string;
   is_default: boolean;
-  native_tool_calling: boolean;
-  json_mode: boolean;
   vision: boolean;
-  streaming: boolean;
-  available: boolean;
-  availability_reason?: string | null;
+  configured: boolean;
+  reachable: boolean;
+  configuration_reason?: string | null;
+  reachability_reason?: string | null;
 }
 
 export interface ArtifactListItem {
-  id?: string;
+  id: string;
   case_id?: string | null;
   workspace_id?: string | null;
   name: string;
   kind: string;
   downloadPath: string;
   metadata: Record<string, unknown>;
+}
+
+export interface LocationInfo {
+  vox: [number, number, number];
+  labelIndex: number;
+  labelName: string;
+  labelColor?: [number, number, number];
+}
+
+export interface MriSnapshots {
+  sagittal: string;
+  coronal: string;
+  axial: string;
+}
+
+export interface MriViewerRef {
+  getSnapshots: () => MriSnapshots | null;
 }

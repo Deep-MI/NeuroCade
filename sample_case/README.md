@@ -32,52 +32,14 @@ That also downloads and extracts:
 * `./RLS_case_all/sub_rs_mri_proc`
 * `./RLS_case_all/sub_rs_mri_struc_only`
 
-## Build the App Sample Case
+## App Sample Case
 
-The app's seeded sample case is no longer assembled from the downloaded processed archives. Instead, it is generated from a real FastSurfer run on the Rhineland T1-weighted sample scan:
+The app's seeded sample case is generated from a real FastSurfer run on the Rhineland T1-weighted sample scan and distributed as a release artifact:
 
 * input: `./RLS_case_all/sub_rs_mri_raw/T1_RMS.nii.gz`
-* full output: `./generated_fastsurfer/Rhineland_0000`
 * curated app seed: `./FastSurfer_Rhineland_0000`
 
-From the repo root, the streamlined one-shot call is:
-
-```bash
-./scripts/process_demo_case.sh
-```
-
-That helper downloads the raw Rhineland sample automatically when needed and then invokes this directory's builder script.
-
-Build it with:
-
-```bash
-./create_fastsurfer_sample_case.sh
-```
-
-If `./generated_fastsurfer/Rhineland_0000` already exists, the script now reuses that full FastSurfer output by default and simply rebuilds the curated `./FastSurfer_Rhineland_0000` seed directory.
-
-Optional overrides:
-
-```bash
-THREADS=8 DEVICE_MODE=cuda ./create_fastsurfer_sample_case.sh
-```
-
-Or from the repo root:
-
-```bash
-./scripts/process_demo_case.sh --threads 8 --device cuda
-```
-
-`DEVICE_MODE=auto` prefers CUDA, but it now falls back to CPU automatically if the selected FastSurfer image does not support the host GPU architecture.
-
-Prerequisite:
-
-- the full FastSurfer pipeline requires a FreeSurfer license
-- the builder now standardizes on `../neurocade-data/license.txt`, which is the same `/data/license.txt` source used by the runtime tools
-- if that file is missing, it will populate it from `FREESURFER_LICENSE`
-
-The seeded app sample case now uses only `./FastSurfer_Rhineland_0000`.
-If that generated directory is missing, the app will not seed a sample case until you run `./create_fastsurfer_sample_case.sh`.
+The installer downloads the curated sample case asset automatically when it is available for the selected release. The raw Rhineland helper in this directory is still useful for inspecting source data or rebuilding release seed assets outside the normal app install flow.
 
 
 **MRI sequences**

@@ -2,105 +2,83 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-import json
+import asyncio
 import logging
-from pathlib import Path
+import os
+import signal
 import subprocess
-from typing import Mapping, Sequence, TypedDict, cast
-import urllib.error
-import urllib.request
+import threading
+import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .protocol import RuntimeImageSpec
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 300
-ELEVATED_APPTAINER_OPTIONS = {"--fakeroot", "--writable", "--writable-tmpfs"}
-RUNTIME_BIN_NAMES = {"apptainer", "singularity"}
+TERMINATION_GRACE_SECONDS = 5.0
 
+# Runtime-agnostic cancellation registration. Executors publish a callback that
+# the JobManager may invoke without knowing whether it controls a process group
+# or an authenticated bridge run.
+cancellation_observer: ContextVar[Callable[[Callable[[], None]], None] | None] = ContextVar(
+    "runtime_cancellation_observer", default=None
+)
 
-class ApptainerExecOptions(TypedDict):
-    """Parsed Apptainer exec options."""
-
-    flags: set[str]
-    values: dict[str, list[str]]
-    image_index: int
-
-
-class ApptainerInvocationMetadata(TypedDict):
-    """Rootless Apptainer invocation metadata."""
-
-    runtime_executable: str | None
-    is_runtime_command: bool
-    uses_exec: bool
-    forbidden_options: list[str]
-    network_disabled: bool
-    gpu_enabled: bool
-    parse_error: str | None
+ProcessObserver = Callable[[subprocess.Popen[str] | None], None]
+ProgressObserver = Callable[[dict[str, Any]], None]
+runtime_progress_observer: ContextVar[ProgressObserver | None] = ContextVar(
+    "runtime_progress_observer", default=None
+)
 
 
 @dataclass(slots=True)
-class RuntimeExecutionPolicy:
-    """Structured execution policy expected for a runtime command."""
+class RuntimeBind:
+    """Describe a bind mount for a structured runtime container request."""
 
-    runtime: str = "apptainer"
+    host_path: Path | str
+    container_path: str
+    mode: str = "ro"
+
+
+@dataclass(frozen=True, slots=True)
+class BridgeBind:
+    """A validated bind path relative to the bridge's configured data root."""
+
+    source_relative: str
+    container_path: str
+    mode: str = "ro"
+
+
+@dataclass(slots=True)
+class RuntimeContainerRunRequest:
+    """Describe a structured container execution for either bridge backend."""
+
+    image: RuntimeImageSpec
+    command: Sequence[str]
+    binds: Sequence[RuntimeBind | BridgeBind] = field(default_factory=tuple)
+    scratch_paths: Sequence[str] = field(default_factory=tuple)
+    env: Mapping[str, str] | None = None
+    cwd: str | None = None
     network_disabled: bool = True
     gpu_enabled: bool = False
-
-
-@dataclass(slots=True)
-class RuntimeArtifactIndexTarget:
-    """Describe case storage that should be indexed after runtime execution."""
-
-    user_id: str
-    workspace_id: str
-    case_id: str
-    case_title: str | None = None
-    preferred_upload_name: str | None = None
-
-
-@dataclass(slots=True)
-class RuntimeCaseLogArtifactTarget:
-    """Describe a per-case log artifact produced by runtime execution."""
-
-    workspace_id: str
-    case_id: str
-    run_id: str
-    log_path: Path | str
-    run_type: str
-
-
-@dataclass(slots=True)
-class RuntimeWorkspaceArtifactSyncTarget:
-    """Describe workspace analysis storage to sync after runtime execution."""
-
-    run_id: str
-    analysis_dir: Path | str
-
-
-@dataclass(slots=True)
-class RuntimeCompletionHooks:
-    """Describe artifact hooks that should run after runtime work completes."""
-
-    artifact_index_targets: Sequence[RuntimeArtifactIndexTarget] = field(default_factory=tuple)
-    case_log_artifact_targets: Sequence[RuntimeCaseLogArtifactTarget] = field(default_factory=tuple)
-    workspace_artifact_sync_targets: Sequence[RuntimeWorkspaceArtifactSyncTarget] = field(default_factory=tuple)
+    isolated: bool = False
+    run_id: str | None = None
 
 
 @dataclass(slots=True)
 class RuntimeExecutionRequest:
     """Describe a runtime command execution in one backend-facing shape."""
 
-    argv: Sequence[str]
+    argv: Sequence[str] = field(default_factory=tuple)
     cwd: Path | str | None = None
     env: Mapping[str, str] | None = None
-    timeout_s: int | None = DEFAULT_TIMEOUT_SECONDS
+    timeout_s: float | None = DEFAULT_TIMEOUT_SECONDS
     execution_mode: str = "local-subprocess"
-    synchronous: bool = True
-    queue_name: str | None = None
-    task_id: str | None = None
-    user_id: str | None = None
-    workspace_id: str | None = None
-    case_id: str | None = None
     output_root: Path | str | None = None
     workdir_root: Path | str | None = None
     stdout_path: Path | str | None = None
@@ -108,19 +86,42 @@ class RuntimeExecutionRequest:
     capture_output: bool = True
     check: bool = False
     stdin_devnull: bool = True
-    require_rootless_apptainer: bool = False
-    runtime_policy: RuntimeExecutionPolicy | None = None
     log_lines: list[str] = field(default_factory=list)
-    artifact_index_targets: Sequence[RuntimeArtifactIndexTarget] = field(default_factory=tuple)
-    case_log_artifact_targets: Sequence[RuntimeCaseLogArtifactTarget] = field(default_factory=tuple)
-    workspace_artifact_sync_targets: Sequence[RuntimeWorkspaceArtifactSyncTarget] = field(default_factory=tuple)
-    host_runner_url: str | None = None
-    host_runner_token: str | None = None
+    container_run: RuntimeContainerRunRequest | None = None
+
+    def __post_init__(self) -> None:
+        if bool(self.argv) == (self.container_run is not None):
+            raise ValueError("Provide exactly one of argv or container_run")
 
     @property
     def command(self) -> list[str]:
         """Return the argv as a concrete string list."""
         return [str(part) for part in self.argv]
+
+
+def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) -> dict[str, object] | None:
+    """Return a JSON-compatible payload for a structured container request."""
+    if request is None:
+        return None
+    return {
+        "image": request.image.to_dict(),
+        "command": [str(part) for part in request.command],
+        "binds": [
+            {
+                "source": str(bind.host_path if isinstance(bind, RuntimeBind) else bind.source_relative),
+                "container_path": bind.container_path,
+                "mode": bind.mode,
+            }
+            for bind in request.binds
+        ],
+        "scratch_paths": list(request.scratch_paths),
+        "env": dict(request.env or {}),
+        "cwd": request.cwd,
+        "network_disabled": request.network_disabled,
+        "gpu_enabled": request.gpu_enabled,
+        "isolated": request.isolated,
+        "run_id": request.run_id,
+    }
 
 
 @dataclass(slots=True)
@@ -133,18 +134,6 @@ class RuntimeExecutionResult:
     stderr: str = ""
     logs: list[str] = field(default_factory=list)
     execution_backend: str = "local-subprocess"
-    submitted_task_id: str | None = None
-
-    def as_dict(self) -> dict[str, object]:
-        """Return a serializable response dictionary."""
-        return {
-            "returncode": self.returncode,
-            "stdout": self.stdout,
-            "stderr": self.stderr,
-            "logs": list(self.logs),
-            "execution_backend": self.execution_backend,
-            "submitted_task_id": self.submitted_task_id,
-        }
 
 
 def _resolved_path(value: Path | str | None) -> Path | None:
@@ -175,190 +164,133 @@ def _assert_request_containment(request: RuntimeExecutionRequest) -> None:
             _assert_contained(path, output_root, label=label)
 
 
-def apptainer_invocation_metadata(argv: Sequence[str]) -> ApptainerInvocationMetadata:
-    """Return rootless Apptainer metadata for logging and validation."""
-    command = [str(part) for part in argv]
-    executable = Path(command[0]).name if command else ""
-    is_runtime = executable in RUNTIME_BIN_NAMES
-    uses_exec = len(command) > 1 and command[1] == "exec"
-    network_disabled = False
-    gpu_enabled = False
-    parse_error = None
-    if is_runtime and uses_exec:
-        try:
-            parsed_options = _parse_apptainer_exec_options(command)
-            network_disabled = _apptainer_network_disabled(parsed_options)
-            gpu_enabled = _apptainer_gpu_enabled(parsed_options)
-        except ValueError as exc:
-            parse_error = str(exc)
-    return {
-        "runtime_executable": executable if is_runtime else None,
-        "is_runtime_command": is_runtime,
-        "uses_exec": uses_exec,
-        "forbidden_options": sorted(ELEVATED_APPTAINER_OPTIONS.intersection(command)),
-        "network_disabled": network_disabled,
-        "gpu_enabled": gpu_enabled,
-        "parse_error": parse_error,
-    }
-
-
-_APPTAINER_FLAGS = {"--net", "--cleanenv", "--no-home", "--nv", "--nvccli", "--quiet"}
-_APPTAINER_OPTIONS_WITH_VALUES = {"--network", "--bind", "--pwd", "--no-mount"}
-
-
-def _parse_apptainer_exec_options(command: Sequence[str]) -> ApptainerExecOptions:
-    """Parse options in the Apptainer exec option section."""
-    flags: set[str] = set()
-    values: dict[str, list[str]] = {}
-    index = 2
-    while index < len(command):
-        token = str(command[index])
-        if not token.startswith("-"):
-            return {"flags": flags, "values": values, "image_index": index}
-        if token in _APPTAINER_FLAGS:
-            flags.add(token)
-            index += 1
-            continue
-        if token in _APPTAINER_OPTIONS_WITH_VALUES:
-            if index + 1 >= len(command):
-                raise ValueError(f"Apptainer option {token} requires a value.")
-            values.setdefault(token, []).append(str(command[index + 1]))
-            index += 2
-            continue
-        raise ValueError(f"Unsupported Apptainer runtime option: {token}")
-    raise ValueError("Apptainer exec command is missing an image path.")
-
-
-def _apptainer_network_disabled(parsed: ApptainerExecOptions) -> bool:
-    flags = cast(set[str], parsed["flags"])
-    values = cast(dict[str, list[str]], parsed["values"])
-    network_values = values.get("--network") or []
-    return "--net" in flags and network_values == ["none"]
-
-
-def _apptainer_gpu_enabled(parsed: ApptainerExecOptions) -> bool:
-    flags = cast(set[str], parsed["flags"])
-    return "--nv" in flags or "--nvccli" in flags
-
-
-def assert_rootless_apptainer_execution(
-    argv: Sequence[str],
-    *,
-    policy: RuntimeExecutionPolicy | None = None,
-) -> None:
-    """Reject runtime command shapes that violate the structured runtime policy."""
-    command = [str(part) for part in argv]
-    if not command:
-        raise ValueError("Runtime execution command cannot be empty")
-    if Path(command[0]).name in {"sudo", "doas"}:
-        raise ValueError("Refusing runtime execution through privilege escalation")
-
-    metadata = apptainer_invocation_metadata(command)
-    if not metadata["is_runtime_command"] or not metadata["uses_exec"]:
-        return
-    if policy is None:
-        raise ValueError("Structured runtime policy is required for Apptainer execution.")
-    if policy.runtime != "apptainer":
-        raise ValueError(f"Runtime policy {policy.runtime!r} does not match Apptainer execution.")
-
-    forbidden = metadata["forbidden_options"]
-    if forbidden:
-        raise ValueError(f"Refusing elevated Apptainer options: {', '.join(forbidden)}.")
-    parsed_options = _parse_apptainer_exec_options(command)
-    network_disabled = _apptainer_network_disabled(parsed_options)
-    if policy.network_disabled != network_disabled:
-        raise ValueError(
-            "Apptainer network policy does not match command flags "
-            f"(policy={policy.network_disabled}, command={network_disabled})."
-        )
-    if not policy.network_disabled:
-        raise ValueError("Refusing Apptainer execution without no-network isolation.")
-    gpu_enabled = _apptainer_gpu_enabled(parsed_options)
-    if policy.gpu_enabled != gpu_enabled:
-        raise ValueError(
-            "Apptainer GPU policy does not match command flags "
-            f"(policy={policy.gpu_enabled}, command={gpu_enabled})."
-        )
-
-
 def _log_request(request: RuntimeExecutionRequest) -> None:
-    metadata = apptainer_invocation_metadata(request.command)
     logger.info(
-        "runtime_execution.run mode=%s sync=%s queue=%s task_id=%s cwd=%s timeout_s=%s "
-        "user_id=%s workspace_id=%s case_id=%s runtime_policy=%s rootless_apptainer=%s command=%s",
+        "runtime_execution.run mode=%s cwd=%s timeout_s=%s command=%s",
         request.execution_mode,
-        request.synchronous,
-        request.queue_name,
-        request.task_id,
         request.cwd,
         request.timeout_s,
-        request.user_id,
-        request.workspace_id,
-        request.case_id,
-        request.runtime_policy,
-        metadata,
-        request.command,
+        request.command if request.container_run is None else runtime_container_run_payload(request.container_run),
     )
+
+
+def run_managed_command(
+    argv: Sequence[str],
+    *,
+    timeout: float | None = None,
+    check: bool = False,
+    capture_output: bool = False,
+    process_observer: ProcessObserver | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one command in a managed process group with timeout and interruption cleanup."""
+    command = [str(part) for part in argv]
+    if not command:
+        raise ValueError("Managed command cannot be empty")
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        start_new_session=True,
+    )
+    try:
+        if process_observer is not None:
+            process_observer(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            assert timeout is not None
+            _terminate_process_group(process)
+            stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from exc
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, command, stdout, stderr)
+        return result
+    except BaseException:
+        _terminate_process_group(process)
+        raise
+    finally:
+        if process_observer is not None:
+            process_observer(None)
 
 
 def execute_runtime_request(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
-    """Execute a runtime request through the requested execution backend."""
-    if request.execution_mode == "host-runtime-runner" or request.host_runner_url:
-        return execute_runtime_request_via_host_runner(request)
+    """Execute locally trusted commands locally and every container via the bridge."""
+    if request.container_run is not None:
+        from .bridge_client import BridgeClient
+
+        if request.container_run.run_id is None:
+            request.container_run.run_id = str(uuid.uuid4())
+        return BridgeClient.from_environment().execute(request)
     return execute_local_runtime_request(request)
 
 
-def execute_runtime_request_via_host_runner(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
-    """Delegate a runtime command to a configured host runner service."""
-    runner_url = (request.host_runner_url or "").strip().rstrip("/")
-    if not runner_url:
-        raise RuntimeError("host runner URL is required for host-runtime-runner execution")
-    token = (request.host_runner_token or "").strip()
-    if not token:
-        raise RuntimeError("HOST_RUNTIME_RUNNER_TOKEN is required when HOST_RUNTIME_RUNNER_URL is configured")
-    timeout_s = request.timeout_s if request.timeout_s is not None else DEFAULT_TIMEOUT_SECONDS
-    payload = json.dumps(
-        {
-            "command": request.command,
-            "cwd": str(request.cwd) if request.cwd is not None else None,
-            "timeout_s": timeout_s,
-            "runtime_policy": asdict(request.runtime_policy) if request.runtime_policy is not None else None,
-        }
-    ).encode("utf-8")
-    http_request = urllib.request.Request(
-        f"{runner_url}/run",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        method="POST",
-    )
-    _log_request(request)
-    try:
-        with urllib.request.urlopen(http_request, timeout=timeout_s + 5) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"host runtime runner returned HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"host runtime runner is unavailable at {runner_url}: {exc}") from exc
+async def execute_runtime_request_async(
+    request: RuntimeExecutionRequest,
+    *,
+    progress_observer: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> RuntimeExecutionResult:
+    """Execute a runtime request without leaking work when its asyncio task is canceled.
 
-    payload_result = json.loads(body)
-    return RuntimeExecutionResult(
-        request=request,
-        returncode=int(payload_result.get("returncode", 1)),
-        stdout=str(payload_result.get("stdout") or ""),
-        stderr=str(payload_result.get("stderr") or ""),
-        logs=list(request.log_lines),
-        execution_backend="host-runtime-runner",
-    )
+    ``asyncio.to_thread`` does not stop its worker thread when the awaiting task is
+    canceled. Register the runtime's backend-neutral cancellation callback before
+    entering the thread so assistant timeouts and disconnected clients also stop
+    bridge image preparation or the launched container.
+    """
+    callback_lock = threading.Lock()
+    cancel_requested = threading.Event()
+    cancel_callback: Callable[[], None] | None = None
+
+    def observe_cancellation(callback: Callable[[], None]) -> None:
+        nonlocal cancel_callback
+        with callback_lock:
+            cancel_callback = callback
+        if cancel_requested.is_set():
+            callback()
+
+    loop = asyncio.get_running_loop()
+
+    def publish_progress(payload: dict[str, Any]) -> None:
+        if progress_observer is None:
+            return
+        observer = progress_observer
+
+        def schedule() -> None:
+            async def deliver() -> None:
+                await observer(dict(payload))
+
+            asyncio.create_task(deliver())
+
+        loop.call_soon_threadsafe(schedule)
+
+    cancellation_token = cancellation_observer.set(observe_cancellation)
+    progress_token = runtime_progress_observer.set(publish_progress)
+    task = asyncio.create_task(asyncio.to_thread(execute_runtime_request, request))
+    try:
+        return await task
+    except asyncio.CancelledError:
+        cancel_requested.set()
+        with callback_lock:
+            callback = cancel_callback
+        if callback is not None:
+            await asyncio.to_thread(callback)
+        raise
+    finally:
+        runtime_progress_observer.reset(progress_token)
+        cancellation_observer.reset(cancellation_token)
 
 
 def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeExecutionResult:
-    """Execute a runtime request in a local subprocess."""
+    """Execute a runtime request in a local subprocess.
+
+    Uses ``Popen`` with a dedicated process group so the in-process JobWorker can
+    terminate a long-running tool and its children on cancellation.
+    """
     command = request.command
     if not command:
         raise ValueError("Runtime execution command cannot be empty")
-    if request.require_rootless_apptainer:
-        assert_rootless_apptainer_execution(command, policy=request.runtime_policy)
     _assert_request_containment(request)
     _log_request(request)
 
@@ -384,19 +316,23 @@ def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeEx
             stderr_handle = stderr_path.open("w", encoding="utf-8")
             stderr_target = stderr_handle
 
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=dict(request.env) if request.env is not None else None,
+            text=True,
+            stdout=stdout_target,
+            stderr=stderr_target,
+            stdin=subprocess.DEVNULL if request.stdin_devnull else None,
+            start_new_session=True,
+        )
+        cancel_observer = cancellation_observer.get()
+        if cancel_observer is not None:
+            cancel_observer(lambda: _terminate_process_group(process))
         try:
-            completed = subprocess.run(
-                command,
-                cwd=cwd,
-                env=dict(request.env) if request.env is not None else None,
-                text=True,
-                stdout=stdout_target,
-                stderr=stderr_target,
-                stdin=subprocess.DEVNULL if request.stdin_devnull else None,
-                timeout=request.timeout_s,
-                check=request.check,
-            )
+            stdout_text, stderr_text = process.communicate(timeout=request.timeout_s)
         except subprocess.TimeoutExpired as exc:
+            _terminate_process_group(process)
             raise TimeoutError(f"Runtime command timed out after {request.timeout_s}s") from exc
     finally:
         if stdout_handle is not None:
@@ -404,11 +340,43 @@ def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeEx
         if stderr_handle is not None:
             stderr_handle.close()
 
+    returncode = process.returncode
+    if request.check and returncode != 0:
+        raise subprocess.CalledProcessError(returncode, command, stdout_text, stderr_text)
     return RuntimeExecutionResult(
         request=request,
-        returncode=completed.returncode,
-        stdout=completed.stdout or "",
-        stderr=completed.stderr or "",
+        returncode=returncode,
+        stdout=stdout_text or "",
+        stderr=stderr_text or "",
         logs=list(request.log_lines),
         execution_backend=request.execution_mode,
     )
+
+
+def _kill_process_group(process: subprocess.Popen, sig: signal.Signals) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        if sig == signal.SIGTERM:
+            process.terminate()
+        else:
+            process.kill()
+
+
+def _terminate_process_group(process: subprocess.Popen, *, grace_s: float | None = None) -> None:
+    """Terminate a process group, escalating to SIGKILL if TERM is ignored."""
+    grace_s = TERMINATION_GRACE_SECONDS if grace_s is None else grace_s
+    if process.poll() is not None:
+        return
+    _kill_process_group(process, signal.SIGTERM)
+    try:
+        process.wait(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        logger.warning("runtime_execution.terminate_escalated pid=%s grace_s=%s", process.pid, grace_s)
+
+    _kill_process_group(process, signal.SIGKILL)
+    try:
+        process.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        logger.error("runtime_execution.kill_timeout pid=%s grace_s=%s", process.pid, grace_s)

@@ -1,233 +1,38 @@
-import { Children, useCallback, useState, useRef, useEffect } from 'react';
-import ReactMarkdown from 'react-markdown';
-import { type LocationInfo, type MriSnapshots } from './MriViewer';
+import { useCallback, useState, useRef, useEffect } from 'react';
 import type {
+    AssistantApprovalRequest,
     AssistantScope,
     ChatMessage,
-    ChatContentPart,
-    ChatTextPart,
-    ChatImagePart,
-    ToolCallEntry,
-    ReasoningEntry,
+    LocationInfo,
+    MriSnapshots,
 } from '../types';
-import { appFetch, clearAssistantHistory, fetchAssistantHistory, fetchProviders, parseError, reportClientError } from '../utils/api';
+import {
+    appFetch,
+    clearAssistantHistory,
+    fetchAssistantHistory,
+    parseError,
+} from '../utils/api';
+import { useAssistantProviderStatus } from '../hooks/useAssistantProviderStatus';
+import { useAssistantTurnMonitor } from '../hooks/useAssistantTurnMonitor';
+import { ChatApprovalContent } from './ChatApprovalContent';
+import { ChatMessageList } from './ChatMessageList';
+import { consumeAssistantTurnStream } from './assistantTurnStream';
+import { appendUniqueChatMessages } from './chatMessages';
+import {
+    approvalButtonClass,
+    approvalButtonLabel,
+    buildUserContent,
+    CHAT_REQUEST_TIMEOUT_MS,
+    CHAT_REQUEST_TIMEOUT_SECONDS,
+    createChatRequestId,
+    defaultMessages,
+    getRandomStatusMessage,
+    reportChatEvent,
+    STATUS_MESSAGES,
+    upsertToolCallsMessage,
+} from './chatSupport';
 
 export type { ChatMessage };
-
-/* ── Constants ── */
-
-const STATUS_MESSAGES = [
-    'Assistant is working',
-    'Assistant is figuring it out',
-    'Assistant is thinking'
-];
-const CHAT_REQUEST_TIMEOUT_MS = 300_000;
-const CHAT_REQUEST_TIMEOUT_SECONDS = CHAT_REQUEST_TIMEOUT_MS / 1000;
-const VISION_COMMANDS = ['@sagittal', '@coronal', '@axial', '@mri'];
-
-const getRandomStatusMessage = (exclude?: string) => {
-    const pool = exclude ? STATUS_MESSAGES.filter(msg => msg !== exclude) : STATUS_MESSAGES;
-    const candidates = pool.length > 0 ? pool : STATUS_MESSAGES;
-    return candidates[Math.floor(Math.random() * candidates.length)];
-};
-
-function createChatRequestId(): string {
-    return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function reportChatEvent(
-    level: 'info' | 'warning' | 'error',
-    eventType: string,
-    message: string,
-    details: Record<string, unknown>,
-) {
-    void reportClientError({
-        level,
-        event_type: eventType,
-        message,
-        path: globalThis.location?.pathname ?? null,
-        details: {
-            ...details,
-            user_agent: globalThis.navigator?.userAgent,
-        },
-    }).catch(() => {
-        // Telemetry must never affect chat behavior.
-    });
-}
-
-/* ── Shared inline styles for ToolCallsContent ── */
-
-const preStyle: React.CSSProperties = {
-    margin: 0, padding: '4px 6px', background: '#1e293b',
-    color: '#e2e8f0', borderRadius: 4, fontSize: 11,
-    lineHeight: 1.4, whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word', maxHeight: 140, overflowY: 'auto',
-};
-
-const sectionLabelStyle: React.CSSProperties = {
-    fontSize: 10, fontWeight: 600, color: '#64748b',
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2,
-};
-
-const codeStyle: React.CSSProperties = {
-    background: 'rgba(51,65,85,0.12)',
-    padding: '1px 5px',
-    borderRadius: 3,
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 11,
-    color: '#1e40af',
-};
-
-/* ── Sub-components ── */
-
-interface ApiResponse {
-    message: { content: string };
-    tool_calls_log?: ToolCallEntry[];
-}
-
-interface AssistantMessageEvent {
-    content: string;
-    round?: number;
-}
-
-interface SseEvent {
-    eventType: string;
-    data: string;
-}
-
-interface CodeProps {
-    node?: unknown;
-    inline?: boolean;
-    className?: string;
-    children?: React.ReactNode;
-}
-
-function renderMarkdownCodeChildren(children: React.ReactNode): string {
-    return Children.toArray(children)
-        .map((child) => {
-            if (typeof child === 'string' || typeof child === 'number') {
-                return String(child);
-            }
-            return '';
-        })
-        .join('')
-        .replace(/\n$/, '');
-}
-
-function defaultMessages(scope: AssistantScope): ChatMessage[] {
-    return [
-        {
-            role: 'system',
-            content: scope === 'workspace'
-                ? 'Welcome! I can help you with MRI viewing, analysis and neuroimaging runs across this workspace.'
-                : 'Welcome! I can help you with MRI viewing, analysis and neuroimaging runs.',
-        },
-    ];
-}
-
-function inputWithCursorContext(input: string, currentLocation?: LocationInfo | null): string {
-    if (!input.includes('@cursor') || !currentLocation) {
-        return input;
-    }
-    const { vox, labelName } = currentLocation;
-    return input.replace(/@cursor/g, `[Cursor Position: (${vox.join(', ')}), Label: ${labelName}]`);
-}
-
-function buildUserContent(
-    input: string,
-    currentLocation?: LocationInfo | null,
-    getMriSnapshots?: () => MriSnapshots | null,
-): { content: string | ChatContentPart[]; error?: string } {
-    const text = inputWithCursorContext(input, currentLocation);
-    if (!VISION_COMMANDS.some(command => input.includes(command)) || !getMriSnapshots) {
-        return { content: text };
-    }
-    const snapshots = getMriSnapshots();
-    if (!snapshots) {
-        return { content: text, error: 'Could not capture MRI views. Please try again.' };
-    }
-    const parts: ChatContentPart[] = [{ type: 'text', text }];
-    if (text.includes('@sagittal') || text.includes('@mri')) parts.push({ type: 'image_url', image_url: { url: snapshots.sagittal } });
-    if (text.includes('@coronal') || text.includes('@mri')) parts.push({ type: 'image_url', image_url: { url: snapshots.coronal } });
-    if (text.includes('@axial') || text.includes('@mri')) parts.push({ type: 'image_url', image_url: { url: snapshots.axial } });
-    return { content: parts };
-}
-
-function parseSsePart(part: string): SseEvent | null {
-    if (!part.trim()) return null;
-    let eventType = '';
-    let data = '';
-    for (const line of part.split('\n')) {
-        if (line.startsWith('event: ')) eventType = line.slice(7);
-        else if (line.startsWith('data: ')) data = line.slice(6);
-    }
-    return eventType && data ? { eventType, data } : null;
-}
-
-function upsertToolCallsMessage(
-    messages: ChatMessage[],
-    toolCalls: ToolCallEntry[],
-    reasoningEntries: ReasoningEntry[],
-): ChatMessage[] {
-    const count = toolCalls.length;
-    const toolMsg: ChatMessage = {
-        role: 'tool-calls',
-        content: `Used ${count} tool${count === 1 ? '' : 's'}`,
-        toolCalls: [...toolCalls],
-        reasoningEntries: [...reasoningEntries],
-    };
-    const last = messages[messages.length - 1];
-    return last?.role === 'tool-calls' ? [...messages.slice(0, -1), toolMsg] : [...messages, toolMsg];
-}
-
-function ToolCallsContent({
-    toolCalls,
-    reasoningEntries = [],
-}: {
-    toolCalls: ToolCallEntry[];
-    reasoningEntries?: ReasoningEntry[];
-}) {
-    return (
-        <div style={{ fontSize: 12 }}>
-            {reasoningEntries.length > 0 && (
-                <details style={{ marginBottom: toolCalls.length > 0 ? 6 : 0 }}>
-                    <summary style={{ cursor: 'pointer', fontWeight: 600, listStyle: 'revert' }}>
-                        Working notes
-                    </summary>
-                    <div style={{ marginTop: 4, paddingLeft: 16 }}>
-                        {reasoningEntries.map((entry, idx) => (
-                            <div key={idx} style={{ marginBottom: idx < reasoningEntries.length - 1 ? 6 : 0 }}>
-                                <div style={sectionLabelStyle}>
-                                    {entry.round ? `Round ${entry.round}` : 'Round'}
-                                </div>
-                                <pre style={preStyle}>{entry.summary}</pre>
-                            </div>
-                        ))}
-                    </div>
-                </details>
-            )}
-            {toolCalls.map((tc, idx) => {
-                const args = typeof tc.arguments === 'string'
-                    ? tc.arguments
-                    : JSON.stringify(tc.arguments, null, 2);
-                const result = tc.result || '(no output)';
-                return (
-                    <details key={idx} style={{ marginBottom: idx < toolCalls.length - 1 ? 4 : 0 }}>
-                        <summary style={{ cursor: 'pointer', fontWeight: 600, listStyle: 'revert' }}>
-                            <code style={codeStyle}>{tc.name}</code>
-                        </summary>
-                        <div style={{ marginTop: 4, paddingLeft: 16 }}>
-                            <div style={sectionLabelStyle}>Arguments</div>
-                            <pre style={preStyle}>{args}</pre>
-                            <div style={{ ...sectionLabelStyle, marginTop: 4 }}>Result</div>
-                            <pre style={preStyle}>{result}</pre>
-                        </div>
-                    </details>
-                );
-            })}
-        </div>
-    );
-}
 
 interface ChatProps {
     externalMessages?: ChatMessage[];
@@ -240,74 +45,86 @@ interface ChatProps {
     guiSessionId: string;
     clearRequestToken?: number;
     onClearStateChange?: (isClearing: boolean) => void;
+    onAssistantTurnComplete?: () => void;
 }
 
-export function Chat({ externalMessages = [], style, hideHeader = false, currentLocation, getMriSnapshots, workspaceId = null, caseId = null, guiSessionId, clearRequestToken, onClearStateChange }: ChatProps) {
+export function Chat({ externalMessages = [], style, hideHeader = false, currentLocation, getMriSnapshots, workspaceId = null, caseId = null, guiSessionId, clearRequestToken, onClearStateChange, onAssistantTurnComplete }: ChatProps) {
     const scope: AssistantScope = caseId ? 'case' : 'workspace';
     const [messages, setMessages] = useState<ChatMessage[]>(defaultMessages(scope));
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [loadingMessage, setLoadingMessage] = useState<string>(STATUS_MESSAGES[1]);
     const [isClearing, setIsClearing] = useState(false);
-    const [assistantDisabledMessage, setAssistantDisabledMessage] = useState<string | null>(null);
+    const [pendingApproval, setPendingApproval] = useState<AssistantApprovalRequest | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const abortRef = useRef<AbortController | null>(null);
     const historyRequestVersionRef = useRef(0);
     const suppressAbortMessageRef = useRef(false);
     const lastClearRequestTokenRef = useRef(clearRequestToken);
+    const externalMessagesRef = useRef(externalMessages);
+    externalMessagesRef.current = externalMessages;
+    const {
+        disabledMessage: assistantDisabledMessage,
+        retryable: providerRetryable,
+        retry: retryProvider,
+    } = useAssistantProviderStatus();
+
+    const loadPersistedChatState = useCallback(async () => {
+        if (!workspaceId) return;
+        const requestVersion = historyRequestVersionRef.current + 1;
+        historyRequestVersionRef.current = requestVersion;
+        const history = await fetchAssistantHistory(workspaceId, scope, caseId);
+        if (historyRequestVersionRef.current !== requestVersion) return;
+        setMessages(appendUniqueChatMessages([
+            ...defaultMessages(scope),
+            ...history.messages,
+        ], externalMessagesRef.current));
+        setPendingApproval(history.pending_approval ?? null);
+    }, [caseId, scope, workspaceId]);
+
+    const handleBackgroundTurnComplete = useCallback(async () => {
+        await loadPersistedChatState();
+        onAssistantTurnComplete?.();
+    }, [loadPersistedChatState, onAssistantTurnComplete]);
+
+    const {
+        activeTurnId,
+        activity: assistantActivity,
+        isCanceling,
+        trackTurn,
+        updateActivity: updateAssistantActivity,
+        discoverTurn,
+        markTurnFinished,
+        cancelTurn,
+    } = useAssistantTurnMonitor({
+        workspaceId,
+        scope,
+        caseId,
+        isStreamConnected: isLoading,
+        onTurnComplete: handleBackgroundTurnComplete,
+    });
+    const isTurnActive = isLoading || activeTurnId !== null;
 
     useEffect(() => {
         if (!workspaceId) {
             return;
         }
-        let cancelled = false;
-        const requestVersion = historyRequestVersionRef.current + 1;
-        historyRequestVersionRef.current = requestVersion;
-        void fetchAssistantHistory(workspaceId, scope, caseId)
-            .then((history) => {
-                if (cancelled || historyRequestVersionRef.current !== requestVersion) return;
-                if (history.messages.length > 0) {
-                    setMessages([
-                        ...defaultMessages(scope),
-                        ...history.messages,
-                    ]);
-                    return;
-                }
-                setMessages(defaultMessages(scope));
-            })
+        setPendingApproval(null);
+        void loadPersistedChatState()
             .catch((error) => {
-                if (cancelled || historyRequestVersionRef.current !== requestVersion) return;
                 console.error('Failed to load assistant history:', error);
             });
         return () => {
-            cancelled = true;
+            historyRequestVersionRef.current += 1;
         };
-    }, [workspaceId, caseId, scope]);
+    }, [loadPersistedChatState, workspaceId]);
 
     useEffect(() => {
-        let cancelled = false;
-        void fetchProviders()
-            .then((providers) => {
-                if (cancelled) return;
-                const chatProviders = providers.filter((provider) => provider.role === 'chat');
-                const defaultChatProvider = chatProviders.find((provider) => provider.is_default);
-                if (defaultChatProvider?.provider === 'no-llm' || defaultChatProvider?.provider_family === 'none') {
-                    setAssistantDisabledMessage('Assistant is disabled because LLM setup was skipped. You can still upload, view, and process cases.');
-                    return;
-                }
-                if (!defaultChatProvider && chatProviders.length > 0 && chatProviders.every((provider) => !provider.available)) {
-                    setAssistantDisabledMessage('Assistant is disabled because no LLM provider is configured. You can still upload, view, and process cases.');
-                    return;
-                }
-                setAssistantDisabledMessage(null);
-            })
-            .catch((error) => {
-                if (cancelled) return;
-                console.error('Failed to load provider configuration:', error);
-                setAssistantDisabledMessage(null);
-            });
         return () => {
-            cancelled = true;
+            if (abortRef.current) {
+                suppressAbortMessageRef.current = true;
+                abortRef.current.abort();
+            }
         };
     }, []);
 
@@ -320,11 +137,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     // Sync with external messages (e.g. system notifications)
     useEffect(() => {
         if (externalMessages.length > 0) {
-            setMessages(prev => {
-                const newMessages = externalMessages.filter(msg => !prev.includes(msg));
-                if (newMessages.length === 0) return prev;
-                return [...prev, ...newMessages];
-            });
+            setMessages(prev => appendUniqueChatMessages(prev, externalMessages));
         }
     }, [externalMessages]);
 
@@ -335,7 +148,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
     }, [messages]);
 
     const handleClear = useCallback(async () => {
-        if (!workspaceId || isClearing) return;
+        if (!workspaceId || isClearing || isTurnActive) return;
         historyRequestVersionRef.current += 1;
         suppressAbortMessageRef.current = true;
         abortRef.current?.abort();
@@ -346,6 +159,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             await clearAssistantHistory(workspaceId, scope, caseId);
             setMessages(defaultMessages(scope));
             setInput('');
+            setPendingApproval(null);
         } catch (error) {
             console.error('Failed to clear assistant history:', error);
             const errorMsg = (error instanceof Error ? error.message : null) ?? 'Failed to clear chat history.';
@@ -353,11 +167,11 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         } finally {
             setIsClearing(false);
         }
-    }, [caseId, isClearing, scope, workspaceId]);
+    }, [caseId, isClearing, isTurnActive, scope, workspaceId]);
 
     useEffect(() => {
-        onClearStateChange?.(isClearing);
-    }, [isClearing, onClearStateChange]);
+        onClearStateChange?.(isClearing || isTurnActive);
+    }, [isClearing, isTurnActive, onClearStateChange]);
 
     useEffect(() => {
         if (clearRequestToken === undefined || clearRequestToken === lastClearRequestTokenRef.current) return;
@@ -365,10 +179,12 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         void handleClear();
     }, [clearRequestToken, handleClear]);
 
-    const handleSend = async () => {
-        if (!input.trim() || isLoading || isClearing || assistantDisabledMessage) return;
+    const handleSend = async (approval?: AssistantApprovalRequest) => {
+        if ((!approval && !input.trim()) || isTurnActive || isClearing || assistantDisabledMessage) return;
 
-        const userContent = buildUserContent(input, currentLocation, getMriSnapshots);
+        const userContent = approval
+            ? { content: `I approve the requested action: ${approval.presentation?.title ?? approval.description}.`, error: undefined }
+            : buildUserContent(input, currentLocation, getMriSnapshots);
         if (userContent.error) {
             setMessages(prev => [...prev, { role: 'info', content: userContent.error ?? 'Could not prepare message.' }]);
             return;
@@ -377,10 +193,12 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         const userMsg: ChatMessage = { role: 'user', content: userContent.content };
         setMessages(prev => [...prev, userMsg]);
         setInput('');
+        setPendingApproval(null);
         setIsLoading(true);
         const controller = new AbortController();
         const chatRequestId = createChatRequestId();
         const startedAt = performance.now();
+        let managedTurnId: string | null = null;
         let didTimeout = false;
         const timeoutId = window.setTimeout(() => {
             didTimeout = true;
@@ -402,7 +220,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    messages: [...messages.filter(m => m.role !== 'system' && m.role !== 'info' && m.role !== 'tool-calls'), userMsg],
+                    messages: [userMsg],
                     workspace_id: workspaceId,
                     case_id: scope === 'case' ? caseId : null,
                     gui_session_id: guiSessionId,
@@ -414,10 +232,22 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                         },
                     } : undefined,
                     scope,
+                    tool_approvals: approval ? [{
+                        name: approval.name,
+                        call_id: approval.call_id,
+                        execution_id: approval.execution_id,
+                        arguments: approval.arguments,
+                        digest: approval.digest,
+                    }] : [],
                 }),
                 signal: controller.signal,
             });
             const responseStartedElapsedMs = Math.round(performance.now() - startedAt);
+            const responseTurnId = response.headers.get('X-Assistant-Turn-Id');
+            if (responseTurnId) {
+                managedTurnId = responseTurnId;
+                trackTurn(responseTurnId);
+            }
             reportChatEvent('info', 'frontend.assistant_turn.response_started', 'Assistant turn response stream opened', {
                 chat_request_id: chatRequestId,
                 elapsed_ms: responseStartedElapsedMs,
@@ -426,6 +256,13 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             });
 
             if (!response.ok) {
+                if (response.status === 409 && workspaceId) {
+                    const turnId = await discoverTurn().catch(() => null);
+                    if (turnId) {
+                        trackTurn(turnId);
+                        return;
+                    }
+                }
                 const errorMessage = await parseError(response, 'API request failed');
                 if (errorMessage.includes('image')) {
                     throw new Error("The current model does not support image capabilities. Please switch to a vision model like Qwen3-VL-32B or gpt-4o.");
@@ -436,69 +273,43 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 throw new Error('Assistant response stream was empty.');
             }
 
-            // Read the SSE stream — tool calls arrive incrementally
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            const accumulated: ToolCallEntry[] = [];
-            const reasoningEntries: ReasoningEntry[] = [];
-            let receivedFinalEvent = false;
-            const sseEventCounts: Record<string, number> = {};
-
-            const handleSsePart = (part: string) => {
-                const event = parseSsePart(part);
-                if (!event) return;
-                const { eventType, data } = event;
-                sseEventCounts[eventType] = (sseEventCounts[eventType] ?? 0) + 1;
-
-                if (eventType === 'assistant_message') {
-                    const assistantMessage = JSON.parse(data) as AssistantMessageEvent;
-                    if (assistantMessage.content.trim()) {
-                        setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage.content }]);
+            const streamResult = await consumeAssistantTurnStream(response.body, {
+                onText: (streamedText, startsNewMessage) => {
+                    if (startsNewMessage) {
+                        setMessages(prev => [...prev, { role: 'assistant', content: streamedText }]);
+                        return;
                     }
-                } else if (eventType === 'reasoning') {
-                    const reasoning = JSON.parse(data) as ReasoningEntry;
-                    reasoningEntries.push(reasoning);
-                    setMessages(prev => upsertToolCallsMessage(prev, accumulated, reasoningEntries));
-                } else if (eventType === 'tool_call') {
-                    const tc = JSON.parse(data) as ToolCallEntry;
-                    accumulated.push(tc);
-                    setMessages(prev => upsertToolCallsMessage(prev, accumulated, reasoningEntries));
-                } else if (eventType === 'done') {
-                    receivedFinalEvent = true;
-                    const apiData = JSON.parse(data) as ApiResponse;
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        return last?.role === 'assistant'
+                            ? [...prev.slice(0, -1), { ...last, content: streamedText }]
+                            : [...prev, { role: 'assistant', content: streamedText }];
+                    });
+                },
+                onActivity: updateAssistantActivity,
+                onAssistantMessage: (content) => {
+                    setMessages(prev => [...prev, { role: 'assistant', content }]);
+                },
+                onToolUpdates: (toolCalls, reasoningEntries) => {
+                    setMessages(prev => upsertToolCallsMessage(prev, toolCalls, reasoningEntries));
+                },
+                onDone: (apiData, streamedText) => {
                     const assistantContent = apiData.message.content;
-                    setMessages(prev => [...prev, { role: 'assistant', content: assistantContent }]);
-                } else if (eventType === 'error') {
-                    receivedFinalEvent = true;
-                    const errPayload = JSON.parse(data) as { error?: { message?: string } };
-                    throw new Error(errPayload.error?.message ?? 'API request failed');
-                }
-            };
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-
-                // Parse complete SSE events (separated by double newlines)
-                const parts = buffer.split('\n\n');
-                buffer = parts.pop()!; // last part may be incomplete
-
-                for (const part of parts) {
-                    handleSsePart(part);
-                }
-            }
-            if (buffer.trim()) {
-                handleSsePart(buffer);
-            }
-            if (!receivedFinalEvent) {
+                    if (assistantContent !== streamedText) {
+                        setMessages(prev => [...prev, { role: 'assistant', content: assistantContent }]);
+                    }
+                    setPendingApproval(apiData.approval_request ?? null);
+                },
+            });
+            if (!streamResult.receivedFinalEvent) {
                 reportChatEvent('warning', 'frontend.assistant_turn.incomplete_stream', 'Assistant response stream ended before a final event', {
                     chat_request_id: chatRequestId,
                     elapsed_ms: Math.round(performance.now() - startedAt),
-                    sse_event_counts: sseEventCounts,
+                    sse_event_counts: streamResult.eventCounts,
                 });
                 setMessages(prev => [...prev, { role: 'info', content: 'Assistant response ended before a final message was received. Please try again.' }]);
+            } else {
+                markTurnFinished();
             }
         } catch (error: unknown) {
             if (error instanceof DOMException && error.name === 'AbortError') {
@@ -511,13 +322,18 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                         workspace_id: workspaceId,
                         case_id: scope === 'case' ? caseId : null,
                     });
-                    setMessages(prev => [...prev, { role: 'info', content: `Assistant request timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. Please try again or narrow the request.` }]);
+                    setMessages(prev => [...prev, {
+                        role: 'info',
+                        content: managedTurnId
+                            ? `Live updates timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. The assistant is continuing in the background.`
+                            : `Assistant request timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. Please try again or narrow the request.`,
+                    }]);
                 } else if (!suppressAbortMessageRef.current) {
                     reportChatEvent('info', 'frontend.assistant_turn.stopped', 'Assistant turn request stopped by the user', {
                         chat_request_id: chatRequestId,
                         elapsed_ms: Math.round(performance.now() - startedAt),
                     });
-                    setMessages(prev => [...prev, { role: 'info', content: 'Request stopped.' }]);
+                    setMessages(prev => [...prev, { role: 'info', content: managedTurnId ? 'Live updates stopped. The assistant is continuing in the background.' : 'Request stopped.' }]);
                 }
                 suppressAbortMessageRef.current = false;
             } else {
@@ -534,31 +350,25 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             window.clearTimeout(timeoutId);
             abortRef.current = null;
             setIsLoading(false);
+            onAssistantTurnComplete?.();
         }
     };
 
-    // Helper to render message content whether string or array
-    const renderContent = (content: string | ChatContentPart[]) => {
-        if (typeof content === 'string') return content;
-        // Extract text parts from multipart array
-        return content
-            .filter((item): item is ChatTextPart => item.type === 'text')
-            .map(item => item.text)
-            .join('\n');
-    };
-
-    // Render attached image thumbnails for vision messages
-    const renderImages = (content: string | ChatContentPart[]) => {
-        if (typeof content === 'string') return null;
-        const images = content.filter((item): item is ChatImagePart => item.type === 'image_url');
-        if (images.length === 0) return null;
-        return (
-            <div className="flex gap-2 mt-2 flex-wrap">
-                {images.map((img, idx) => (
-                    <img key={idx} src={img.image_url.url} alt="MRI View" className="h-16 w-16 object-cover rounded border border-white/20" />
-                ))}
-            </div>
-        );
+    const handleStop = async () => {
+        if (!workspaceId || isCanceling) return;
+        try {
+            const status = await cancelTurn();
+            if (status === 'canceling') {
+                setMessages(prev => [...prev, { role: 'info', content: 'Assistant cancellation requested.' }]);
+            }
+            if (abortRef.current) {
+                suppressAbortMessageRef.current = true;
+                abortRef.current.abort();
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to stop the assistant turn.';
+            setMessages(prev => [...prev, { role: 'info', content: message }]);
+        }
     };
 
     return (
@@ -572,7 +382,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                         type="button"
                         className="chat-clear-button"
                         onClick={() => void handleClear()}
-                        disabled={isClearing}
+                        disabled={isClearing || isTurnActive}
                         title="Clear chat context"
                         aria-label="Clear chat context"
                     >
@@ -580,59 +390,39 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     </button>
                 </div>
             )}
-            <div className="chat-messages" ref={scrollRef}>
-                {messages.map((msg, i) => (
-                    <div
-                        key={i}
-                        className={`chat-message ${msg.role === 'user' ? 'user' :
-                            msg.role === 'info' ? 'info' :
-                                msg.role === 'system' ? 'system' :
-                                    msg.role === 'tool-calls' ? 'tool-calls' : 'assistant'
-                            }`}
-                    >
-                        {msg.role === 'tool-calls' && msg.toolCalls ? (
-                            <ToolCallsContent
-                                toolCalls={msg.toolCalls}
-                                reasoningEntries={msg.reasoningEntries}
-                            />
-                        ) : (
-                            <>
-                                <ReactMarkdown
-                                    components={{
-                                        code({ inline, className, children, ...props }: CodeProps) {
-                                            const match = /language-(\w+)/.exec(className ?? '');
-                                            return !inline && match ? (
-                                                <pre className={className} {...props}>
-                                                    <code>{renderMarkdownCodeChildren(children)}</code>
-                                                </pre>
-                                            ) : (
-                                                <code className={className} {...props}>
-                                                    {children}
-                                                </code>
-                                            );
-                                        }
-                                    }}
-                                >
-                                    {renderContent(msg.content)}
-                                </ReactMarkdown>
-                                {renderImages(msg.content)}
-                            </>
-                        )}
-                    </div>
-                ))}
-                {isLoading && (
-                    <div className="chat-message info italic chat-loading">
-                        <span>{loadingMessage}</span>
-                        <span className="chat-spinner" aria-hidden="true" />
-                    </div>
-                )}
-                {assistantDisabledMessage && (
-                    <div className="chat-message info">
-                        {assistantDisabledMessage}
-                    </div>
-                )}
-            </div>
+            <ChatMessageList
+                messages={messages}
+                isTurnActive={isTurnActive}
+                isLoading={isLoading}
+                loadingMessage={loadingMessage}
+                assistantActivity={assistantActivity}
+                assistantDisabledMessage={assistantDisabledMessage}
+                providerRetryable={providerRetryable}
+                onRetryProvider={retryProvider}
+                scrollRef={scrollRef}
+            />
 
+            {pendingApproval && !isTurnActive && (
+                <div className="chat-approval" role="group" aria-label="Confirm assistant action">
+                    <ChatApprovalContent approval={pendingApproval} />
+                    <div className="chat-approval-actions flex items-center gap-2">
+                        <button
+                            type="button"
+                            className={`nc-btn ${approvalButtonClass(pendingApproval.presentation)} px-3`}
+                            onClick={() => void handleSend(pendingApproval)}
+                        >
+                            {approvalButtonLabel(pendingApproval.presentation)}
+                        </button>
+                        <button
+                            type="button"
+                            className="nc-btn px-3"
+                            onClick={() => setPendingApproval(null)}
+                        >
+                            Decline
+                        </button>
+                    </div>
+                </div>
+            )}
             <div className="chat-input-container">
                 <input
                     className="chat-input"
@@ -640,15 +430,15 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') void handleSend(); }}
-                    disabled={isClearing || Boolean(assistantDisabledMessage)}
+                    disabled={isClearing || isTurnActive || Boolean(assistantDisabledMessage)}
                 />
-                {isLoading ? (
+                {isTurnActive ? (
                     <button
                         className="nc-btn nc-btn-danger px-4"
-                        onClick={() => abortRef.current?.abort()}
-                        disabled={isClearing}
+                        onClick={() => void handleStop()}
+                        disabled={isClearing || isCanceling}
                     >
-                        Stop
+                        {isCanceling ? 'Stopping…' : 'Stop'}
                     </button>
                 ) : (
                     <button

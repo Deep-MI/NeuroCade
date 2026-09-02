@@ -3,7 +3,10 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from api_service.assistant.activity import AssistantActivity
+from api_service.assistant.approval_contracts import AssistantApprovalPresentation
 
 
 class UserSummary(BaseModel):
@@ -12,18 +15,17 @@ class UserSummary(BaseModel):
     full_name: str
 
 
+class FrontendConfig(BaseModel):
+    local_auth_enabled: bool
+    clerk_publishable_key: str | None = None
+    clerk_jwt_template: str | None = None
+
+
 class SessionBootstrap(BaseModel):
     user: UserSummary
-    role: str
-    auth_mode: str
-    deployment_profile: str
-    public_url: str
     features: dict[str, bool]
-    limits: dict[str, int] = Field(default_factory=dict)
-    sample_data: dict[str, Any] = Field(default_factory=dict)
     workspaces: list[dict[str, Any]] = Field(default_factory=list)
     default_workspace_id: str | None = None
-    active_workspace_id: str | None = None
 
 
 class WorkspaceSummary(BaseModel):
@@ -33,7 +35,6 @@ class WorkspaceSummary(BaseModel):
     role: str
     kind: str
     is_default: bool
-    status: str
     case_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -47,7 +48,6 @@ class WorkspaceCreateRequest(BaseModel):
 class WorkspaceUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
-    status: str | None = None
 
 
 class WorkspaceDeleteRequest(BaseModel):
@@ -76,6 +76,16 @@ class RunSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     error_message: str | None = None
+
+
+class AnalysisToolSummary(BaseModel):
+    id: str
+    label: str
+    description: str
+    inputs: list[dict[str, Any]] = Field(default_factory=list)
+    outputs: list[dict[str, Any]] = Field(default_factory=list)
+    execution: dict[str, Any] = Field(default_factory=dict)
+    input_artifact_kind: Literal["intensity_volume"]
 
 
 class CaseSummary(BaseModel):
@@ -108,45 +118,7 @@ class CaseDetail(BaseModel):
     runs: list[RunSummary]
 
 
-class WorkspaceBatchCaseSummary(BaseModel):
-    run_id: str
-    case_id: str
-    case_title: str
-    status: str
-    external_task_id: str | None = None
-    error_message: str | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class WorkspaceBatchRunSummary(BaseModel):
-    run_id: str
-    workspace_id: str
-    status: str
-    run_type: str
-    execution_mode: Literal["workspace_wide", "per_case"] = "per_case"
-    command: str
-    report_name: str
-    analysis_id: str | None = None
-    selected_case_count: int = 0
-    total_cases: int = 0
-    queued_cases: int = 0
-    running_cases: int = 0
-    completed_cases: int = 0
-    failed_cases: int = 0
-    canceled_cases: int = 0
-    external_task_id: str | None = None
-    artifact_count: int = 0
-    created_at: datetime
-    updated_at: datetime
-
-
-class WorkspaceBatchRunDetail(WorkspaceBatchRunSummary):
-    cases: list[WorkspaceBatchCaseSummary] = Field(default_factory=list)
-    artifacts: list[ArtifactSummary] = Field(default_factory=list)
-
-
-class CaseRenameRequest(BaseModel):
+class CaseUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     modalities: list[str] | None = None
@@ -154,13 +126,9 @@ class CaseRenameRequest(BaseModel):
     notes: str | None = None
 
 
-class CaseRenameResponse(BaseModel):
-    old_id: str
-    new_id: str
+class CaseUpdateResponse(BaseModel):
+    id: str
     title: str
-    case_id: str
-    old_title: str
-    new_title: str
     description: str | None = None
     modalities: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -171,20 +139,27 @@ class ProviderSummary(BaseModel):
     provider: str
     provider_family: str
     model: str
-    role: str
     is_default: bool = False
-    native_tool_calling: bool = False
-    json_mode: bool = True
     vision: bool = False
-    streaming: bool = True
-    available: bool = True
-    availability_reason: str | None = None
+    configured: bool
+    reachable: bool
+    configuration_reason: str | None = None
+    reachability_reason: str | None = None
 
 
 class ChatToolCallEntry(BaseModel):
+    call_id: str | None = None
+    execution_id: str | None = None
+    ledger_status: str | None = None
+    external_run_id: str | None = None
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     result: str
+    is_error: bool = False
+    details: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    terminal: bool = False
+    elapsed_ms: int | None = None
 
 
 class ReasoningEntry(BaseModel):
@@ -200,20 +175,94 @@ class ChatMessageSummary(BaseModel):
     reasoningEntries: list[ReasoningEntry] = Field(default_factory=list)
 
 
+class AssistantTextContentPart(BaseModel):
+    type: Literal["text"]
+    text: str = Field(min_length=1, max_length=20_000)
+
+
+class AssistantImageUrl(BaseModel):
+    url: str = Field(min_length=1, max_length=5_000_000)
+
+
+class AssistantImageContentPart(BaseModel):
+    type: Literal["image_url"]
+    image_url: AssistantImageUrl
+
+
+class AssistantTurnMessage(BaseModel):
+    role: Literal["user"]
+    content: str | list[AssistantTextContentPart | AssistantImageContentPart]
+
+    @model_validator(mode="after")
+    def validate_content(self) -> "AssistantTurnMessage":
+        if isinstance(self.content, str):
+            if not self.content.strip():
+                raise ValueError("Message content must not be blank")
+            if len(self.content) > 20_000:
+                raise ValueError("Message text exceeds the 20,000 character limit")
+            return self
+        if not self.content or len(self.content) > 4:
+            raise ValueError("Structured message content must contain between 1 and 4 parts")
+        return self
+
+
+class AssistantToolApproval(BaseModel):
+    """One user-approved, exact assistant tool invocation."""
+
+    name: str = Field(min_length=1, max_length=255)
+    call_id: str | None = Field(default=None, max_length=255)
+    execution_id: str | None = Field(default=None, max_length=128)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AssistantApprovalRequestResponse(BaseModel):
+    name: str
+    call_id: str | None = None
+    execution_id: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    description: str
+    presentation: AssistantApprovalPresentation | None = None
+
+
 class AssistantTurnRequest(BaseModel):
-    messages: list[dict[str, Any]]
-    workspace_id: str | None = None
-    case_id: str | None = None
-    gui_session_id: str | None = None
-    scope: str = "case"
-    provider: str | None = None
-    model: str | None = None
+    messages: list[AssistantTurnMessage] = Field(min_length=1, max_length=1)
+    workspace_id: str = Field(min_length=1, max_length=255)
+    case_id: str | None = Field(default=None, max_length=255)
+    gui_session_id: str = Field(min_length=1, max_length=255)
+    scope: Literal["case", "workspace"] = "case"
+    provider: str | None = Field(default=None, max_length=255)
+    model: str | None = Field(default=None, max_length=255)
     gui_state_override: dict[str, Any] | None = None
+    tool_approvals: list[AssistantToolApproval] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_gui_state_size(self) -> "AssistantTurnRequest":
+        if self.gui_state_override is not None:
+            import json
+
+            if len(json.dumps(self.gui_state_override, default=str)) > 64_000:
+                raise ValueError("GUI state override exceeds the 64,000 character limit")
+        return self
+
+
+class AssistantActiveTurnResponse(BaseModel):
+    active: bool
+    turn_id: str | None = None
+    elapsed_seconds: float | None = None
+    activity: AssistantActivity | None = None
+
+
+class AssistantTurnCancelResponse(BaseModel):
+    status: Literal["canceling", "not_active"]
+    turn_id: str
 
 
 class AssistantHistoryResponse(BaseModel):
     thread_id: str | None = None
     messages: list[ChatMessageSummary] = Field(default_factory=list)
+    pending_approval: AssistantApprovalRequestResponse | None = None
 
 
 class AssistantHistoryClearResponse(BaseModel):
@@ -275,8 +324,7 @@ class MonitoringSummary(BaseModel):
     totals: dict[str, int]
     active_users: list[MonitoringUserSummary]
     services: list[MonitoringStatusItem]
-    redis: dict[str, Any]
-    celery: dict[str, Any]
+    jobs: dict[str, Any]
     recent_errors: list[MonitoringEventSummary]
     recent_activity: list[MonitoringAuditEventSummary]
 
@@ -285,8 +333,7 @@ class MonitoringHealth(BaseModel):
     generated_at: datetime
     status: Literal["ok", "degraded", "down"]
     services: list[MonitoringStatusItem]
-    redis: dict[str, Any]
-    celery: dict[str, Any]
+    jobs: dict[str, Any]
 
 
 class MonitoringEventsResponse(BaseModel):
@@ -301,36 +348,50 @@ class MonitoringIngestResponse(BaseModel):
 class UploadResponse(BaseModel):
     case_id: str
     workspace_id: str
-    filename: str
+    filenames: list[str]
     title: str
 
 
 class StartRunRequest(BaseModel):
-    workspace_id: str | None = None
-    case_id: str | None = None
-    source_case_id: str | None = None
-    input_artifact_id: str
-    seg_only: bool = False
-    surf_only: bool = False
-    no_bias: bool = False
-    no_cereb: bool = False
-    no_asegdkt: bool = False
-    no_hypothal: bool = False
-    three_t: bool = False
-    vox_size: str = "min"
-    case_name: str | None = None
+    tool_id: str
+    case_id: str
+    input_artifact_ids: list[str]
+    output_name_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class GuiLayerDisplay(BaseModel):
+    brightness: float | None = None
+    contrast: float | None = None
+    surface_color_mode: Literal["solid", "curvature", "annotation"] | None = None
+
+
+class GuiLayerState(BaseModel):
+    id: str
+    artifact_id: str | None = None
+    filename: str
+    name: str | None = None
+    type: Literal["intensity", "segmentation", "surface"]
+    role: str | None = None
+    hemisphere: Literal["left", "right"] | None = None
+    loaded: bool = True
+    visible: bool
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    display: GuiLayerDisplay = Field(default_factory=GuiLayerDisplay)
+
+
+class GuiCursorState(BaseModel):
+    voxel: tuple[float, float, float]
+    label_id: int
+    label_name: str
 
 
 class GuiStateSyncRequest(BaseModel):
-    workspace_id: str | None = None
+    workspace_id: str
     case_id: str | None = None
-    gui_session_id: str | None = None
+    gui_session_id: str
     is_job_running: bool = False
-    has_valid_segmentation: bool = False
-    current_case_id: str | None = None
-    loaded_volumes: list[str] = Field(default_factory=list)
-    loaded_volume_names: list[str] = Field(default_factory=list)
-    visible_volumes: list[str] = Field(default_factory=list)
+    layers: list[GuiLayerState] = Field(default_factory=list)
+    acknowledged_command_ids: list[str] = Field(default_factory=list)
     current_intensity_artifact_id: str | None = None
     current_intensity_volume: str | None = None
-    current_cursor: dict[str, Any] | None = None
+    current_cursor: GuiCursorState | None = None

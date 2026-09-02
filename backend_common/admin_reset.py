@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session
 from backend_common.case_storage import delete_case_storage, workspace_storage_dir
 from backend_common.db import (
     Artifact,
-    AssistantCheckpoint,
     AssistantMessage,
     AssistantThread,
+    AssistantTurn,
     AuditEvent,
     Case,
     CaseEvent,
@@ -21,7 +21,7 @@ from backend_common.db import (
     Workspace,
     WorkspaceMembership,
 )
-from backend_common.sample_seed import SAMPLE_CASE_DESCRIPTION, ensure_sample_case, sample_case_id_for_workspace
+from backend_common.sample_seed import ensure_sample_case, sample_case_id_for_workspace
 from backend_common.workspace_bootstrap import ensure_personal_workspace
 
 
@@ -29,7 +29,6 @@ from backend_common.workspace_bootstrap import ensure_personal_workspace
 class ResetCounts:
     workspaces_deleted: int = 0
     cases_deleted: int = 0
-    sample_cases_reset: int = 0
 
 
 def _remove_workspace_storage_root(settings, workspace: Workspace) -> None:
@@ -49,16 +48,6 @@ def _assistant_thread_ids_for_case(db: Session, case_id: str) -> list[str]:
     ]
 
 
-def _assistant_thread_ids_for_workspace(db: Session, workspace_id: str) -> list[str]:
-    """Return assistant thread IDs associated with a workspace."""
-    return [
-        thread_id
-        for (thread_id,) in db.query(AssistantThread.id)
-        .filter(AssistantThread.workspace_id == workspace_id)
-        .all()
-    ]
-
-
 def purge_case(db: Session, settings, case: Case, workspace: Workspace | None) -> None:
     """Delete a case and its storage, artifacts, runs, and assistant data."""
     if workspace is not None:
@@ -72,14 +61,15 @@ def purge_case(db: Session, settings, case: Case, workspace: Workspace | None) -
     ]
     assistant_thread_ids = _assistant_thread_ids_for_case(db, case.id)
     if assistant_thread_ids:
-        db.query(AssistantCheckpoint).filter(AssistantCheckpoint.thread_id.in_(assistant_thread_ids)).delete(synchronize_session=False)
         db.query(AssistantMessage).filter(AssistantMessage.thread_id.in_(assistant_thread_ids)).delete(synchronize_session=False)
+        db.query(AssistantTurn).filter(AssistantTurn.thread_id.in_(assistant_thread_ids)).delete(synchronize_session=False)
 
     if artifact_ids:
         db.query(AuditEvent).filter(AuditEvent.artifact_id.in_(artifact_ids)).delete(synchronize_session=False)
         db.query(CaseEvent).filter(CaseEvent.artifact_id.in_(artifact_ids)).delete(synchronize_session=False)
     db.flush()
     db.query(AssistantMessage).filter(AssistantMessage.case_id == case.id).delete(synchronize_session=False)
+    db.query(AssistantTurn).filter(AssistantTurn.case_id == case.id).delete(synchronize_session=False)
     db.query(CaseEvent).filter(CaseEvent.case_id == case.id).delete(synchronize_session=False)
     db.query(Artifact).filter(Artifact.case_id == case.id).delete(synchronize_session=False)
     db.query(Run).filter(Run.case_id == case.id).delete(synchronize_session=False)
@@ -102,20 +92,17 @@ def purge_workspace(db: Session, settings, workspace: Workspace) -> ResetCounts:
         purge_case(db, settings, case, workspace)
         counts.cases_deleted += 1
 
-    assistant_thread_ids = _assistant_thread_ids_for_workspace(db, workspace.id)
     workspace_artifact_ids = [
         artifact_id
         for (artifact_id,) in db.query(Artifact.id)
         .filter(Artifact.workspace_id == workspace.id)
         .all()
     ]
-    if assistant_thread_ids:
-        db.query(AssistantCheckpoint).filter(AssistantCheckpoint.thread_id.in_(assistant_thread_ids)).delete(synchronize_session=False)
-
     if workspace_artifact_ids:
         db.query(AuditEvent).filter(AuditEvent.artifact_id.in_(workspace_artifact_ids)).delete(synchronize_session=False)
         db.query(CaseEvent).filter(CaseEvent.artifact_id.in_(workspace_artifact_ids)).delete(synchronize_session=False)
     db.query(AssistantMessage).filter(AssistantMessage.workspace_id == workspace.id).delete(synchronize_session=False)
+    db.query(AssistantTurn).filter(AssistantTurn.workspace_id == workspace.id).delete(synchronize_session=False)
     db.query(CaseEvent).filter(CaseEvent.workspace_id == workspace.id).delete(synchronize_session=False)
     db.query(Artifact).filter(Artifact.workspace_id == workspace.id).delete(synchronize_session=False)
     db.query(Run).filter(Run.workspace_id == workspace.id).delete(synchronize_session=False)
@@ -146,41 +133,13 @@ def reset_owned_workspaces(db: Session, settings, user_ids: list[str] | None = N
 
 def reset_sample_case_for_user(db: Session, settings, user: User) -> bool:
     """Recreate a user's sample case after removing any existing sample case."""
-    workspace = ensure_personal_workspace(db, user, readable_user_slug=bool(getattr(settings, "clerk_jwks_url", None)))
+    workspace = ensure_personal_workspace(db, settings, user)
 
     case_id = sample_case_id_for_workspace(workspace.id)
-    existing_cases = []
     canonical_case = db.get(Case, case_id)
     if canonical_case is not None:
-        existing_cases.append(canonical_case)
-    existing_cases.extend(
-        case
-        for case in db.query(Case)
-        .filter(
-            Case.workspace_id == workspace.id,
-            Case.owner_user_id == user.id,
-            Case.description == SAMPLE_CASE_DESCRIPTION,
-        )
-        .all()
-        if case.id != case_id
-    )
-    for existing_case in existing_cases:
-        workspace = db.get(Workspace, existing_case.workspace_id)
-        purge_case(db, settings, existing_case, workspace)
+        purge_case(db, settings, canonical_case, workspace)
 
     seeded_case = ensure_sample_case(db, user)
     db.flush()
     return seeded_case is not None
-
-
-def reset_sample_cases(db: Session, settings, user_ids: list[str] | None = None) -> ResetCounts:
-    """Reset sample cases, optionally limited to the given user IDs."""
-    query = db.query(User).order_by(User.created_at.asc(), User.id.asc())
-    if user_ids:
-        query = query.filter(User.id.in_(user_ids))
-
-    counts = ResetCounts()
-    for user in query.all():
-        if reset_sample_case_for_user(db, settings, user):
-            counts.sample_cases_reset += 1
-    return counts

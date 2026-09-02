@@ -26,22 +26,10 @@ on:
         description: "Stable only: optional correction number. Leave blank to use vYYYY.M.D or the next available correction."
         required: false
         type: string
-      sample_case_artifact_url:
-        description: "URL to a prebuilt neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz. Defaults to RELEASE_SAMPLE_CASE_ARTIFACT_URL repository variable."
-        required: false
-        type: string
-      sample_case_artifact_sha256:
-        description: "Optional SHA256 for the prebuilt sample case tarball. Defaults to RELEASE_SAMPLE_CASE_ARTIFACT_SHA256 repository variable."
-        required: false
-        type: string
-      skip_sample_case_artifact:
-        description: "Publish without the sample case artifact."
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: release-${{ github.event_name == 'schedule' && 'beta-main' || format('{0}-{1}', inputs.release_kind, inputs.target_ref) }}
@@ -49,7 +37,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish ${{ github.event_name == 'schedule' && 'beta' || inputs.release_kind }} release
+    name: Publish ${{ github.event_name == 'schedule' && 'beta' || inputs.release_kind }} release
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -77,74 +65,191 @@ jobs:
             echo "No commits found since the latest reachable release tag: \`${{ steps.release.outputs.latest_reachable_release_tag }}\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/setup-node@v6
+      - name: Set up Docker Buildx
         if: steps.release.outputs.should_release == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: steps.release.outputs.should_release == 'true'
+        uses: docker/login-action@v4
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: client/package-lock.json
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish Docker image
+        id: app_image
+        if: steps.release.outputs.should_release == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/backend.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          build-args: |
+            NEUROCADE_VERSION=${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.head_sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Verify anonymous image access
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+        run: |
+          anonymous_config="$RUNNER_TEMP/docker-anonymous"
+          mkdir -p "$anonymous_config"
+          if ! DOCKER_CONFIG="$anonymous_config" docker pull --platform linux/amd64 "$RELEASE_IMAGE"; then
+            echo "The GHCR package must be public before the GitHub release can be published." >&2
+            echo "Make the neurocade package public in the Deep-MI package settings, then rerun this workflow." >&2
+            exit 1
+          fi
+
+      - name: Install uv and rootless Apptainer
+        if: steps.release.outputs.should_release == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.17"
 
       - name: Install Apptainer
         if: steps.release.outputs.should_release == 'true'
         run: |
+          curl -fsSL -o "$RUNNER_TEMP/apptainer.deb" \
+            https://github.com/apptainer/apptainer/releases/download/v1.3.6/apptainer_1.3.6_amd64.deb
+          echo "2723b2928cfc30edf687723c49556ec4e013f0bf7cdb43a5a76bca7bd3c70792  $RUNNER_TEMP/apptainer.deb" | sha256sum -c -
           sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          sudo add-apt-repository -y ppa:apptainer/ppa
-          sudo apt-get update
-          sudo apt-get install -y apptainer
-          apptainer --version
+          sudo apt-get install -y "$RUNNER_TEMP/apptainer.deb"
 
-      - name: Download sample case artifact
+      - name: Build release bridge artifact
+        if: steps.release.outputs.should_release == 'true'
+        run: |
+          bridge_dist="$RUNNER_TEMP/bridge-dist"
+          mkdir -p "$bridge_dist"
+          uv build --wheel --out-dir "$bridge_dist" packages/neurocade-runtime-tools
+          bridge_wheel="$(find "$bridge_dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$bridge_wheel"
+          bridge_name="$(basename "$bridge_wheel")"
+          (cd "$bridge_dist" && sha256sum "$bridge_name" > "$bridge_name.sha256")
+          echo "BRIDGE_WHEEL=$bridge_wheel" >> "$GITHUB_ENV"
+          echo "BRIDGE_WHEEL_NAME=$bridge_name" >> "$GITHUB_ENV"
+
+      - name: Install release bridge
+        if: steps.release.outputs.should_release == 'true'
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/bridge-venv"
+          uv pip install --python "$RUNNER_TEMP/bridge-venv/bin/python" "$BRIDGE_WHEEL"
+          "$RUNNER_TEMP/bridge-venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))' > "$RUNNER_TEMP/bridge-token"
+          chmod 600 "$RUNNER_TEMP/bridge-token"
+
+      - name: Smoke-test published image
         if: steps.release.outputs.should_release == 'true'
         env:
-          SAMPLE_CASE_ARTIFACT_URL: ${{ github.event.inputs.sample_case_artifact_url || vars.RELEASE_SAMPLE_CASE_ARTIFACT_URL || '' }}
-          SAMPLE_CASE_ARTIFACT_SHA256: ${{ github.event.inputs.sample_case_artifact_sha256 || vars.RELEASE_SAMPLE_CASE_ARTIFACT_SHA256 || '' }}
-          SKIP_SAMPLE_CASE_ARTIFACT_INPUT: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.skip_sample_case_artifact || vars.SKIP_SAMPLE_CASE_ARTIFACT || 'false' }}
+          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          if [[ "$SKIP_SAMPLE_CASE_ARTIFACT_INPUT" == "true" ]]; then
-            echo "SKIP_SAMPLE_CASE_ARTIFACT=true" >> "$GITHUB_ENV"
-            exit 0
-          fi
+          container=neurocade-release-smoke
+          mkdir -p "$RUNNER_TEMP/neurocade-data" "$RUNNER_TEMP/tool-images"
+          "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
+            --runtime docker --data-root "$RUNNER_TEMP/neurocade-data" --image-dir "$RUNNER_TEMP/tool-images" \
+            --host 0.0.0.0 --port 18765 --token-file "$RUNNER_TEMP/bridge-token" &
+          bridge_pid=$!
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true; kill "$bridge_pid" >/dev/null 2>&1 || true' EXIT
+          ./scripts/release/wait_for_http.sh http://127.0.0.1:18765/v1/health 30 1 \
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
+          docker run --detach --name "$container" \
+            --user "$(id -u):$(id -g)" \
+            --add-host host.docker.internal:host-gateway \
+            -v "$RUNNER_TEMP/neurocade-data:/data" \
+            -v "$RUNNER_TEMP/bridge-token:/run/neurocade/bridge-token:ro" \
+            -e DEPLOYMENT_PROFILE=local \
+            -e LOCAL_AUTH_ENABLED=true \
+            -e HOST_DATA_DIR=/data \
+            -e NEUROCADE_RUNTIME=docker \
+            -e NEUROCADE_BRIDGE_URL=http://host.docker.internal:18765 \
+            -e NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
+            -e NEUROCADE_GPU_MODE=cpu \
+            "$RELEASE_IMAGE"
 
-          if [[ -z "$SAMPLE_CASE_ARTIFACT_URL" ]]; then
-            echo "Set RELEASE_SAMPLE_CASE_ARTIFACT_URL, pass sample_case_artifact_url, or set SKIP_SAMPLE_CASE_ARTIFACT=true." >&2
+          healthy=false
+          for _ in {1..30}; do
+            if docker exec "$container" python -c \
+              'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/app/healthz", timeout=2).read()'
+            then
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$healthy" != "true" ]]; then
+            docker logs "$container"
             exit 1
           fi
 
-          sample_tarball="$RUNNER_TEMP/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz"
-          curl -fL --retry 3 --retry-delay 5 -o "$sample_tarball" "$SAMPLE_CASE_ARTIFACT_URL"
-          if [[ -n "$SAMPLE_CASE_ARTIFACT_SHA256" ]]; then
-            echo "$SAMPLE_CASE_ARTIFACT_SHA256  $sample_tarball" | sha256sum -c -
-          fi
-          tar -tzf "$sample_tarball" >/dev/null
-          echo "SAMPLE_CASE_TARBALL=$sample_tarball" >> "$GITHUB_ENV"
+          docker exec "$container" python -c '
+          import json
+          import urllib.request
 
-      - name: Install frontend dependencies
-        if: steps.release.outputs.should_release == 'true'
-        run: npm ci
-        working-directory: client
+          with urllib.request.urlopen("http://127.0.0.1:8000/api/app/frontend-config", timeout=2) as response:
+              config = json.load(response)
+              assert response.headers["Cache-Control"] == "no-store"
+              assert config["local_auth_enabled"] is True
+          '
+          test "$(docker exec "$container" printenv NEUROCADE_BUILD_VERSION)" = "$RELEASE_VERSION"
 
-      - name: Build static client
-        if: steps.release.outputs.should_release == 'true'
-        run: npm run build
-        working-directory: client
-
-      - name: Build packaged artifacts
+      - name: Convert exact release image to application SIF
         if: steps.release.outputs.should_release == 'true'
         env:
+          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_DIGEST: ${{ steps.app_image.outputs.digest }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          APPTAINER_USE_SUDO: "true"
-          SKIP_CONTAINER_ARTIFACTS: "false"
         run: |
-          export APPTAINER_CACHEDIR="$RUNNER_TEMP/apptainer-cache"
-          export APPTAINER_TMPDIR="$RUNNER_TEMP/apptainer-tmp"
-          mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
-          ./scripts/apptainer/images.sh preflight
-          ./scripts/release/build_artifacts.sh
+          app_sif="neurocade-app-${RELEASE_VERSION}-amd64.sif"
+          apptainer pull "$app_sif" "docker://${RELEASE_IMAGE}@${RELEASE_DIGEST}"
+          sha256sum "$app_sif" > "$app_sif.sha256"
+          chmod 0444 "$app_sif"
+          echo "APP_SIF=$app_sif" >> "$GITHUB_ENV"
 
-      - name: Stage release upload assets
+      - name: Create and validate Apptainer release manifest
         if: steps.release.outputs.should_release == 'true'
-        run: ./scripts/release/stage_upload_assets.sh
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          ./scripts/release/release_manifest.py create \
+            --tag "$RELEASE_TAG" \
+            --version "$RELEASE_VERSION" \
+            --sif "$APP_SIF" \
+            --bridge "$BRIDGE_WHEEL_NAME" \
+            --output neurocade-release.json
+          ./scripts/release/release_manifest.py read neurocade-release.json
+
+      - name: Smoke-test application SIF as non-root
+        if: steps.release.outputs.should_release == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/sif-data" "$RUNNER_TEMP/sif-images"
+          "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
+            --runtime apptainer --data-root "$RUNNER_TEMP/sif-data" --image-dir "$RUNNER_TEMP/sif-images" \
+            --host 127.0.0.1 --port 18766 --token-file "$RUNNER_TEMP/bridge-token" &
+          bridge_pid=$!
+          ./scripts/release/wait_for_http.sh http://127.0.0.1:18766/v1/health 30 1 \
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
+          apptainer exec --cleanenv --no-home --containall \
+            --bind "$RUNNER_TEMP/sif-data:/data" \
+            --bind "$RUNNER_TEMP/bridge-token:/run/neurocade/bridge-token:ro" \
+            --env NEUROCADE_RUNTIME=apptainer \
+            --env NEUROCADE_BRIDGE_URL=http://127.0.0.1:18766 \
+            --env NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
+            --env NEUROCADE_GPU_MODE=cpu --env HOST_DATA_DIR=/data \
+            "$APP_SIF" python -m uvicorn api_service.main:app --host 127.0.0.1 --port 18000 &
+          app_pid=$!
+          trap 'kill "$app_pid" "$bridge_pid" >/dev/null 2>&1 || true' EXIT
+          ./scripts/release/wait_for_http.sh http://127.0.0.1:18000/api/app/healthz 30 2
 
       - name: Tag release commit
         if: steps.release.outputs.should_release == 'true'
@@ -167,7 +272,6 @@ jobs:
         run: |
           args=(
             "$RELEASE_TAG"
-            dist/release-upload/*
             --repo "$GITHUB_REPOSITORY"
             --generate-notes
           )
@@ -178,20 +282,29 @@ jobs:
             args+=(--title "NeuroCade ${RELEASE_VERSION}" --latest)
           fi
 
-          gh release create "${args[@]}"
+          gh release create "${args[@]}" \
+            "$APP_SIF" \
+            "$APP_SIF.sha256" \
+            "$BRIDGE_WHEEL" \
+            "$BRIDGE_WHEEL.sha256" \
+            neurocade-release.json
+
+      - name: Publish channel tag
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          CHANNEL_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.prerelease == 'true' && 'beta' || 'latest' }}
+        run: docker buildx imagetools create --tag "$CHANNEL_IMAGE" "$RELEASE_IMAGE"
 
       - name: Summarize release
         if: steps.release.outputs.should_release == 'true'
         run: |
-          sample_case_included=true
-          if [[ "${SKIP_SAMPLE_CASE_ARTIFACT:-false}" == "true" ]]; then
-            sample_case_included=false
-          fi
           {
             echo "## ${{ steps.release.outputs.kind }} release published"
             echo
             echo "- Tag: \`${{ steps.release.outputs.tag }}\`"
             echo "- Commit: \`${{ steps.release.outputs.head_sha }}\`"
-            echo "- Container artifacts included: bash runtime, Postgres, Redis, and Traefik SIFs"
-            echo "- Sample case artifact included: \`$sample_case_included\`"
+            echo "- Docker image: \`ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}\`"
+            echo "- Application SIF: \`$APP_SIF\`"
+            echo "- Release manifest: \`neurocade-release.json\`"
           } >> "$GITHUB_STEP_SUMMARY"

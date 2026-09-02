@@ -2,26 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, cast
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
-import redis
-from celery.exceptions import CeleryError
 from fastapi import APIRouter, Depends, Query
+from neurocade_runtime_tools.bridge_client import BridgeClient
 from sqlalchemy import desc, func, text
 from sqlalchemy.orm import Session
 
-from api_service.celery_app import celery_app as api_celery_app
 from api_service.deps import get_context, get_db
-from api_service.monitoring.events import record_app_event
+from api_service.jobs import job_manager
+from api_service.jobs.manager import FASTSURFER_QUEUE
+from api_service.monitoring.events import record_app_event_best_effort
 from api_service.monitoring.security import require_monitoring_admin
 from api_service.runtime import settings
-from api_service.runtime.service import runtime_service
 from api_service.schemas import (
     MonitoringAuditEventSummary,
     MonitoringClientErrorRequest,
-    MonitoringEventSummary,
     MonitoringEventsResponse,
+    MonitoringEventSummary,
     MonitoringHealth,
     MonitoringIngestResponse,
     MonitoringStatusItem,
@@ -32,7 +31,6 @@ from backend_common.auth import AuthContext
 from backend_common.db import AppEvent, Artifact, AssistantScope, AuditEvent, Case, Run, User, Workspace
 from backend_common.run_statuses import ACTIVE_RUN_STATUSES
 
-
 router = APIRouter(prefix="/api/app/monitoring", tags=["monitoring"])
 
 ServiceStatus = Literal["ok", "degraded", "down", "unknown"]
@@ -40,7 +38,7 @@ OverallStatus = Literal["ok", "degraded", "down"]
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _service_status(
@@ -85,73 +83,35 @@ def _serialize_audit_event(row: AuditEvent, user: User | None = None) -> Monitor
     )
 
 
-def _check_postgres(db: Session) -> MonitoringStatusItem:
+def _check_database(db: Session) -> MonitoringStatusItem:
     """Verify that the database connection can execute a simple query."""
     try:
         db.execute(text("SELECT 1")).scalar_one()
     except Exception as exc:
-        return _service_status("Postgres", "down", str(exc))
-    return _service_status("Postgres", "ok")
+        return _service_status("Database", "down", str(exc))
+    return _service_status("Database", "ok")
 
 
-def _check_redis() -> tuple[MonitoringStatusItem, dict[str, Any]]:
-    """Check Redis availability and collect lightweight runtime metrics."""
-    payload: dict[str, Any] = {"status": "unknown"}
+def _check_job_worker() -> tuple[MonitoringStatusItem, dict[str, Any]]:
+    """Report in-process background job worker health."""
     try:
-        client = redis.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2)
-        client.ping()
-        info = cast(dict[str, Any], client.info())
-        db0_value = info.get("db0")
-        db0 = db0_value if isinstance(db0_value, dict) else {}
+        counts = job_manager.queue_status({"api", FASTSURFER_QUEUE})
         payload = {
             "status": "ok",
-            "version": info.get("redis_version"),
-            "connected_clients": info.get("connected_clients"),
-            "used_memory_human": info.get("used_memory_human"),
-            "uptime_seconds": info.get("uptime_in_seconds"),
-            "db0_keys": db0.get("keys") if isinstance(db0, dict) else None,
+            "active": int(counts.get("active", 0)),
+            "queued": int(counts.get("queued", 0)),
+            "total": int(counts.get("total", 0)),
         }
-        return _service_status("Redis", "ok", details=payload), payload
+        return _service_status("Background jobs", "ok", details=payload), payload
     except Exception as exc:
-        payload = {"status": "down", "error": str(exc)}
-        return _service_status("Redis", "down", str(exc)), payload
+        payload = {"status": "down", "error": str(exc), "active": 0, "queued": 0, "total": 0}
+        return _service_status("Background jobs", "down", str(exc)), payload
 
 
-def _count_celery_tasks(task_map: dict[str, Any] | None) -> int:
-    """Count Celery tasks reported across all inspected workers."""
-    if not task_map:
-        return 0
-    return sum(len(tasks) for tasks in task_map.values())
-
-
-def _check_api_celery() -> tuple[MonitoringStatusItem, dict[str, Any]]:
-    """Inspect API Celery workers and summarize active and queued tasks."""
+def _check_fastsurfer_queue() -> tuple[MonitoringStatusItem, dict[str, Any]]:
+    """Fetch FastSurfer queue health from the job manager."""
     try:
-        inspector = api_celery_app.control.inspect(timeout=2.0)
-        stats = cast(dict[str, Any], inspector.stats() or {})
-        active = cast(dict[str, Any], inspector.active() or {})
-        reserved = cast(dict[str, Any], inspector.reserved() or {})
-        payload = {
-            "status": "ok" if stats else "unknown",
-            "workers": sorted(stats.keys()),
-            "active": _count_celery_tasks(active),
-            "queued": _count_celery_tasks(reserved),
-        }
-        status = "ok" if stats else "degraded"
-        message = None if stats else "No API Celery workers reported stats"
-        return _service_status("API worker", status, message, payload), payload
-    except CeleryError as exc:
-        payload = {"status": "down", "error": str(exc), "active": 0, "queued": 0, "workers": []}
-        return _service_status("API worker", "down", str(exc)), payload
-    except Exception as exc:
-        payload = {"status": "down", "error": str(exc), "active": 0, "queued": 0, "workers": []}
-        return _service_status("API worker", "down", str(exc)), payload
-
-
-async def _check_fastsurfer_queue() -> tuple[MonitoringStatusItem, dict[str, Any]]:
-    """Fetch FastSurfer queue health from the runtime service."""
-    try:
-        payload = await runtime_service.fetch_queue_status()
+        payload = job_manager.queue_status({FASTSURFER_QUEUE})
         normalized = {
             "status": "ok",
             "active": int(payload.get("active", 0)),
@@ -162,6 +122,16 @@ async def _check_fastsurfer_queue() -> tuple[MonitoringStatusItem, dict[str, Any
     except (RuntimeError, ValueError) as exc:
         payload = {"status": "down", "error": str(exc), "active": 0, "queued": 0, "total": 0}
         return _service_status("NeuroCade FastSurfer queue", "down", str(exc)), payload
+
+
+def _check_runtime_bridge() -> MonitoringStatusItem:
+    try:
+        payload = BridgeClient.from_environment().health()
+        if payload.get("backend") != settings.neurocade_runtime:
+            return _service_status("Runtime bridge", "down", "Application and bridge runtimes do not match", payload)
+        return _service_status("Runtime bridge", "ok", details=payload)
+    except Exception as exc:  # noqa: BLE001 - monitoring reports dependency failures
+        return _service_status("Runtime bridge", "down", str(exc))
 
 
 def _active_users(db: Session, since: datetime) -> list[MonitoringUserSummary]:
@@ -220,29 +190,28 @@ def _overall_status(services: list[MonitoringStatusItem]) -> OverallStatus:
     return "ok"
 
 
-async def _build_summary(db: Session) -> MonitoringSummary:
+def _build_summary(db: Session) -> MonitoringSummary:
     """Assemble dashboard totals, service health, and recent activity."""
     generated_at = _now()
     active_window_minutes = max(settings.monitoring_active_window_minutes, 1)
     active_since = generated_at - timedelta(minutes=active_window_minutes)
     users = _active_users(db, active_since)
 
-    postgres_status = _check_postgres(db)
-    redis_status, redis_payload = _check_redis()
-    api_worker_status, api_worker_payload = _check_api_celery()
-    fastsurfer_status, fastsurfer_payload = await _check_fastsurfer_queue()
+    database_status = _check_database(db)
+    job_worker_status, job_worker_payload = _check_job_worker()
+    fastsurfer_status, fastsurfer_payload = _check_fastsurfer_queue()
     services = [
         _service_status("API service", "ok"),
-        postgres_status,
-        redis_status,
-        api_worker_status,
+        _check_runtime_bridge(),
+        database_status,
+        job_worker_status,
         fastsurfer_status,
     ]
 
     totals = {
         "users": db.query(User).count(),
         "recently_active_users": len(users),
-        "workspaces": db.query(Workspace).filter(Workspace.status == "active").count(),
+        "workspaces": db.query(Workspace).count(),
         "cases": db.query(Case).count(),
         "artifacts": db.query(Artifact).count(),
         "active_runs": db.query(Run).filter(Run.status.in_(ACTIVE_RUN_STATUSES)).count(),
@@ -261,53 +230,50 @@ async def _build_summary(db: Session) -> MonitoringSummary:
         totals=totals,
         active_users=users,
         services=services,
-        redis=redis_payload,
-        celery={"api_worker": api_worker_payload, "fastsurfer_worker": fastsurfer_payload},
+        jobs={"worker": job_worker_payload, "fastsurfer_queue": fastsurfer_payload},
         recent_errors=_recent_errors(db),
         recent_activity=_recent_activity(db),
     )
 
 
-async def _build_health(db: Session) -> MonitoringHealth:
+def _build_health(db: Session) -> MonitoringHealth:
     """Assemble the lightweight monitoring health payload."""
-    postgres_status = _check_postgres(db)
-    redis_status, redis_payload = _check_redis()
-    api_worker_status, api_worker_payload = _check_api_celery()
-    fastsurfer_status, fastsurfer_payload = await _check_fastsurfer_queue()
+    database_status = _check_database(db)
+    job_worker_status, job_worker_payload = _check_job_worker()
+    fastsurfer_status, fastsurfer_payload = _check_fastsurfer_queue()
     services = [
         _service_status("API service", "ok"),
-        postgres_status,
-        redis_status,
-        api_worker_status,
+        _check_runtime_bridge(),
+        database_status,
+        job_worker_status,
         fastsurfer_status,
     ]
     return MonitoringHealth(
         generated_at=_now(),
         status=_overall_status(services),
         services=services,
-        redis=redis_payload,
-        celery={"api_worker": api_worker_payload, "fastsurfer_worker": fastsurfer_payload},
+        jobs={"worker": job_worker_payload, "fastsurfer_queue": fastsurfer_payload},
     )
 
 
 @router.get("/summary", response_model=MonitoringSummary)
-async def monitoring_summary(
+def monitoring_summary(
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> MonitoringSummary:
     """Return the admin monitoring dashboard summary."""
     require_monitoring_admin(context)
-    return await _build_summary(db)
+    return _build_summary(db)
 
 
 @router.get("/health", response_model=MonitoringHealth)
-async def monitoring_health(
+def monitoring_health(
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> MonitoringHealth:
     """Return current service health for monitoring admins."""
     require_monitoring_admin(context)
-    return await _build_health(db)
+    return _build_health(db)
 
 
 @router.get("/events", response_model=MonitoringEventsResponse)
@@ -348,7 +314,7 @@ def ingest_client_error(
     context: AuthContext = Depends(get_context),
 ) -> MonitoringIngestResponse:
     """Record a frontend error event from the authenticated client."""
-    record_app_event(
+    event = record_app_event_best_effort(
         db,
         source="frontend",
         level=request.level,
@@ -358,4 +324,4 @@ def ingest_client_error(
         path=request.path,
         details=request.details,
     )
-    return MonitoringIngestResponse(status="recorded")
+    return MonitoringIngestResponse(status="recorded" if event is not None else "dropped")

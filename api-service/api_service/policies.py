@@ -6,7 +6,6 @@ from fastapi import HTTPException
 
 from backend_common.db import RoleEnum
 
-
 READ_ROLES = frozenset({RoleEnum.owner, RoleEnum.admin, RoleEnum.user})
 WRITE_ROLES = READ_ROLES
 MANAGE_ROLES = frozenset({RoleEnum.owner, RoleEnum.admin})

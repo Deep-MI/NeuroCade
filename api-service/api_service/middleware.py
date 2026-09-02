@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.requests import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
-from api_service.monitoring.events import record_app_event
+from api_service.monitoring.events import record_app_event_best_effort
 from api_service.runtime import logger, settings
 from backend_common.db import SessionLocal
 from backend_common.deployment_policy import get_deployment_policy
@@ -85,7 +85,7 @@ def register_app_middleware(app: FastAPI) -> None:
             if not skip_event_capture:
                 try:
                     with SessionLocal() as db:
-                        record_app_event(
+                        record_app_event_best_effort(
                             db,
                             source="backend",
                             level="error",
@@ -103,7 +103,7 @@ def register_app_middleware(app: FastAPI) -> None:
         if response.status_code >= 500 and not skip_event_capture:
             try:
                 with SessionLocal() as db:
-                    record_app_event(
+                    record_app_event_best_effort(
                         db,
                         source="backend",
                         level="error",
@@ -116,3 +116,13 @@ def register_app_middleware(app: FastAPI) -> None:
             except Exception as exc:  # pragma: no cover - logging must not break responses
                 logger.warning("Failed to record backend HTTP error event: %s", exc)
         return response
+
+    @app.middleware("http")
+    async def redirect_unsuitable_wildcard_host(request: Request, call_next):
+        """Redirect the server bind address to Chromium's trusted localhost origin."""
+        if request.url.hostname == "0.0.0.0":
+            port = request.url.port
+            browser_host = f"localhost:{port}" if port is not None else "localhost"
+            target = request.url.replace(netloc=browser_host)
+            return RedirectResponse(url=str(target), status_code=307)
+        return await call_next(request)

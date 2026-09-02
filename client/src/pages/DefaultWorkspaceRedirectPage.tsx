@@ -1,17 +1,13 @@
-import { Navigate } from 'react-router-dom';
+import { Navigate } from 'react-router';
 
 import { useAppSession } from '../auth/sessionContext';
-
-
-function buildWorkspaceCasesPath(workspaceId: string) {
-  return `/workspaces/${encodeURIComponent(workspaceId)}/cases`;
-}
+import { workspaceCasesPath } from '../utils/caseRoutes';
 
 
 export function DefaultWorkspaceRedirectPage() {
   const { session, loading, error } = useAppSession();
   const targetWorkspaceId = session?.default_workspace_id ?? session?.workspaces[0]?.id ?? null;
-  const target = targetWorkspaceId ? buildWorkspaceCasesPath(targetWorkspaceId) : '/sign-in';
+  const target = targetWorkspaceId ? workspaceCasesPath(targetWorkspaceId) : '/sign-in';
 
   if (loading) {
     return <div className="nc-app-page px-6 py-10 text-sm text-[var(--nc-tx-muted)]">Resolving workspace...</div>;

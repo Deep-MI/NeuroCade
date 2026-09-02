@@ -40,6 +40,7 @@ class ChatRequestGuard:
         self._lock = asyncio.Lock()
         self._request_history: dict[str, deque[float]] = defaultdict(deque)
         self._inflight_by_key: dict[str, int] = defaultdict(int)
+        self._inflight_threads: set[str] = set()
         self._global_inflight = 0
 
     def _normalize_key(self, key: str | None) -> str:
@@ -52,7 +53,7 @@ class ChatRequestGuard:
         while history and history[0] <= cutoff:
             history.popleft()
 
-    async def acquire(self, key: str | None) -> str:
+    async def acquire(self, key: str | None, *, thread_key: str | None = None) -> str:
         """Reserve capacity for a chat request or raise HTTP 429.
 
         Parameters
@@ -76,13 +77,17 @@ class ChatRequestGuard:
                 raise HTTPException(status_code=429, detail="Chat service is busy. Please retry shortly.")
             if self._inflight_by_key[normalized_key] >= self.max_concurrent_per_key:
                 raise HTTPException(status_code=429, detail="Too many concurrent chat requests for this caller.")
+            if thread_key and thread_key in self._inflight_threads:
+                raise HTTPException(status_code=409, detail="Another assistant turn is already running in this chat.")
 
             history.append(now)
             self._global_inflight += 1
             self._inflight_by_key[normalized_key] += 1
+            if thread_key:
+                self._inflight_threads.add(thread_key)
         return normalized_key
 
-    async def release(self, key: str | None) -> None:
+    async def release(self, key: str | None, *, thread_key: str | None = None) -> None:
         """Release a previously acquired chat request slot.
 
         Parameters
@@ -92,6 +97,8 @@ class ChatRequestGuard:
         """
         normalized_key = self._normalize_key(key)
         async with self._lock:
+            if thread_key:
+                self._inflight_threads.discard(thread_key)
             inflight = self._inflight_by_key.get(normalized_key, 0)
             if inflight <= 0:
                 return

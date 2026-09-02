@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 
 const CaseWorkspace = lazy(() => import('../CaseWorkspace'));
 
@@ -10,15 +10,11 @@ export function CaseDetailPage() {
   if (!workspaceId || !caseId) {
     return <div className="nc-app-page px-6 py-8 text-sm text-[var(--nc-danger)]">Missing workspace or case id.</div>;
   }
-  if (caseId.includes('__')) {
-    return <div className="nc-app-page px-6 py-8 text-sm text-[var(--nc-danger)]">Invalid case route.</div>;
-  }
-
   return (
     <div>
       <Suspense fallback={<div className="nc-app-page p-6 text-sm text-[var(--nc-tx-muted)]">Loading case workspace...</div>}>
         <CaseWorkspace
-          initialCaseId={`${workspaceId}__${caseId}`}
+          initialCaseId={caseId}
           initialWorkspaceId={workspaceId}
         />
       </Suspense>

@@ -2,40 +2,25 @@
 
 from __future__ import annotations
 
-from hashlib import blake2b
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from backend_common.case_storage import slugify_storage_name
+from backend_common.case_storage import ensure_workspace_storage_layout
 from backend_common.db import RoleEnum, User, Workspace, WorkspaceMembership
 
 
-DEFAULT_PERSONAL_WORKSPACE_ID = "personal-workspace"
-
-
-def _user_workspace_slug_base(user: User) -> str:
-    """Return a readable user-derived slug base for Clerk workspace IDs."""
-    email = (user.email or "").strip()
-    email_local = email.split("@", 1)[0] if "@" in email else email
-    base = slugify_storage_name(email_local) or slugify_storage_name(user.full_name or "") or "user"
-    return base
-
-
-def _readable_personal_workspace_id_for_user(db: Session, user: User) -> str:
-    """Return a readable, stable, globally unique personal workspace slug for a Clerk user."""
-    digest = blake2b(user.id.encode("utf-8"), digest_size=4, person=b"wsid").hexdigest()[:6]
-    suffix = f"-workspace-{digest}"
-    base = _user_workspace_slug_base(user)[: 64 - len(suffix)].rstrip("-") or "user"
-    candidate = f"{base}{suffix}"
+def _available_personal_workspace_name(settings) -> str:
+    root = settings.outputs_dir / "workspaces"
+    name = "personal-workspace"
     index = 2
-    while (existing := db.get(Workspace, candidate)) is not None and existing.owner_user_id != user.id:
-        suffix = f"-{index}"
-        candidate = f"{base[:64 - len(suffix)]}{suffix}"
+    while (root / name).exists():
+        name = f"personal-workspace-{index}"
         index += 1
-    return candidate
+    return name
 
 
-def ensure_personal_workspace(db: Session, user: User, *, readable_user_slug: bool = False) -> Workspace:
+def ensure_personal_workspace(db: Session, settings, user: User) -> Workspace:
     """Return the user's default personal workspace and owner membership."""
     workspace = (
         db.query(Workspace)
@@ -43,14 +28,12 @@ def ensure_personal_workspace(db: Session, user: User, *, readable_user_slug: bo
         .one_or_none()
     )
     if workspace is None:
-        workspace_id = _readable_personal_workspace_id_for_user(db, user) if readable_user_slug else DEFAULT_PERSONAL_WORKSPACE_ID
         workspace = Workspace(
-            id=workspace_id,
+            id=str(uuid4()),
             owner_user_id=user.id,
-            name=workspace_id,
+            name=_available_personal_workspace_name(settings),
             kind="personal",
             is_default=True,
-            status="active",
         )
         db.add(workspace)
         db.flush()
@@ -71,4 +54,5 @@ def ensure_personal_workspace(db: Session, user: User, *, readable_user_slug: bo
         )
         db.flush()
 
+    ensure_workspace_storage_layout(settings, workspace)
     return workspace

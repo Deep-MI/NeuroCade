@@ -1,20 +1,30 @@
 """Provide API service auth behavior for NeuroCade."""
 
-from fastapi import APIRouter, Depends
-
-from api_service.deps import get_context, get_db
-from api_service.helpers import log_event
-from api_service.monitoring.security import is_monitoring_admin
-from api_service.runtime import settings
-from api_service.schemas import SessionBootstrap, UserSummary
-from backend_common.deployment_policy import get_deployment_policy
-from backend_common.auth import AuthContext
-from backend_common.db import Case, Workspace, WorkspaceMembership
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from api_service.deps import get_context, get_db
+from api_service.helpers import log_event
+from api_service.runtime import settings
+from api_service.schemas import FrontendConfig, SessionBootstrap, UserSummary
+from backend_common.auth import AuthContext
+from backend_common.case_storage import resolve_workspace_storage
+from backend_common.db import Case, Workspace, WorkspaceMembership
+from backend_common.deployment_policy import get_deployment_policy
 
 router = APIRouter(prefix="/api/app", tags=["auth"])
+
+
+@router.get("/frontend-config", response_model=FrontendConfig)
+def frontend_config(response: Response) -> FrontendConfig:
+    """Return the public configuration required before authentication."""
+    response.headers["Cache-Control"] = "no-store"
+    return FrontendConfig(
+        local_auth_enabled=settings.local_auth_enabled,
+        clerk_publishable_key=settings.clerk_publishable_key,
+        clerk_jwt_template=settings.clerk_jwt_template,
+    )
 
 
 @router.get("/session", response_model=SessionBootstrap)
@@ -28,10 +38,18 @@ def session_bootstrap(
     memberships = (
         db.query(WorkspaceMembership, Workspace)
         .join(Workspace, Workspace.id == WorkspaceMembership.workspace_id)
-        .filter(WorkspaceMembership.user_id == context.user.id, Workspace.status == "active")
+        .filter(WorkspaceMembership.user_id == context.user.id)
         .order_by(Workspace.is_default.desc(), Workspace.created_at.asc())
         .all()
     )
+    available_memberships = []
+    for membership, workspace in memberships:
+        try:
+            resolve_workspace_storage(settings, workspace)
+        except FileNotFoundError:
+            continue
+        available_memberships.append((membership, workspace))
+    memberships = available_memberships
     workspace_ids = [workspace.id for _, workspace in memberships]
     case_count_rows = (
         db.query(Case.workspace_id, func.count(Case.id))
@@ -50,7 +68,6 @@ def session_bootstrap(
             "role": membership.role.value,
             "kind": workspace.kind,
             "is_default": workspace.is_default,
-            "status": workspace.status,
             "case_count": case_counts.get(workspace.id, 0),
         }
         for membership, workspace in memberships
@@ -61,23 +78,7 @@ def session_bootstrap(
         default_workspace_id = next((workspace["id"] for workspace in workspaces if workspace["is_default"]), None)
     return SessionBootstrap(
         user=UserSummary(id=context.user.id, email=context.user.email, full_name=context.user.full_name),
-        role=context.role.value,
-        auth_mode=context.auth_mode,
-        deployment_profile=policy.profile,
-        public_url=policy.public_url,
-        features=policy.feature_flags(
-            clerk_configured=bool(settings.clerk_publishable_key),
-            monitoring_admin=is_monitoring_admin(context),
-        ),
-        limits=policy.limits(settings),
-        sample_data=policy.sample_data(),
+        features=policy.feature_flags(),
         workspaces=workspaces,
         default_workspace_id=default_workspace_id,
-        active_workspace_id=default_workspace_id,
     )
-
-
-@router.get("/me", response_model=dict)
-def current_user(context: AuthContext = Depends(get_context)) -> dict:
-    """Return the authenticated user's public profile fields."""
-    return {"id": context.user.id, "email": context.user.email, "full_name": context.user.full_name}

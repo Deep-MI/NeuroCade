@@ -128,4 +128,4 @@ echo "  Downloaded data: $(pwd)/$TARGET_ROOT/sub_rs_mri_raw"
 if [[ "$FULL_DOWNLOAD" -eq 1 ]]; then
   echo "  Full dataset:    $(pwd)/$TARGET_ROOT"
 fi
-echo "  Next step:       run ../scripts/process_demo_case.sh --build-only"
+echo "  Next step:       inspect the raw MRI files or use the release sample-case artifact"

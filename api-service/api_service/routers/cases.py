@@ -5,35 +5,45 @@ from sqlalchemy.orm import Session
 
 from api_service.cases.operations import (
     add_upload_to_case,
-    cancel_active_case_run,
     create_case_from_upload,
     delete_case_for_user,
+    save_generated_case_volume,
+    update_case_metadata,
+)
+from api_service.cases.queries import (
     get_case_detail_for_user,
     get_case_logs_for_user,
     list_case_runs_for_user,
     list_visible_cases,
-    start_fastsurfer_run,
-    update_case_metadata,
 )
+from api_service.cases.run_operations import cancel_active_case_run, start_neuroimaging_run
 from api_service.deps import get_context, get_db
 from api_service.helpers import get_workspace_for_user
+from api_service.jobs import job_manager
 from api_service.policies import require_workspace_manage
-from api_service.runtime.service import runtime_service
-from api_service.schemas import RunSummary, CaseDetail, CaseRenameRequest, CaseRenameResponse, CaseSummary, StartRunRequest, UploadResponse
+from api_service.schemas import (
+    ArtifactSummary,
+    CaseDetail,
+    CaseSummary,
+    CaseUpdateRequest,
+    CaseUpdateResponse,
+    RunSummary,
+    StartRunRequest,
+    UploadResponse,
+)
 from backend_common.auth import AuthContext
-
 
 router = APIRouter(prefix="/api/app", tags=["cases"])
 
 
 @router.get("/cases", response_model=list[CaseSummary])
-async def list_cases(
+def list_cases(
     workspace_id: str | None = None,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> list[CaseSummary]:
     """List active cases visible to the current user, optionally scoped to a workspace."""
-    return await list_visible_cases(db, context, workspace_id=workspace_id)
+    return list_visible_cases(db, context, workspace_id=workspace_id)
 
 
 @router.get("/cases/{case_id}", response_model=CaseDetail)
@@ -86,38 +96,51 @@ async def add_case_upload(
     return await add_upload_to_case(db, context, case_id=case_id, file=file, files=files)
 
 
+@router.post("/cases/{case_id}/generated-volume", response_model=ArtifactSummary)
+async def save_generated_volume(
+    case_id: str,
+    filename: str = Form(...),
+    metadata: str | None = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> ArtifactSummary:
+    """Save a generated viewer volume as a case artifact."""
+    return await save_generated_case_volume(db, context, case_id=case_id, filename=filename, metadata=metadata, file=file)
+
+
 @router.post("/runs", response_model=RunSummary)
 async def start_run(
     request: StartRunRequest,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> RunSummary:
-    """Create and submit a FastSurfer run for a case."""
-    return await start_fastsurfer_run(db, context, request=request)
+    """Create and submit a configured neuroimaging workflow for a case."""
+    return await start_neuroimaging_run(db, context, request=request)
 
 
 @router.get("/cases/{case_id}/runs", response_model=list[RunSummary])
-async def case_runs(
+def case_runs(
     case_id: str,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> list[RunSummary]:
-    """List runs for a case, syncing the latest runtime status first."""
-    return await list_case_runs_for_user(db, context, case_id=case_id)
+    """List durable runs for a case."""
+    return list_case_runs_for_user(db, context, case_id=case_id)
 
 
 @router.get("/cases/{case_id}/logs", response_model=dict)
-async def case_logs(
+def case_logs(
     case_id: str,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> dict:
-    """Return live runtime logs or stored logs for the latest case run."""
-    return await get_case_logs_for_user(db, context, case_id=case_id)
+    """Return run-specific logs for the latest case run."""
+    return get_case_logs_for_user(db, context, case_id=case_id)
 
 
 @router.get("/queue-status", response_model=dict)
-async def queue_status(
+def queue_status(
     workspace_id: str,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
@@ -125,26 +148,26 @@ async def queue_status(
     """Return runtime queue status for workspace managers."""
     _workspace, role = get_workspace_for_user(db, workspace_id, context.user.id)
     require_workspace_manage(role, detail="Only owners/admins can inspect global queue status")
-    return await runtime_service.fetch_queue_status()
+    return job_manager.queue_status()
 
 
 @router.post("/cases/{case_id}/cancel", response_model=dict)
-async def cancel_case_run(
+def cancel_case_run(
     case_id: str,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> dict:
     """Cancel the active runtime job for a case and mark its run canceled."""
-    return await cancel_active_case_run(db, context, case_id=case_id)
+    return cancel_active_case_run(db, context, case_id=case_id)
 
 
-@router.patch("/cases/{case_id}", response_model=CaseRenameResponse)
-def rename_case(
+@router.patch("/cases/{case_id}", response_model=CaseUpdateResponse)
+def update_case(
     case_id: str,
-    request: CaseRenameRequest,
+    request: CaseUpdateRequest,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
-) -> CaseRenameResponse:
+) -> CaseUpdateResponse:
     """Update a case title and editable metadata fields."""
     return update_case_metadata(db, context, case_id=case_id, request=request)
 

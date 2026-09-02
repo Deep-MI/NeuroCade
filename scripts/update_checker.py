@@ -13,7 +13,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_URL = "https://NeuroCade.org/latest.json"
 DEFAULT_INTERVAL_SECONDS = 86_400
@@ -22,6 +21,7 @@ CONFIG_KEYS = {
     "NEUROCADE_VERSION_CHECK_URL",
     "NEUROCADE_UPDATE_CHECK_INTERVAL_SECONDS",
 }
+PLACEHOLDER_VERSIONS = frozenset({"", "0.0.0", "dev", "unknown"})
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -58,8 +58,11 @@ def config(name: str, env_file_values: dict[str, str], default: str = "") -> str
 
 def current_version(env_file_values: dict[str, str]) -> str:
     configured = config("NEUROCADE_VERSION", env_file_values)
-    if configured:
+    if configured.lower() not in PLACEHOLDER_VERSIONS:
         return configured
+    build_version = os.environ.get("NEUROCADE_BUILD_VERSION", "").strip()
+    if build_version.lower() not in PLACEHOLDER_VERSIONS:
+        return build_version
     try:
         package = json.loads((ROOT_DIR / "client" / "package.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

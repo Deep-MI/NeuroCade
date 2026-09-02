@@ -2,7 +2,7 @@ import type { ErrorResponse } from '../../types';
 
 export const BASE = import.meta.env.VITE_API_URL ?? '/api/app';
 
-export type AccessTokenProvider = () => Promise<string | null>;
+type AccessTokenProvider = () => Promise<string | null>;
 
 let accessTokenProvider: AccessTokenProvider = () => Promise.resolve(null);
 
@@ -74,7 +74,7 @@ export async function expectOk(res: Response, fallback: string): Promise<void> {
   }
 }
 
-export async function responseJson<T>(res: Response, fallback: string): Promise<T> {
+async function responseJson<T>(res: Response, fallback: string): Promise<T> {
   await expectOk(res, fallback);
   return await res.json() as T;
 }

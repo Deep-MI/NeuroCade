@@ -1,13 +1,12 @@
 [project]
 name = "neurocade"
-version = "0.1.0"
+version = "0.0.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "fastapi==0.128.8",
+  "fastapi==0.139.2",
+  "starlette==1.3.1",
   "uvicorn[standard]==0.31.0",
-  "celery==5.3.6",
   "sqlalchemy==2.0.36",
-  "psycopg[binary]==3.2.3",
   "alembic==1.14.0",
   "pydantic-settings==2.6.1",
   "PyJWT[crypto]==2.13.0",
@@ -15,12 +14,13 @@ dependencies = [
   "langchain-anthropic>=1.2,<2",
   "langchain-google-genai>=4.0,<5",
   "langchain-ollama>=1.1,<2",
-  "langgraph==1.0.10",
-  "redis==5.2.0",
-  "python-multipart==0.0.27",
+  "python-multipart==0.0.32",
   "python-dotenv==1.2.2",
+  "PyYAML==6.0.3",
   "nibabel==5.2.1",
   "numpy==1.26.4",
+  "requests>=2.31,<3",
+  "tqdm>=4.67,<5",
   "neurocade-runtime-tools",
 ]
 
@@ -29,8 +29,10 @@ test = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
   "requests>=2.31",
+  "httpx2>=2.9,<3",
   "playwright>=1.40",
   "pyright>=1.1.409",
+  "ruff==0.16.0",
 ]
 
 [tool.uv.sources]
@@ -39,12 +41,32 @@ neurocade-runtime-tools = { path = "packages/neurocade-runtime-tools", editable 
 [tool.uv]
 package = false
 
+[tool.ruff]
+target-version = "py312"
+line-length = 140
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# FastAPI intentionally calls Depends/File in parameter defaults. UP042 and
+# UP047 can change runtime enum or typing behavior and need dedicated reviews.
+ignore = ["B008", "E501", "UP042", "UP047"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests adjust sys.path before importing application modules.
+"tests/**/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+markers = [
+  "e2e: requires a running NeuroCade application",
+  "gui: requires a running application and Playwright browser",
+  "live_llm: sends requests to a configured live language model",
+]
+
 [tool.pyright]
 include = [
   "backend_common",
   "api-service/api_service",
   "packages/neurocade-runtime-tools/src",
-  "packages/neurocade-runtime-tools/tests",
   "tests",
   "scripts",
   "migrations",

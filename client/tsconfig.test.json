@@ -1,19 +1,14 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "types": ["node", "vite/client"],
     "strict": true,
     "skipLibCheck": true,
     "rootDir": ".",
     "outDir": ".tmp-test"
   },
-  "include": [
-    "src/utils/SurfaceLoader.ts",
-    "src/utils/layerAliases.ts",
-    "src/utils/surfaceLighting.ts",
-    "tests/layerAliases.test.ts",
-    "tests/SurfaceLoader.test.ts"
-  ]
+  "include": ["tests/**/*.test.ts", "tests/**/*.test.tsx"]
 }

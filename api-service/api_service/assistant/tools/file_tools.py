@@ -15,18 +15,31 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from api_service.assistant.tools.definition import ToolDefinition
-from api_service.assistant.tools.registration import BOTH_SCOPES, ScopedToolRegistration
+from api_service.assistant.approval_presentations import (
+    file_edit_approval_presentation,
+    file_write_approval_presentation,
+)
+from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk
+from api_service.assistant.tools.registration import ToolRegistration
 from api_service.gui_state import build_gui_state_session_key
 from api_service.helpers import get_case_for_user, get_workspace_for_user
-from api_service.runtime.service import RuntimeService
-from backend_common.case_storage import case_storage_dir, workspace_storage_dir
+from api_service.policies import require_case_write, require_workspace_write
+from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope
 
 
 class ReadFileArgs(BaseModel):
     path: str = Field(..., description="Text file path under the active workspace or case root.")
-    max_bytes: int = Field(100000, ge=1, le=500000, description="Maximum number of bytes to return.")
+    max_bytes: int = Field(20000, ge=1, le=50000, description="Maximum number of bytes to return.")
+    offset_bytes: int = Field(0, ge=0, description="Zero-based byte offset. Ignored when from_end is true.")
+    from_end: bool = Field(False, description="Read the final max_bytes bytes. Use this for log completion checks.")
+
+
+class SearchTextArgs(BaseModel):
+    path: str = Field(..., description="Text file path under the active workspace or case root.")
+    query: str = Field(..., min_length=1, max_length=1000, description="Literal text to find.")
+    max_matches: int = Field(20, ge=1, le=100, description="Maximum matching lines to return.")
+    case_sensitive: bool = Field(False, description="Match letter case exactly.")
 
 
 class WriteFileArgs(BaseModel):
@@ -42,7 +55,14 @@ class EditFileArgs(BaseModel):
 
 
 def _read_description(state: dict[str, Any]) -> str:
-    return f"Read a UTF-8 text file from the active NeuroCade data workspace. {AssistantFileTools.path_description(state)}"
+    return (
+        "Read a bounded UTF-8 text range. Use from_end=true to inspect final log status; "
+        f"use search_text for markers. {AssistantFileTools.path_description(state)}"
+    )
+
+
+def _search_description(state: dict[str, Any]) -> str:
+    return f"Find literal text in a UTF-8 file and return matching line numbers. {AssistantFileTools.path_description(state)}"
 
 
 def _write_description(state: dict[str, Any]) -> str:
@@ -57,6 +77,10 @@ def _read_schema(state: dict[str, Any]) -> dict[str, Any]:
     return AssistantFileTools.schema_with_path_description(ReadFileArgs, AssistantFileTools.path_description(state))
 
 
+def _search_schema(state: dict[str, Any]) -> dict[str, Any]:
+    return AssistantFileTools.schema_with_path_description(SearchTextArgs, AssistantFileTools.path_description(state))
+
+
 def _write_schema(state: dict[str, Any]) -> dict[str, Any]:
     return AssistantFileTools.schema_with_path_description(WriteFileArgs, AssistantFileTools.path_description(state))
 
@@ -65,38 +89,12 @@ def _edit_schema(state: dict[str, Any]) -> dict[str, Any]:
     return AssistantFileTools.schema_with_path_description(EditFileArgs, AssistantFileTools.path_description(state))
 
 
-FILE_TOOL_REGISTRATIONS: tuple[ScopedToolRegistration, ...] = (
-    ScopedToolRegistration(
-        name="read",
-        description=_read_description,
-        parameters=_read_schema,
-        handler_name="read_tool",
-        scopes=BOTH_SCOPES,
-    ),
-    ScopedToolRegistration(
-        name="write",
-        description=_write_description,
-        parameters=_write_schema,
-        handler_name="write_tool",
-        scopes=BOTH_SCOPES,
-    ),
-    ScopedToolRegistration(
-        name="edit",
-        description=_edit_description,
-        parameters=_edit_schema,
-        handler_name="edit_tool",
-        scopes=BOTH_SCOPES,
-    ),
-)
-
-
 class AssistantFileTools:
     """Build and resolve assistant file tools for NeuroCade-managed paths."""
 
-    def __init__(self, *, settings, runtime_service: RuntimeService) -> None:
-        """Store settings and runtime services used for path resolution."""
+    def __init__(self, *, settings) -> None:
+        """Store settings used for path resolution."""
         self.settings = settings
-        self.runtime_service = runtime_service
 
     def build_tools(self, state: dict[str, Any]) -> list[ToolDefinition]:
         """Return read, write, and edit tool definitions for the current state.
@@ -104,62 +102,112 @@ class AssistantFileTools:
         The path parameter descriptions are adjusted for workspace versus case
         scope so the model only sees ``/case`` advertised when a case is active.
         """
-        definitions: list[ToolDefinition] = []
-        scope = str(state.get("scope") or "")
-        for registration in FILE_TOOL_REGISTRATIONS:
-            if scope and not registration.exposed_in(scope):
-                continue
-            handler = getattr(self, registration.handler_name)
+        registrations = (
+            ToolRegistration("read", _read_description, _read_schema, self.read_tool),
+            ToolRegistration("search_text", _search_description, _search_schema, self.search_text_tool),
+            ToolRegistration(
+                "write",
+                _write_description,
+                _write_schema,
+                self.write_tool,
+                ToolRisk.write,
+                approval_presentation=file_write_approval_presentation,
+            ),
+            ToolRegistration(
+                "edit",
+                _edit_description,
+                _edit_schema,
+                self.edit_tool,
+                ToolRisk.write,
+                approval_presentation=file_edit_approval_presentation,
+            ),
+        )
+        return [registration.bind(state) for registration in registrations]
 
-            async def execute(arguments: dict[str, Any], *, tool_handler=handler) -> str:
-                return await tool_handler(state, arguments)
-
-            definitions.append(
-                ToolDefinition(
-                    name=registration.name,
-                    description=registration.resolved_description(state),
-                    parameters=registration.resolved_parameters(state),
-                    execute=execute,
-                )
-            )
-        return definitions
-
-    async def read_tool(self, state: dict[str, Any], arguments: dict[str, Any]) -> str:
+    async def read_tool(
+        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
         """Read a UTF-8 text file after resolving an assistant-visible path."""
         parsed = ReadFileArgs.model_validate(arguments)
         path = await self.resolve_path(state, parsed.path)
         try:
-            data = path.read_bytes()[: parsed.max_bytes]
+            size = path.stat().st_size
+            start = max(size - parsed.max_bytes, 0) if parsed.from_end else min(parsed.offset_bytes, size)
+            with path.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(parsed.max_bytes)
         except OSError as exc:
-            return f"Error reading {parsed.path}: {exc}"
+            return ToolResult.error(f"Error reading {parsed.path}: {exc}")
         text = data.decode("utf-8", errors="replace")
-        truncated = " [truncated]" if path.stat().st_size > parsed.max_bytes else ""
-        return f"{path}\n{truncated}\n{text}"
+        end = start + len(data)
+        omitted = []
+        if start:
+            omitted.append(f"{start} byte(s) before")
+        if end < size:
+            omitted.append(f"{size - end} byte(s) after")
+        status = f"bytes {start}:{end} of {size}"
+        if omitted:
+            status += "; omitted " + " and ".join(omitted)
+        return ToolResult.success(f"Path: {path}\nRange: {status}\n\n{text}")
 
-    async def write_tool(self, state: dict[str, Any], arguments: dict[str, Any]) -> str:
+    async def search_text_tool(
+        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        """Return bounded literal matches with stable line numbers."""
+        parsed = SearchTextArgs.model_validate(arguments)
+        path = await self.resolve_path(state, parsed.path)
+        needle = parsed.query if parsed.case_sensitive else parsed.query.casefold()
+        matches: list[str] = []
+        total = 0
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    haystack = line if parsed.case_sensitive else line.casefold()
+                    if needle not in haystack:
+                        continue
+                    total += 1
+                    if len(matches) < parsed.max_matches:
+                        matches.append(f"{line_number}: {line.rstrip()[:2000]}")
+        except OSError as exc:
+            return ToolResult.error(f"Error searching {parsed.path}: {exc}")
+        header = f"Path: {path}\nQuery: {parsed.query!r}\nMatches: {total}"
+        if total > len(matches):
+            header += f" (showing first {len(matches)})"
+        return ToolResult.success(header + ("\n\n" + "\n".join(matches) if matches else ""))
+
+    async def write_tool(
+        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
         """Write UTF-8 text after resolving an assistant-visible path."""
+        self.require_write_access(state)
         parsed = WriteFileArgs.model_validate(arguments)
         path = await self.resolve_path(state, parsed.path)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(parsed.content, encoding="utf-8")
         except OSError as exc:
-            return f"Error writing {parsed.path}: {exc}"
-        return f"Wrote {len(parsed.content.encode('utf-8'))} byte(s) to {path}."
+            return ToolResult.error(f"Error writing {parsed.path}: {exc}")
+        return ToolResult.success(
+            f"Wrote {len(parsed.content.encode('utf-8'))} byte(s) to {path}.",
+            details={"path": str(path), "bytes_written": len(parsed.content.encode("utf-8"))},
+        )
 
-    async def edit_tool(self, state: dict[str, Any], arguments: dict[str, Any]) -> str:
+    async def edit_tool(
+        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
         """Replace exact UTF-8 text after resolving an assistant-visible path."""
+        self.require_write_access(state)
         parsed = EditFileArgs.model_validate(arguments)
         if not parsed.old_text:
-            return "Error: old_text must not be empty."
+            return ToolResult.error("Error: old_text must not be empty.")
         path = await self.resolve_path(state, parsed.path)
         try:
             original = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return f"Error reading {parsed.path}: {exc}"
+            return ToolResult.error(f"Error reading {parsed.path}: {exc}")
         count = original.count(parsed.old_text)
         if count == 0:
-            return f"Error: old_text was not found in {path}."
+            return ToolResult.error(f"Error: old_text was not found in {path}.")
         updated = (
             original.replace(parsed.old_text, parsed.new_text)
             if parsed.replace_all
@@ -168,9 +216,32 @@ class AssistantFileTools:
         try:
             path.write_text(updated, encoding="utf-8")
         except OSError as exc:
-            return f"Error writing {parsed.path}: {exc}"
+            return ToolResult.error(f"Error writing {parsed.path}: {exc}")
         changed = count if parsed.replace_all else 1
-        return f"Edited {path}; replaced {changed} occurrence(s)."
+        return ToolResult.success(
+            f"Edited {path}; replaced {changed} occurrence(s).",
+            details={"path": str(path), "replacements": changed},
+        )
+
+    @staticmethod
+    def require_write_access(state: dict[str, Any]) -> None:
+        """Enforce the canonical write policy for the active assistant scope."""
+        db = state.get("db")
+        context = state.get("context")
+        workspace_id = state.get("workspace_id")
+        if db is None or context is None or workspace_id is None:
+            raise HTTPException(status_code=403, detail="Assistant file writes require an authenticated workspace")
+        if state.get("scope") == AssistantScope.case.value:
+            case_id = state.get("case_id")
+            if not case_id:
+                raise HTTPException(status_code=400, detail="Case scope requires case_id")
+            _case, _workspace, role, _case_root = get_case_for_user(
+                db, case_id, context.user.id, workspace_id=workspace_id
+            )
+            require_case_write(role)
+            return
+        _workspace, role = get_workspace_for_user(db, workspace_id, context.user.id)
+        require_workspace_write(role)
 
     @staticmethod
     def path_description(state: dict[str, Any]) -> str:
@@ -250,23 +321,23 @@ class AssistantFileTools:
         case_id = state.get("case_id")
         if not db or not context or not workspace_id or not case_id:
             return None
-        case, _role = get_case_for_user(db, case_id, context.user.id, workspace_id=workspace_id)
-        case_root = case_storage_dir(self.settings, str(workspace_id), str(case.id))
-        case_root.mkdir(parents=True, exist_ok=True)
+        _case, _workspace, _role, case_root = get_case_for_user(
+            db, case_id, context.user.id, workspace_id=workspace_id
+        )
         return case_root.resolve()
 
     @staticmethod
-    def gui_state_session_key(state: dict[str, Any]) -> str | None:
+    def gui_state_session_key(state: dict[str, Any]) -> str:
         """Build the runtime GUI-state key for the current assistant state."""
         context = state.get("context")
         workspace_id = state.get("workspace_id")
         case_id = state.get("case_id")
         gui_session_id = state.get("gui_session_id")
-        if not context or not workspace_id:
-            return None
+        if not gui_session_id:
+            raise ValueError("A GUI session id is required")
         return build_gui_state_session_key(
-            user_id=context.user.id,
-            workspace_id=workspace_id,
+            user_id=context.user.id if context else "ephemeral",
+            workspace_id=workspace_id or "ephemeral",
             case_id=case_id,
             gui_session_id=gui_session_id,
         )

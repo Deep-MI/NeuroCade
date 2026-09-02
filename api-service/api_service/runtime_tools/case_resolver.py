@@ -5,11 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from sqlalchemy.orm import Session
-
-from backend_common.case_storage import case_slug_from_id, case_storage_dir, ensure_case_storage_layout
-from backend_common.db import Case, Workspace
-
+from backend_common.case_storage import case_storage_dir_from_root
 
 CONTAINER_CASE_ROOT = "/case"
 
@@ -66,16 +62,19 @@ def resolve_case_mount_from_gui_state(
         Existing case directory when it is inside ``data_root``; otherwise None.
     """
     state = gui_state or {}
-    current_workspace_id = str(state.get("current_workspace_id") or state.get("workspace_id") or "").strip()
-    current_case_id = str(state.get("current_case_id") or state.get("case_id") or "").strip()
-    if not current_workspace_id or not current_case_id:
+    workspace_id = str(state.get("workspace_id") or "").strip()
+    case_id = str(state.get("case_id") or "").strip()
+    if not workspace_id or not case_id:
         return None
-    if any(separator in current_workspace_id or separator in current_case_id for separator in ("/", "\\")):
+    if any(separator in workspace_id or separator in case_id for separator in ("/", "\\")):
         return None
-    if current_workspace_id in {".", ".."} or current_case_id in {".", ".."}:
+    if workspace_id in {".", ".."} or case_id in {".", ".."}:
         return None
 
-    candidate = Path(output_root) / "workspaces" / current_workspace_id / "cases" / case_slug_from_id(current_workspace_id, current_case_id)
+    try:
+        candidate = case_storage_dir_from_root(Path(output_root), workspace_id, case_id)
+    except FileNotFoundError:
+        return None
     if candidate.is_symlink():
         return None
     resolved = resolve_host_path_via_existing_parents(candidate)
@@ -86,72 +85,3 @@ def resolve_case_mount_from_gui_state(
     if os.path.commonpath([resolved, resolved_root]) != resolved_root:
         return None
     return Path(resolved)
-
-
-def resolve_case_mount_from_db(
-    db: Session,
-    settings,
-    case: Case,
-    workspace: Workspace,
-) -> Path | None:
-    """Resolve the stored case directory for a database-backed workspace case.
-
-    Parameters
-    ----------
-    db : Session
-        Database session used to ensure the case storage layout.
-    settings : object
-        API settings that define case storage paths.
-    case : Case
-        Case record to resolve.
-    workspace : Workspace
-        Workspace that owns the case.
-
-    Returns
-    -------
-    Path | None
-        Existing case directory, or None when it cannot be found.
-    """
-    case_dir = ensure_case_storage_layout(db, settings, case, workspace)
-    if not case_dir.exists():
-        case_dir = case_storage_dir(settings, workspace.id, case.id)
-    return case_dir if case_dir.exists() else None
-
-
-def case_container_path_from_local_path(
-    local_path: str | Path,
-    case_dir: str | Path | None,
-    *,
-    container_root: str = CONTAINER_CASE_ROOT,
-) -> str | None:
-    """Map a host path inside a case directory to its container path.
-
-    Parameters
-    ----------
-    local_path : str | Path
-        Host path to translate.
-    case_dir : str | Path | None
-        Host case directory mounted at ``container_root``.
-    container_root : str
-        Container mount point for the case directory.
-
-    Returns
-    -------
-    str | None
-        Container path for ``local_path``, or None when it is outside the case.
-    """
-    if case_dir is None:
-        return None
-
-    resolved_case_dir = os.path.realpath(str(case_dir))
-    resolved_path = resolve_host_path_via_existing_parents(local_path)
-    if not resolved_path:
-        return None
-
-    if os.path.commonpath([resolved_path, resolved_case_dir]) != resolved_case_dir:
-        return None
-
-    rel = os.path.relpath(resolved_path, resolved_case_dir).replace(os.sep, "/")
-    if rel == ".":
-        return container_root
-    return f"{container_root}/{rel}"

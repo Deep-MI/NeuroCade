@@ -1,7 +1,7 @@
 /* ------------------------------------------------------------------ */
 /*  Application-wide constants                                         */
 /* ------------------------------------------------------------------ */
-import type { StatusConfig } from './types';
+import type { StatusConfig } from './types.js';
 
 export const APP_DISPLAY_NAME = 'NeuroCade';
 

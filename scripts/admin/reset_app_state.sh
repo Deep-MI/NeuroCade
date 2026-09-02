@@ -6,7 +6,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
-source "$ROOT_DIR/scripts/install/env.sh"
+ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
+source "$ROOT_DIR/scripts/lib/env.sh"
+load_env_file
 
 KEEP_STACK_DOWN=0
 CONFIRMED=0
@@ -29,16 +31,38 @@ done
 
 if [[ "$CONFIRMED" -ne 1 ]]; then
   echo "Refusing to run without --yes." >&2
-  echo "This command drops the application schema, flushes Redis, and wipes workspace data under HOST_DATA_DIR." >&2
+  echo "This command wipes the SQLite database and workspace data." >&2
   exit 2
 fi
+
+canonical_path() {
+  local path="$1" name resolved suffix=""
+  [[ "$path" == /* ]] || path="$PWD/$path"
+
+  # GNU realpath supports -m for missing paths; macOS realpath does not. Resolve
+  # the deepest existing ancestor and append safe missing components instead.
+  while [[ ! -e "$path" ]]; do
+    name="${path##*/}"
+    case "$name" in
+      ""|.|..)
+        echo "Cannot safely resolve path: $1" >&2
+        return 1
+        ;;
+    esac
+    suffix="/$name$suffix"
+    path="${path%/*}"
+    [[ -n "$path" ]] || path="/"
+  done
+  resolved="$(realpath "$path")"
+  printf '%s%s\n' "$resolved" "$suffix"
+}
 
 require_repo_local_path() {
   local label="$1"
   local path="$2"
   local root_real path_real
-  root_real="$(realpath -m "$ROOT_DIR")"
-  path_real="$(realpath -m "$path")"
+  root_real="$(canonical_path "$ROOT_DIR")"
+  path_real="$(canonical_path "$path")"
   case "$path_real" in
     "$root_real"|"$root_real"/*)
       ;;
@@ -49,17 +73,17 @@ require_repo_local_path() {
   esac
 }
 
-HOST_DATA_DIR="$(env_config_value "$ROOT_DIR" HOST_DATA_DIR "$ROOT_DIR/neurocade-data")"
-RUNTIME_DIR="$(env_config_value "$ROOT_DIR" NEUROCADE_RUNTIME_DIR "$ROOT_DIR/.runtime")"
+HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
+RUNTIME_DIR="${NEUROCADE_RUNTIME_DIR:-$ROOT_DIR/.runtime}"
+DATABASE_VOLUME="${NEUROCADE_DATABASE_VOLUME:-neurocade-database}"
+APPTAINER_DATABASE_DIR="$RUNTIME_DIR/database"
 
 require_repo_local_path ".runtime" "$RUNTIME_DIR"
 require_repo_local_path "HOST_DATA_DIR" "$HOST_DATA_DIR"
 
-source "$ROOT_DIR/scripts/apptainer/lib.sh"
-
 kill_repo_service_orphans() {
   local pids pid
-  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|$ROOT_DIR/scripts/serve_static_client.py|api_service.main:app|api_service.host_runtime_runner:app|api_service.celery_app|redis-server ${REDIS_HOST}:${REDIS_PORT}|postgres -D /var/lib/postgresql/data -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" || true)"
+  pids="$(pgrep -u "$(id -u)" -f "$ROOT_DIR/.venv/bin/python|api_service.main:app|neurocade-runtime-bridge" || true)"
   [[ -n "$pids" ]] || return 0
   for pid in $pids; do
     [[ "$pid" != "$$" ]] || continue
@@ -73,24 +97,35 @@ kill_repo_service_orphans() {
   done
 }
 
-echo "Stopping Apptainer-managed services..."
-"$ROOT_DIR/scripts/apptainer/down.sh"
+echo "Stopping NeuroCade container..."
+"$ROOT_DIR/scripts/run.sh" stop
 kill_repo_service_orphans
 
 echo "Removing local runtime state..."
-rm -rf "$RUNTIME_DIR/postgres" "$RUNTIME_DIR/redis" "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
-mkdir -p "$RUNTIME_DIR/postgres" "$RUNTIME_DIR/redis" "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
+rm -rf "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
+rm -f "$RUNTIME_DIR/app.log" "$RUNTIME_DIR/bridge.log" "$RUNTIME_DIR/app.pid" "$RUNTIME_DIR/bridge.pid"
+mkdir -p "$RUNTIME_DIR/pids" "$RUNTIME_DIR/logs"
 
-echo "Wiping $HOST_DATA_DIR contents except license.txt..."
-find "$HOST_DATA_DIR" -mindepth 1 -maxdepth 1 ! -name 'license.txt' -exec rm -rf {} +
+echo "Wiping workspace and database state under $HOST_DATA_DIR..."
+rm -rf "$HOST_DATA_DIR/output"
 mkdir -p "$HOST_DATA_DIR/output"
+if [[ "${NEUROCADE_RUNTIME:-}" == "docker" ]]; then
+  echo "Removing SQLite volume $DATABASE_VOLUME..."
+  docker volume rm "$DATABASE_VOLUME" >/dev/null 2>&1 || true
+else
+  echo "Removing SQLite state from $APPTAINER_DATABASE_DIR..."
+  rm -f \
+    "$APPTAINER_DATABASE_DIR/neurocade.db" \
+    "$APPTAINER_DATABASE_DIR/neurocade.db-shm" \
+    "$APPTAINER_DATABASE_DIR/neurocade.db-wal"
+fi
 
 if [[ "$KEEP_STACK_DOWN" -eq 1 ]]; then
   echo "Reset complete. Stack left stopped."
   exit 0
 fi
 
-echo "Starting the stack..."
-"$ROOT_DIR/scripts/apptainer/up.sh" -d
+echo "Starting NeuroCade..."
+"$ROOT_DIR/scripts/run.sh" start -d
 
 echo "Reset complete."

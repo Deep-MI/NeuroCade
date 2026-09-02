@@ -28,20 +28,11 @@ updates:
       - "dependencies"
       - "frontend"
 
-  - package-ecosystem: "pip"
-    directory: "/api-service"
+  - package-ecosystem: "uv"
+    directory: "/"
     patterns:
       - "*"
     multi-ecosystem-group: "monthly-dependencies"
     labels:
       - "dependencies"
       - "backend"
-
-  - package-ecosystem: "pip"
-    directory: "/tests"
-    patterns:
-      - "*"
-    multi-ecosystem-group: "monthly-dependencies"
-    labels:
-      - "dependencies"
-      - "tests"

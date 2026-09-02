@@ -1,8 +1,8 @@
 """Test admin reset behavior for NeuroCade."""
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,26 +11,26 @@ from sqlalchemy.orm import sessionmaker
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from backend_common import sample_seed as sample_seed_module  # noqa: E402
 from backend_common.admin_reset import purge_workspace, reset_sample_case_for_user  # noqa: E402
-from backend_common.case_storage import case_storage_dir  # noqa: E402
+from backend_common.case_storage import case_storage_dir, ensure_case_storage_layout  # noqa: E402
 from backend_common.db import (  # noqa: E402
     Artifact,
     ArtifactKind,
-    AssistantCheckpoint,
     AssistantMessage,
     AssistantScope,
     AssistantThread,
     AuditEvent,
     Base,
     Case,
+    CaseEvent,
     RoleEnum,
-    User,
     Run,
     RunStatus,
+    User,
     Workspace,
     WorkspaceMembership,
 )
-from backend_common import sample_seed as sample_seed_module  # noqa: E402
 
 
 @pytest.fixture()
@@ -65,10 +65,9 @@ def test_purge_workspace_deletes_cases_records_and_storage(db_session, tmp_path)
         name="ws-1",
         kind="personal",
         is_default=True,
-        status="active",
     )
     case = Case(
-        id="ws-1__case-1",
+        id="case-1-id",
         workspace_id=workspace.id,
         owner_user_id=user.id,
         title="case-1",
@@ -95,7 +94,7 @@ def test_purge_workspace_deletes_cases_records_and_storage(db_session, tmp_path)
             created_by_user_id=user.id,
             status=RunStatus.completed,
             run_type="run",
-            runtime_job_id=case.id,
+            job_id=case.id,
             result_json={},
         ),
         Artifact(
@@ -104,7 +103,7 @@ def test_purge_workspace_deletes_cases_records_and_storage(db_session, tmp_path)
             workspace_id=workspace.id,
             kind=ArtifactKind.log,
             name="stdout.log",
-            relative_path=f"output/workspaces/{workspace.id}/cases/case-1/scripts/stdout.log",
+            relative_path="scripts/runs/run-1/stdout.log",
             size_bytes=1,
             metadata_json={},
         ),
@@ -120,30 +119,20 @@ def test_purge_workspace_deletes_cases_records_and_storage(db_session, tmp_path)
             content_json={"text": "hello"},
             metadata_json={},
         ),
-        AssistantCheckpoint(
-            id="checkpoint-1",
-            thread_id=assistant_thread.id,
-            step_name="structured_response",
-            state_json={"step": 1},
-        ),
         Run(
             id="wf-1",
             scope_type=AssistantScope.case,
             case_id=case.id,
             workspace_id=workspace.id,
             created_by_user_id=user.id,
-            assistant_thread_id=assistant_thread.id,
             status=RunStatus.completed,
             run_type="workspace-check",
-            thread_id="thread-key-1",
-            provider_name="openai-compatible",
-            model_name="model",
             result_json={},
         ),
     ])
     db_session.commit()
 
-    case_dir = case_storage_dir(settings, workspace.id, case.id)
+    case_dir = ensure_case_storage_layout(settings, case, workspace)
     scripts_dir = case_dir / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     (scripts_dir / "stdout.log").write_text("log", encoding="utf-8")
@@ -163,7 +152,6 @@ def test_purge_workspace_deletes_cases_records_and_storage(db_session, tmp_path)
     assert db_session.query(Run).count() == 0
     assert db_session.query(AssistantThread).count() == 0
     assert db_session.query(AssistantMessage).count() == 0
-    assert db_session.query(AssistantCheckpoint).count() == 0
     assert db_session.query(Run).count() == 0
     assert not case_dir.exists()
     assert not (settings.outputs_dir / "workspaces" / workspace.id).exists()
@@ -172,7 +160,6 @@ def test_purge_workspace_deletes_cases_records_and_storage(db_session, tmp_path)
 def test_reset_sample_case_for_user_reseeds_clean_copy(db_session, tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     monkeypatch.setattr(sample_seed_module.settings, "fs_data_root", settings.fs_data_root)
-    monkeypatch.setattr(sample_seed_module.settings, "outputs_dir_override", settings.outputs_dir)
 
     sample_root = tmp_path / "sample_case_root"
     sample_root.mkdir(parents=True, exist_ok=True)
@@ -186,7 +173,6 @@ def test_reset_sample_case_for_user_reseeds_clean_copy(db_session, tmp_path, mon
         name="ws-10",
         kind="personal",
         is_default=True,
-        status="active",
     )
     sample_case = Case(
         id=sample_seed_module.sample_case_id_for_workspace(workspace.id),
@@ -197,7 +183,8 @@ def test_reset_sample_case_for_user_reseeds_clean_copy(db_session, tmp_path, mon
     db_session.add_all([user, workspace, sample_case])
     db_session.flush()
     db_session.add(WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role=RoleEnum.owner, granted_by_user_id=user.id))
-    old_relative_path = str((case_storage_dir(settings, workspace.id, sample_case.id) / "obsolete.txt").relative_to(settings.fs_data_root))
+    old_case_dir = ensure_case_storage_layout(settings, sample_case, workspace)
+    old_relative_path = "obsolete.txt"
     old_artifact = Artifact(
         id="artifact-old",
         case_id=sample_case.id,
@@ -211,8 +198,6 @@ def test_reset_sample_case_for_user_reseeds_clean_copy(db_session, tmp_path, mon
     db_session.add(old_artifact)
     db_session.commit()
 
-    old_case_dir = case_storage_dir(settings, workspace.id, sample_case.id)
-    old_case_dir.mkdir(parents=True, exist_ok=True)
     (old_case_dir / "obsolete.txt").write_text("obsolete", encoding="utf-8")
 
     seeded = reset_sample_case_for_user(db_session, settings, user)
@@ -240,7 +225,6 @@ def test_reset_sample_case_for_user_reseeds_clean_copy(db_session, tmp_path, mon
 def test_reset_sample_case_marks_mgz_outputs_as_volumes(db_session, tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     monkeypatch.setattr(sample_seed_module.settings, "fs_data_root", settings.fs_data_root)
-    monkeypatch.setattr(sample_seed_module.settings, "outputs_dir_override", settings.outputs_dir)
 
     sample_root = tmp_path / "sample_case_root"
     sample_root.mkdir(parents=True, exist_ok=True)
@@ -257,7 +241,6 @@ def test_reset_sample_case_marks_mgz_outputs_as_volumes(db_session, tmp_path, mo
         name="ws-20",
         kind="personal",
         is_default=True,
-        status="active",
     )
     sample_case = Case(
         id=sample_seed_module.sample_case_id_for_workspace(workspace.id),
@@ -268,6 +251,7 @@ def test_reset_sample_case_marks_mgz_outputs_as_volumes(db_session, tmp_path, mo
     db_session.add_all([user, workspace, sample_case])
     db_session.flush()
     db_session.add(WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role=RoleEnum.owner, granted_by_user_id=user.id))
+    ensure_case_storage_layout(settings, sample_case, workspace)
     db_session.add_all([
         Artifact(
             id="artifact-orig",
@@ -275,7 +259,7 @@ def test_reset_sample_case_marks_mgz_outputs_as_volumes(db_session, tmp_path, mo
             workspace_id=workspace.id,
             kind=ArtifactKind.report,
             name="orig.mgz",
-            relative_path=str((case_storage_dir(settings, workspace.id, sample_case.id) / "orig.mgz").relative_to(settings.fs_data_root)),
+            relative_path="orig.mgz",
             size_bytes=4,
             metadata_json={},
         ),
@@ -285,7 +269,7 @@ def test_reset_sample_case_marks_mgz_outputs_as_volumes(db_session, tmp_path, mo
             workspace_id=workspace.id,
             kind=ArtifactKind.report,
             name="aparc.DKTatlas+aseg.deep.mgz",
-            relative_path=str((case_storage_dir(settings, workspace.id, sample_case.id) / "aparc.DKTatlas+aseg.deep.mgz").relative_to(settings.fs_data_root)),
+            relative_path="aparc.DKTatlas+aseg.deep.mgz",
             size_bytes=3,
             metadata_json={},
         ),
@@ -319,7 +303,6 @@ def test_reset_sample_case_marks_mgz_outputs_as_volumes(db_session, tmp_path, mo
 def test_ensure_sample_case_preserves_extra_generated_outputs(db_session, tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     monkeypatch.setattr(sample_seed_module.settings, "fs_data_root", settings.fs_data_root)
-    monkeypatch.setattr(sample_seed_module.settings, "outputs_dir_override", settings.outputs_dir)
 
     sample_root = tmp_path / "sample_case_root"
     sample_root.mkdir(parents=True, exist_ok=True)
@@ -333,7 +316,6 @@ def test_ensure_sample_case_preserves_extra_generated_outputs(db_session, tmp_pa
         name="ws-extra",
         kind="personal",
         is_default=True,
-        status="active",
     )
     db_session.add_all([user, workspace])
     db_session.commit()
@@ -354,10 +336,9 @@ def test_ensure_sample_case_preserves_extra_generated_outputs(db_session, tmp_pa
     assert generated.exists()
 
 
-def test_ensure_sample_case_refresh_keeps_existing_artifact_ids(db_session, tmp_path, monkeypatch):
+def test_ensure_sample_case_leaves_existing_case_unchanged(db_session, tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     monkeypatch.setattr(sample_seed_module.settings, "fs_data_root", settings.fs_data_root)
-    monkeypatch.setattr(sample_seed_module.settings, "outputs_dir_override", settings.outputs_dir)
 
     sample_root = tmp_path / "sample_case_root"
     sample_root.mkdir(parents=True, exist_ok=True)
@@ -370,59 +351,43 @@ def test_ensure_sample_case_refresh_keeps_existing_artifact_ids(db_session, tmp_
         name="ws-40",
         kind="personal",
         is_default=True,
-        status="active",
     )
-    sample_case = Case(
-        id=sample_seed_module.sample_case_id_for_workspace(workspace.id),
-        workspace_id=workspace.id,
-        owner_user_id=user.id,
-        title="sample-case",
-    )
-    db_session.add_all([user, workspace, sample_case])
-    db_session.flush()
-    db_session.add(WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role=RoleEnum.owner, granted_by_user_id=user.id))
-    db_session.add(
-        Artifact(
-            id="artifact-old-sample",
-            case_id=sample_case.id,
-            workspace_id=workspace.id,
-            kind=ArtifactKind.volume,
-            name="001.mgz",
-            relative_path=str((case_storage_dir(settings, workspace.id, sample_case.id) / "001.mgz").relative_to(settings.fs_data_root)),
-            size_bytes=3,
-            metadata_json={},
-        )
-    )
-    db_session.add(
-        AuditEvent(
-            id="audit-old-sample",
-            user_id=user.id,
-            case_id=sample_case.id,
-            artifact_id="artifact-old-sample",
-            action="artifact.downloaded",
-            details_json={},
-        )
-    )
+    db_session.add_all([user, workspace])
     db_session.commit()
 
-    refreshed_case = sample_seed_module.ensure_sample_case(db_session, user)
+    seeded_case = sample_seed_module.ensure_sample_case(db_session, user)
     db_session.commit()
-    assert refreshed_case is not None
+    assert seeded_case is not None
 
-    audit_event = db_session.get(AuditEvent, "audit-old-sample")
-    case_dir = case_storage_dir(settings, workspace.id, refreshed_case.id)
-    artifact_names = {
-        artifact.name
-        for artifact in db_session.query(Artifact).filter(Artifact.case_id == refreshed_case.id).all()
+    artifact = db_session.query(Artifact).filter(Artifact.case_id == seeded_case.id).one()
+    artifact.metadata_json = {
+        "source": "workflow-catalog",
+        "workflow_id": "fastsurfer_full",
+        "output_name": "conformed_input",
     }
+    artifact.size_bytes = len(b"user-modified")
+    case_dir = case_storage_dir(settings, workspace.id, seeded_case.id)
+    (case_dir / "001.mgz").write_bytes(b"user-modified")
+    initial_seed_events = (
+        db_session.query(CaseEvent)
+        .filter(CaseEvent.case_id == seeded_case.id, CaseEvent.event_type == "case.seeded")
+        .count()
+    )
+    db_session.commit()
 
-    assert refreshed_case is not None
-    assert case_dir.exists()
-    assert (case_dir / "001.mgz").exists()
-    assert artifact_names == {"001.mgz"}
-    assert audit_event is not None
-    assert audit_event.artifact_id == "artifact-old-sample"
-    refreshed_artifact = db_session.get(Artifact, "artifact-old-sample")
-    assert refreshed_artifact is not None
-    assert refreshed_artifact.name == "001.mgz"
-    assert refreshed_artifact.size_bytes == 2
+    existing_case = sample_seed_module.ensure_sample_case(db_session, user)
+    db_session.commit()
+
+    assert existing_case is not None
+    assert existing_case.id == seeded_case.id
+    assert (case_dir / "001.mgz").read_bytes() == b"user-modified"
+    preserved_artifact = db_session.get(Artifact, artifact.id)
+    assert preserved_artifact is not None
+    assert preserved_artifact.metadata_json["source"] == "workflow-catalog"
+    assert preserved_artifact.size_bytes == len(b"user-modified")
+    assert (
+        db_session.query(CaseEvent)
+        .filter(CaseEvent.case_id == seeded_case.id, CaseEvent.event_type == "case.seeded")
+        .count()
+        == initial_seed_events
+    )

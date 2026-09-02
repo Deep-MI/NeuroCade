@@ -1,11 +1,10 @@
 """Provide shared backend auth utilities for NeuroCade."""
 
-from contextlib import contextmanager
-from dataclasses import dataclass
-from hashlib import blake2b
 import json
 import logging
 import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -13,15 +12,13 @@ import jwt
 from fastapi import HTTPException
 from jwt import PyJWKClient
 from jwt.exceptions import PyJWTError
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from backend_common.deployment_policy import get_deployment_policy
 from backend_common.db import RoleEnum, User
+from backend_common.deployment_policy import get_deployment_policy
 from backend_common.sample_seed import ensure_global_sample_workspace_membership, ensure_sample_case
 from backend_common.settings import get_settings
 from backend_common.workspace_bootstrap import ensure_personal_workspace
-
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -36,33 +33,12 @@ class AuthContext:
     auth_mode: str
 
 
-def _bootstrap_lock_key(user_id: str) -> int:
-    """Return a signed advisory lock key for a user's bootstrap work."""
-    digest = blake2b(user_id.encode("utf-8"), digest_size=8, person=b"authboot").digest()
-    value = int.from_bytes(digest, byteorder="big", signed=False)
-    if value >= 2**63:
-        value -= 2**64
-    return value
-
-
 @contextmanager
-def _local_bootstrap_lock(user_id: str):
-    """Serialize bootstrap work for a user within this process."""
+def _user_bootstrap_lock(_db: Session, user_id: str):
+    """Serialize a user's bootstrap work within this single-process monolith."""
     with _BOOTSTRAP_LOCKS_GUARD:
         lock = _BOOTSTRAP_LOCKS.setdefault(user_id, threading.RLock())
     with lock:
-        yield
-
-
-@contextmanager
-def _user_bootstrap_lock(db: Session, user_id: str):
-    """Serialize user bootstrap work across workers when possible."""
-    bind = db.get_bind()
-    if bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": _bootstrap_lock_key(user_id)})
-        yield
-        return
-    with _local_bootstrap_lock(user_id):
         yield
 
 
@@ -123,21 +99,24 @@ def _upsert_local_user(db: Session) -> AuthContext:
     with _user_bootstrap_lock(db, settings.local_auth_user_id):
         user = db.get(User, settings.local_auth_user_id)
         if user is None:
-            user = User(
-                id=settings.local_auth_user_id,
-                external_auth_id=settings.local_auth_user_id,
-                email=settings.local_auth_email,
-                full_name=settings.local_auth_name,
-            )
+            user = User(id=settings.local_auth_user_id)
             db.add(user)
-        db.flush()
-        ensure_personal_workspace(db, user)
-        if policy.sample_data_scope == "per_user":
-            ensure_sample_case(db, user)
-        elif policy.sample_data_scope == "global":
-            ensure_global_sample_workspace_membership(db, user)
-        _commit_auth_bootstrap(db)
+        user.external_auth_id = settings.local_auth_user_id
+        user.email = settings.local_auth_email
+        user.full_name = settings.local_auth_name
+        _finish_user_bootstrap(db, user, sample_data_scope=policy.sample_data_scope)
         return AuthContext(user=user, role=RoleEnum.owner, auth_mode="local")
+
+
+def _finish_user_bootstrap(db: Session, user: User, *, sample_data_scope: str) -> None:
+    """Provision the common workspace and sample resources for an authenticated user."""
+    db.flush()
+    ensure_personal_workspace(db, settings, user)
+    if sample_data_scope == "per_user":
+        ensure_sample_case(db, user)
+    elif sample_data_scope == "global":
+        ensure_global_sample_workspace_membership(db, user)
+    _commit_auth_bootstrap(db)
 
 
 def _verify_clerk_token(token: str) -> dict:
@@ -199,25 +178,12 @@ def get_auth_context(
                     full_name=full_name,
                 )
                 db.add(user)
-                db.flush()
-                ensure_personal_workspace(db, user, readable_user_slug=True)
-                if policy.sample_data_scope == "per_user":
-                    ensure_sample_case(db, user)
-                elif policy.sample_data_scope == "global":
-                    ensure_global_sample_workspace_membership(db, user)
-                _commit_auth_bootstrap(db)
-                return AuthContext(user=user, role=RoleEnum.owner, auth_mode="clerk")
-
-            if email and user.email != email:
-                user.email = email
-            if full_name and user.full_name != full_name:
-                user.full_name = full_name
-            ensure_personal_workspace(db, user, readable_user_slug=True)
-            if policy.sample_data_scope == "per_user":
-                ensure_sample_case(db, user)
-            elif policy.sample_data_scope == "global":
-                ensure_global_sample_workspace_membership(db, user)
-            _commit_auth_bootstrap(db)
+            else:
+                if email and user.email != email:
+                    user.email = email
+                if full_name and user.full_name != full_name:
+                    user.full_name = full_name
+            _finish_user_bootstrap(db, user, sample_data_scope=policy.sample_data_scope)
             return AuthContext(user=user, role=RoleEnum.owner, auth_mode="clerk")
 
     if allow_local_auth():

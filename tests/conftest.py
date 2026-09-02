@@ -1,21 +1,20 @@
 """
-Shared pytest fixtures for NeuroCade end-to-end tests.
+Shared pytest fixtures for NeuroCade tests.
 
-These fixtures talk to a running Apptainer stack (gateway on port 8005).
-Start the stack before running tests:
+The `e2e` and `gui` tiers talk to a running local app on port 8000:
 
-    ./scripts/apptainer/up.sh -d
-    pytest tests/ -v
+    ./scripts/run.sh start -d
+    pytest tests/evaluations/eval_*.py -m e2e -v
 """
 
 import base64
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,9 +23,7 @@ import requests
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8005")
-API_TOKEN = os.environ.get("API_TOKEN", "static-token-12345")
-PROXY_SERVICE = os.environ.get("PROXY_SERVICE", "api-service")
+APP_URL = os.environ.get("APP_URL", "http://localhost:8000")
 DEFAULT_STORAGE_STATE_PATH = Path(
     os.environ.get(
         "PLAYWRIGHT_STORAGE_STATE",
@@ -37,9 +34,18 @@ DEFAULT_GUI_SESSION_ID = os.environ.get("TEST_GUI_SESSION_ID", "pytest-default-s
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
-from backend_common.case_storage import UPLOAD_SUFFIXES, case_slug_from_id, upload_extension  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "api-service"))
+from backend_common.case_storage import (  # noqa: E402
+    UPLOAD_SUFFIXES,
+    case_id_from_storage_dir,
+    case_storage_dir_from_root,
+    upload_extension,
+)
 
-DATA_ROOT = Path(os.environ.get("HOST_DATA_DIR", REPO_ROOT / "neurocade-data"))
+_host_data_dir = os.environ.get("HOST_DATA_DIR")
+if not _host_data_dir or _host_data_dir == "/data":
+    _host_data_dir = str(REPO_ROOT / "neurocade-data")
+DATA_ROOT = Path(_host_data_dir)
 UPLOAD_FIXTURES_DIR = Path(
     os.environ.get("NEUROCADE_UPLOAD_FIXTURES_DIR", REPO_ROOT / "tests" / "fixtures" / "uploads")
 )
@@ -50,6 +56,22 @@ _LAST_GUI_SCOPE: dict[str, str | None] = {
     "gui_session_id": DEFAULT_GUI_SESSION_ID,
 }
 _GUI_PROCESSED_CASE_CACHE: dict[str, dict] = {}
+
+
+@pytest.fixture(autouse=True)
+def _disable_host_startup_services_for_in_process_tests():
+    """Keep unit-test app lifespans local without a production-only pytest branch."""
+    from api_service.main import app
+
+    previous = getattr(app.state, "skip_host_startup_services", None)
+    app.state.skip_host_startup_services = True
+    try:
+        yield
+    finally:
+        if previous is None:
+            del app.state.skip_host_startup_services
+        else:
+            app.state.skip_host_startup_services = previous
 
 
 def _case_id_from_upload(upload_path: Path) -> str:
@@ -85,6 +107,26 @@ def _loaded_volumes_for_case(case_dir: Path) -> list[str]:
         "orig.mgz",
     ]
     return [name for name in preferred if _case_file_exists(case_dir, name)]
+
+
+def _gui_layers_for_volumes(filenames: list[str], *, visible: bool = True) -> list[dict]:
+    """Build typed GUI layer snapshots for test state seeding."""
+    layers = []
+    for index, filename in enumerate(filenames):
+        is_segmentation = "aseg" in filename.lower() or "seg" in filename.lower()
+        layer_type = "segmentation" if is_segmentation else "intensity"
+        layers.append(
+            {
+                "id": f"{layer_type}:{index}:{filename}",
+                "filename": filename,
+                "type": layer_type,
+                "role": layer_type,
+                "visible": visible,
+                "opacity": 0.7 if is_segmentation else 1.0,
+                "display": {},
+            }
+        )
+    return layers
 
 
 def _case_has_processed_outputs(case_dir: Path) -> bool:
@@ -179,79 +221,38 @@ def _safe_demo_case_pair(resolver, *args, **kwargs) -> tuple[str | None, str | N
 DEMO_RUN_CASE_ID, DEMO_RUN_UPLOAD_FILENAME = _safe_demo_case_pair(_find_run_demo_case)
 DEMO_CASE_ID, DEMO_UPLOAD_FILENAME = _safe_demo_case_pair(_find_processed_demo_case, exclude_case_id=DEMO_RUN_CASE_ID)
 
-# The standard GUI state when the demo case is fully loaded
-ADNI2_GUI_STATE = {
-    "is_job_running": False,
-    "has_valid_segmentation": True,
-    "current_case_id": DEMO_CASE_ID,
-    "loaded_volumes": _loaded_volumes_for_case(_resolve_case_dir(DEMO_CASE_ID)) if DEMO_CASE_ID else [],
-    "current_intensity_volume": DEMO_UPLOAD_FILENAME,
-    "current_intensity_artifact_id": None,
-}
-
-
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture(scope="session")
-def gateway_url():
-    """Base URL of the Traefik gateway."""
-    return GATEWAY_URL
-
-
-@pytest.fixture(scope="session")
-def api_token():
-    """Bearer token for API requests."""
-    return API_TOKEN
-
-
-@pytest.fixture(scope="session")
-def adni2_state():
-    """Standard GUI state dict for the adni2 test case."""
-    return fresh_processed_case_data()["gui_state"].copy()
-
-
-@pytest.fixture(scope="session")
-def demo_case_id():
-    """Processed demo case id used by GUI tests."""
-    if not DEMO_CASE_ID:
-        pytest.skip("No processed demo case with outputs is available in the configured test outputs directory.")
-    return DEMO_CASE_ID
-
-
-@pytest.fixture(scope="session")
-def demo_upload_filename():
-    """Upload fixture filename for the processed demo case."""
-    if not DEMO_UPLOAD_FILENAME:
-        pytest.skip("No processed demo upload fixture is available.")
-    return DEMO_UPLOAD_FILENAME
-
-
-@pytest.fixture(scope="session")
-def demo_run_case_id():
-    """Demo case id used for run-submission tests."""
-    if not DEMO_RUN_CASE_ID:
-        pytest.skip("No demo upload is available for run tests.")
-    return DEMO_RUN_CASE_ID
-
-
-@pytest.fixture(scope="session")
-def demo_run_upload_filename():
-    """Upload fixture filename used for run-submission tests."""
-    if not DEMO_RUN_UPLOAD_FILENAME:
-        pytest.skip("No demo upload is available for run tests.")
-    return DEMO_RUN_UPLOAD_FILENAME
-
-
-@pytest.fixture(scope="session")
-def services_up(gateway_url):
-    """Verify the Apptainer stack is reachable (session-scoped, runs once)."""
+@pytest.fixture(autouse=True)
+def _reset_job_manager():
+    """Keep the in-process job worker singleton from leaking state across tests."""
+    yield
     try:
-        r = requests.get(f"{gateway_url}/healthz", timeout=5)
+        from api_service.jobs import job_manager
+
+        job_manager.shutdown(wait=False)
+        with job_manager._lock:
+            job_manager._handles.clear()
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="session")
+def app_url():
+    """Base URL of the local app."""
+    return APP_URL
+
+
+@pytest.fixture(scope="session")
+def services_up(app_url):
+    """Verify the local app is reachable (session-scoped, runs once)."""
+    try:
+        r = requests.get(f"{app_url}/api/app/healthz", timeout=5)
         r.raise_for_status()
     except Exception as exc:
         pytest.skip(
-            f"Apptainer stack not reachable at {gateway_url}: {exc}"
+            f"NeuroCade app not reachable at {app_url}: {exc}"
         )
 
 
@@ -301,12 +302,18 @@ def get_app_auth_headers() -> dict[str, str]:
 
 
 def require_app_auth_headers() -> dict[str, str]:
-    """Return app auth headers or skip pytest when none are configured."""
+    """Return app auth headers, allowing the explicit local-auth profile."""
     headers = get_app_auth_headers()
     if headers:
         return headers
+    try:
+        response = requests.get(f"{APP_URL}/api/app/frontend-config", timeout=5)
+        if response.ok and response.json().get("local_auth_enabled") is True:
+            return {}
+    except (requests.RequestException, ValueError):
+        pass
     pytest.skip(
-        "Authenticated /api/app tests require APP_AUTH_TOKEN or PLAYWRIGHT_STORAGE_STATE with a __session cookie."
+        "Authenticated /api/app tests require local auth, APP_AUTH_TOKEN, or PLAYWRIGHT_STORAGE_STATE with a __session cookie."
     )
 
 
@@ -321,7 +328,7 @@ def _skip_if_auth_failed(response: requests.Response, *, route: str) -> None:
 
 def _case_storage_dir(workspace_id: str, case_id: str) -> Path:
     """Return the filesystem output directory for an app case."""
-    return OUTPUTS_DIR / "workspaces" / workspace_id / "cases" / case_slug_from_id(workspace_id, case_id)
+    return case_storage_dir_from_root(OUTPUTS_DIR, workspace_id, case_id)
 
 
 def _unique_test_name(prefix: str, source_name: str | None = None) -> str:
@@ -337,14 +344,14 @@ def _unique_test_name(prefix: str, source_name: str | None = None) -> str:
 
 def create_workspace_via_api(
     *,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     name_prefix: str = "pytest-e2e-workspace",
 ) -> dict:
     """Create a uniquely named workspace through the authenticated app API."""
     workspace_name = _unique_test_name(name_prefix)
     response = requests.post(
-        f"{gateway_url}/api/app/workspaces",
-        headers=require_app_auth_headers(),
+        f"{app_url}/api/app/workspaces",
+        headers=get_app_auth_headers(),
         json={"name": workspace_name},
         timeout=20,
     )
@@ -357,7 +364,7 @@ def upload_case_via_api(
     workspace_id: str,
     upload_filename: str,
     *,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     case_name_prefix: str = "pytest-e2e-case",
 ) -> dict:
     """Upload a fixture file as a uniquely named case in a workspace."""
@@ -368,8 +375,8 @@ def upload_case_via_api(
     case_name = _unique_test_name(case_name_prefix, _case_id_from_upload(upload_path))
     with upload_path.open("rb") as handle:
         response = requests.post(
-            f"{gateway_url}/api/app/cases",
-            headers=require_app_auth_headers(),
+            f"{app_url}/api/app/cases",
+            headers=get_app_auth_headers(),
             data={"workspace_id": workspace_id, "title": case_name},
             files={"file": (upload_filename, handle, "application/octet-stream")},
             timeout=60,
@@ -379,10 +386,60 @@ def upload_case_via_api(
     return response.json()
 
 
-def get_case_detail(case_id: str, gateway_url: str = GATEWAY_URL) -> dict:
+def upload_path_as_case_via_api(
+    workspace_id: str,
+    upload_path: Path,
+    *,
+    title: str,
+    upload_filename: str | None = None,
+    content_type: str = "application/octet-stream",
+    app_url: str = APP_URL,
+) -> dict:
+    """Upload an arbitrary local file as a case for live QA."""
+    with upload_path.open("rb") as handle:
+        response = requests.post(
+            f"{app_url}/api/app/cases",
+            headers=get_app_auth_headers(),
+            data={"workspace_id": workspace_id, "title": title},
+            files={"file": (upload_filename or upload_path.name, handle, content_type)},
+            timeout=60,
+        )
+    _skip_if_auth_failed(response, route="/api/app/cases")
+    response.raise_for_status()
+    return response.json()
+
+
+def delete_workspace_via_api(workspace_id: str, *, app_url: str = APP_URL) -> None:
+    """Delete a disposable workspace once any finishing run releases it."""
+    deadline = time.monotonic() + 30
+    while True:
+        response = requests.delete(
+            f"{app_url}/api/app/workspaces/{workspace_id}",
+            headers=get_app_auth_headers(),
+            json={"confirm_non_empty_delete": True},
+            timeout=30,
+        )
+        _skip_if_auth_failed(response, route=f"/api/app/workspaces/{workspace_id}")
+        if response.status_code != 409 or time.monotonic() >= deadline:
+            response.raise_for_status()
+            return
+        time.sleep(0.5)
+
+
+@pytest.fixture(scope="module")
+def disposable_workspace(services_up):
+    """Provide one isolated workspace per live-QA module and always remove it."""
+    workspace = create_workspace_via_api(name_prefix="pytest-live")
+    try:
+        yield workspace
+    finally:
+        delete_workspace_via_api(workspace["id"])
+
+
+def get_case_detail(case_id: str, app_url: str = APP_URL) -> dict:
     """Fetch case details from the authenticated app API."""
     response = requests.get(
-        f"{gateway_url}/api/app/cases/{case_id}",
+        f"{app_url}/api/app/cases/{case_id}",
         headers=require_app_auth_headers(),
         timeout=20,
     )
@@ -391,61 +448,25 @@ def get_case_detail(case_id: str, gateway_url: str = GATEWAY_URL) -> dict:
     return response.json()
 
 
-def _copy_tree_contents(src: Path, dst: Path) -> None:
-    """Copy processed case outputs while excluding source markers and uploads."""
-    dst.mkdir(parents=True, exist_ok=True)
-    for child in src.iterdir():
-        if child.name == "subject.txt":
-            continue
-        if child.is_file() and child.parent == src and child.name.endswith(UPLOAD_SUFFIXES):
-            continue
-
-        source_path = child.resolve(strict=False) if child.is_symlink() else child
-        target_path = dst / child.name
-        if child.is_dir():
-            shutil.copytree(source_path, target_path, dirs_exist_ok=True)
-        else:
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, target_path)
-
-
-def _write_processed_case_markers(case_dir: Path, case_id: str, case_title: str) -> None:
-    """Write minimal files that mark a copied case as finished."""
-    (case_dir / "subject.txt").write_text(case_title, encoding="utf-8")
-    (case_dir / "status.json").write_text(
-        json.dumps(
-            {
-                "status": "finished",
-                "job_id": case_id,
-                "subject_name": case_title,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
 def _build_case_context(workspace: dict, upload_result: dict) -> dict:
     """Assemble case metadata and GUI state expected by tests."""
     case_dir = _case_storage_dir(workspace["id"], upload_result["case_id"])
     loaded_volumes = _loaded_volumes_for_case(case_dir)
-    has_valid_segmentation = _case_has_processed_outputs(case_dir)
     return {
         "id": upload_result["case_id"],
         "workspace_id": workspace["id"],
         "workspace_name": workspace["name"],
         "case_id": upload_result["case_id"],
         "title": upload_result["title"],
-        "upload_filename": upload_result["filename"],
+        "upload_filename": upload_result["filenames"][0],
         "case_dir": case_dir,
         "loaded_volumes": loaded_volumes,
         "gui_state": {
             "workspace_id": workspace["id"],
             "case_id": upload_result["case_id"],
             "is_job_running": False,
-            "has_valid_segmentation": has_valid_segmentation,
-            "current_case_id": upload_result["case_id"],
-            "loaded_volumes": loaded_volumes,
-            "current_intensity_volume": upload_result["filename"],
+            "layers": _gui_layers_for_volumes(loaded_volumes),
+            "current_intensity_volume": upload_result["filenames"][0],
             "current_intensity_artifact_id": None,
         },
     }
@@ -454,19 +475,19 @@ def _build_case_context(workspace: dict, upload_result: dict) -> dict:
 def build_fresh_uploaded_case(
     *,
     upload_filename: str,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     workspace_prefix: str = "pytest-e2e-workspace",
     case_prefix: str = "pytest-e2e-case",
 ) -> dict:
     """Create a workspace, upload a fixture, and return its test context."""
-    workspace = create_workspace_via_api(gateway_url=gateway_url, name_prefix=workspace_prefix)
+    workspace = create_workspace_via_api(app_url=app_url, name_prefix=workspace_prefix)
     upload_result = upload_case_via_api(
         workspace["id"],
         upload_filename,
-        gateway_url=gateway_url,
+        app_url=app_url,
         case_name_prefix=case_prefix,
     )
-    case_detail = get_case_detail(upload_result["case_id"], gateway_url)
+    case_detail = get_case_detail(upload_result["case_id"], app_url)
     context = _build_case_context(workspace, upload_result)
     context["source_upload_filename"] = upload_filename
     context["artifacts"] = case_detail.get("artifacts", [])
@@ -480,7 +501,7 @@ def build_fresh_uploaded_case(
     )
     if input_artifact is not None:
         context["gui_state"]["current_intensity_artifact_id"] = input_artifact.get("id")
-        context["gui_state"]["current_intensity_volume"] = input_artifact.get("name") or upload_result["filename"]
+        context["gui_state"]["current_intensity_volume"] = input_artifact.get("name") or upload_result["filenames"][0]
     context["runs"] = case_detail.get("runs", [])
     return context
 
@@ -489,38 +510,57 @@ def build_fresh_processed_case(
     *,
     source_case_key: str,
     upload_filename: str,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     workspace_prefix: str = "pytest-processed-workspace",
     case_prefix: str = "pytest-processed-case",
 ) -> dict:
-    """Create a fresh case seeded with processed outputs from a demo case."""
+    """Return API-backed context for a stable, read-only processed demo case."""
+    del workspace_prefix, case_prefix
     source_case_dir = _resolve_case_dir(source_case_key)
     if not source_case_dir.exists():
         raise RuntimeError(f"Processed demo case directory not found: {source_case_dir}")
-
-    context = build_fresh_uploaded_case(
-        upload_filename=upload_filename,
-        gateway_url=gateway_url,
-        workspace_prefix=workspace_prefix,
-        case_prefix=case_prefix,
+    case_id = case_id_from_storage_dir(source_case_dir)
+    if not case_id:
+        raise RuntimeError(f"Processed demo case has no identity manifest: {source_case_dir}")
+    case_detail = get_case_detail(case_id, app_url)
+    artifacts = case_detail.get("artifacts", [])
+    loaded_volumes = _loaded_volumes_for_case(source_case_dir)
+    input_artifact = next(
+        (
+            artifact
+            for artifact in artifacts
+            if artifact.get("kind") == "volume"
+            and (artifact.get("metadata") or {}).get("volume_role") != "segmentation"
+        ),
+        None,
     )
-    context["source_case_key"] = source_case_key
-    _copy_tree_contents(source_case_dir, context["case_dir"])
-    _write_processed_case_markers(context["case_dir"], context["case_id"], context["title"])
-    case_detail = get_case_detail(context["case_id"], gateway_url)
-    context.update(_build_case_context({"id": context["workspace_id"], "name": context["workspace_name"]}, {
-        "case_id": context["case_id"],
-        "title": context["title"],
-        "filename": context["upload_filename"],
-    }))
-    context["artifacts"] = case_detail.get("artifacts", [])
-    context["runs"] = case_detail.get("runs", [])
-    return context
+    current_intensity = (input_artifact or {}).get("name") or upload_filename
+    return {
+        "id": case_id,
+        "workspace_id": case_detail["workspace_id"],
+        "workspace_name": "processed-demo",
+        "case_id": case_id,
+        "title": case_detail["title"],
+        "upload_filename": upload_filename,
+        "source_case_key": source_case_key,
+        "case_dir": source_case_dir,
+        "loaded_volumes": loaded_volumes,
+        "artifacts": artifacts,
+        "runs": case_detail.get("runs", []),
+        "gui_state": {
+            "workspace_id": case_detail["workspace_id"],
+            "case_id": case_id,
+            "is_job_running": False,
+            "layers": _gui_layers_for_volumes(loaded_volumes),
+            "current_intensity_volume": current_intensity,
+            "current_intensity_artifact_id": (input_artifact or {}).get("id"),
+        },
+    }
 
 
-def fresh_processed_case_data(gateway_url: str = GATEWAY_URL) -> dict:
-    """Return cached GUI-ready processed case data for a gateway."""
-    cache_key = gateway_url
+def fresh_processed_case_data(app_url: str = APP_URL) -> dict:
+    """Return cached GUI-ready processed case data for an application URL."""
+    cache_key = app_url
     cached = _GUI_PROCESSED_CASE_CACHE.get(cache_key)
     if cached is not None:
         return dict(cached)
@@ -529,7 +569,7 @@ def fresh_processed_case_data(gateway_url: str = GATEWAY_URL) -> dict:
     processed_case = build_fresh_processed_case(
         source_case_key=DEMO_CASE_ID,
         upload_filename=DEMO_UPLOAD_FILENAME,
-        gateway_url=gateway_url,
+        app_url=app_url,
         workspace_prefix="pytest-gui-workspace",
         case_prefix="pytest-gui-case",
     )
@@ -539,34 +579,31 @@ def fresh_processed_case_data(gateway_url: str = GATEWAY_URL) -> dict:
 
 @pytest.fixture(scope="module")
 def fresh_run_case(services_up):
-    """Fresh uploaded demo case for run-submission tests."""
+    """Fresh uploaded demo case removed after the live test module."""
     if not DEMO_RUN_UPLOAD_FILENAME:
         pytest.skip("No demo upload is available for run tests.")
-    return build_fresh_uploaded_case(
+    case = build_fresh_uploaded_case(
         upload_filename=DEMO_RUN_UPLOAD_FILENAME,
         workspace_prefix="pytest-run-workspace",
         case_prefix="pytest-run-case",
     )
+    try:
+        yield case
+    finally:
+        with suppress(requests.RequestException):
+            requests.post(
+                f"{APP_URL}/api/app/cases/{case['case_id']}/cancel",
+                headers=get_app_auth_headers(),
+                timeout=10,
+            )
+        delete_workspace_via_api(case["workspace_id"])
 
 
-@pytest.fixture(scope="module")
-def fresh_processed_case(services_up):
-    """Fresh processed demo case for module-scoped tests."""
-    if not DEMO_CASE_ID or not DEMO_UPLOAD_FILENAME:
-        pytest.skip("No processed demo case with outputs is available in the configured test outputs directory.")
-    return build_fresh_processed_case(
-        source_case_key=DEMO_CASE_ID,
-        upload_filename=DEMO_UPLOAD_FILENAME,
-        workspace_prefix="pytest-processed-workspace",
-        case_prefix="pytest-processed-case",
-    )
-
-
-def list_cases(gateway_url: str = GATEWAY_URL, workspace_id: str | None = None) -> list[dict]:
+def list_cases(app_url: str = APP_URL, workspace_id: str | None = None) -> list[dict]:
     """Fetch accessible cases from the authenticated app API."""
     params = {"workspace_id": workspace_id} if workspace_id else None
     response = requests.get(
-        f"{gateway_url}/api/app/cases",
+        f"{app_url}/api/app/cases",
         headers=require_app_auth_headers(),
         params=params,
         timeout=10,
@@ -576,11 +613,11 @@ def list_cases(gateway_url: str = GATEWAY_URL, workspace_id: str | None = None) 
     return response.json()
 
 
-def get_case_summary_by_case_id(case_id: str, gateway_url: str = GATEWAY_URL) -> dict:
+def get_case_summary_by_case_id(case_id: str, app_url: str = APP_URL) -> dict:
     """Resolve an app case summary from the canonical case id."""
     normalized_case_id = str(case_id).strip()
     match = next(
-        (item for item in list_cases(gateway_url) if item.get("id") == normalized_case_id),
+        (item for item in list_cases(app_url) if item.get("id") == normalized_case_id),
         None,
     )
     if match is None:
@@ -588,10 +625,10 @@ def get_case_summary_by_case_id(case_id: str, gateway_url: str = GATEWAY_URL) ->
     return match
 
 
-def get_case_runs(case_id: str, gateway_url: str = GATEWAY_URL) -> list[dict]:
+def get_case_runs(case_id: str, app_url: str = APP_URL) -> list[dict]:
     """Fetch runs for one case from the authenticated app API."""
     response = requests.get(
-        f"{gateway_url}/api/app/cases/{case_id}/runs",
+        f"{app_url}/api/app/cases/{case_id}/runs",
         headers=get_app_auth_headers(),
         timeout=10,
     )
@@ -600,12 +637,12 @@ def get_case_runs(case_id: str, gateway_url: str = GATEWAY_URL) -> list[dict]:
     return response.json()
 
 
-def _resolve_case_context(current_case_id: str | None, gateway_url: str = GATEWAY_URL) -> tuple[str | None, str | None]:
+def _resolve_case_context(case_id: str | None, app_url: str = APP_URL) -> tuple[str | None, str | None]:
     """Resolve workspace and case ids for an existing app case."""
-    normalized_case_id = str(current_case_id or "").strip()
+    normalized_case_id = str(case_id or "").strip()
     if not normalized_case_id:
         return None, None
-    match = next((item for item in list_cases(gateway_url) if item.get("id") == normalized_case_id), None)
+    match = next((item for item in list_cases(app_url) if item.get("id") == normalized_case_id), None)
     if match is None:
         return None, None
     return match.get("workspace_id"), match.get("id")
@@ -613,7 +650,7 @@ def _resolve_case_context(current_case_id: str | None, gateway_url: str = GATEWA
 
 def seed_gui_state(
     state: dict,
-    gateway_url: str = GATEWAY_URL,
+    app_url: str = APP_URL,
     *,
     gui_session_id: str = DEFAULT_GUI_SESSION_ID,
 ) -> dict:
@@ -623,7 +660,7 @@ def seed_gui_state(
     workspace_id = payload.get("workspace_id")
     case_id = payload.get("case_id")
     if not workspace_id or not case_id:
-        resolved_workspace_id, resolved_case_id = _resolve_case_context(payload.get("current_case_id"), gateway_url)
+        resolved_workspace_id, resolved_case_id = _resolve_case_context(case_id, app_url)
         workspace_id = workspace_id or resolved_workspace_id
         case_id = case_id or resolved_case_id
     if workspace_id:
@@ -631,7 +668,7 @@ def seed_gui_state(
     if case_id:
         payload["case_id"] = case_id
 
-    url = f"{gateway_url}/api/app/gui/state"
+    url = f"{app_url}/api/app/gui/state"
     r = requests.post(url, json=payload, headers=require_app_auth_headers(), timeout=10)
     _skip_if_auth_failed(r, route="/api/app/gui/state")
     r.raise_for_status()
@@ -647,19 +684,18 @@ def seed_gui_state(
 
 def chat_send(
     messages: list[dict],
-    gateway_url: str = GATEWAY_URL,
-    token: str = API_TOKEN,
+    app_url: str = APP_URL,
     timeout: int = 300,
     workspace_id: str | None = None,
     case_id: str | None = None,
     gui_session_id: str | None = None,
 ) -> dict:
-    """Send a assistant turn request through the app API."""
+    """Send an assistant turn request through the app API."""
     resolved_workspace_id = workspace_id or _LAST_GUI_SCOPE.get("workspace_id")
     resolved_case_id = case_id or _LAST_GUI_SCOPE.get("case_id")
     resolved_gui_session_id = gui_session_id or _LAST_GUI_SCOPE.get("gui_session_id") or DEFAULT_GUI_SESSION_ID
-    url = f"{gateway_url}/api/app/assistant/turns"
-    headers = {"Content-Type": "application/json", **require_app_auth_headers()}
+    url = f"{app_url}/api/app/assistant/turns"
+    headers = {"Content-Type": "application/json", **get_app_auth_headers()}
     payload = {
         "messages": messages,
         "workspace_id": resolved_workspace_id,
@@ -738,12 +774,12 @@ def parse_sse_response(body: str) -> dict:
     return final_payload
 
 
-def docker_logs_since(
-    service: str = PROXY_SERVICE,
-    since: str | None = None,
-) -> str:
-    """Fetch Apptainer launcher service logs."""
-    cmd = [str(REPO_ROOT / "scripts" / "apptainer" / "logs.sh"), service]
+def docker_logs_since(since: str | None = None) -> str:
+    """Fetch local container logs."""
+    cmd = ["docker", "logs"]
+    if since:
+        cmd.extend(["--since", since])
+    cmd.append(os.environ.get("NEUROCADE_CONTAINER_NAME", "neurocade"))
     try:
         out = subprocess.check_output(
             cmd, stderr=subprocess.STDOUT, timeout=10
@@ -758,7 +794,7 @@ runtime_logs_since = docker_logs_since
 
 def utc_timestamp() -> str:
     """Return current UTC time as an ISO string for log filtering."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def assert_tool_executed(logs: str, tool_name: str | None = None) -> bool:
@@ -798,30 +834,3 @@ def assert_no_text_explanation(content: str) -> None:
 def get_response_content(result: dict) -> str:
     """Extract assistant content from a assistant turn response."""
     return result.get("message", {}).get("content", "")
-
-
-def check_command_available(command: str, gateway_url: str = GATEWAY_URL) -> bool:
-    """Check if a FreeSurfer command is available in the configured Apptainer tool image."""
-    image = REPO_ROOT / ".apptainer" / "containers" / "core" / "fastsurfer_2.4.2_20260115" / "fastsurfer_2.4.2_20260115.simg"
-    for attempt in range(3):
-        try:
-            out = subprocess.check_output(
-                [
-                    os.environ.get("APPTAINER_BIN", "apptainer"),
-                    "exec",
-                    "--cleanenv",
-                    os.environ.get("NEUROCADE_TEST_TOOL_IMAGE", str(image)),
-                    "bash",
-                    "-lc",
-                    f"command -v {command}",
-                ],
-                stderr=subprocess.STDOUT,
-                timeout=30,
-            )
-            if command in out.decode(errors="replace"):
-                return True
-        except Exception:
-            pass
-        if attempt < 2:
-            time.sleep(2)
-    return False

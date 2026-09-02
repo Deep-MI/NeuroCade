@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle2, Database, RefreshCw, Server, Users } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 
 import { SessionActions } from '../auth/AppSession';
 import { useAppSession } from '../auth/sessionContext';
@@ -147,7 +147,7 @@ export function MonitoringPage() {
                 </span>
               )}
             </div>
-            <p className="text-sm text-[var(--nc-tx-muted)]">App health, recent errors, users, Redis, and queue state.</p>
+            <p className="text-sm text-[var(--nc-tx-muted)]">App health, recent errors, users, jobs, and queue state.</p>
           </div>
           <div className="flex items-center gap-4">
             <Link className="nc-btn" to="/">

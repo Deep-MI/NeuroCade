@@ -1,15 +1,15 @@
 """
 Playwright fixtures and helpers for NeuroCade GUI end-to-end tests.
 
-These tests drive a real Chromium browser against the running Apptainer stack.
+These tests drive a real Chromium browser against the running local stack.
 
 Prerequisites:
-    ./scripts/apptainer/up.sh -d
+    ./scripts/run.sh start -d
     pip install playwright && playwright install chromium
 
 Usage:
-    pytest tests/test_gui_*.py -v
-    HEADED=1 pytest tests/test_gui_*.py -v   # watch the browser
+    pytest tests/evaluations/eval_gui_*.py -v
+    HEADED=1 pytest tests/evaluations/eval_gui_*.py -v   # watch the browser
 
 Note: This module is NOT auto-discovered as a conftest. GUI test files use
 `pytest_plugins = ["conftest_gui"]` to register these fixtures.
@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import importlib
 import os
-import shutil
 
 import pytest
 import requests
-from gui_helpers import DEFAULT_CASE_ID, DEFAULT_STORAGE_STATE_PATH, GATEWAY_URL, SCREENSHOT_DIR
-from gui_helpers import get_auth_headers
+from gui_helpers import APP_URL, DEFAULT_CASE_ID, DEFAULT_STORAGE_STATE_PATH, SCREENSHOT_DIR, get_auth_headers
 
 # Lazy-import playwright so non-GUI tests don't fail when it's not installed
 try:
@@ -44,16 +42,11 @@ def _check_playwright():
         pytest.skip("Playwright not installed. Run: pip install playwright && playwright install chromium")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def browser(_check_playwright):
-    """Launch a Chromium browser (session-scoped, reused across all GUI tests)."""
+    """Launch one Chromium browser per GUI test module."""
     assert sync_playwright is not None
-    executable_path = (
-        os.environ.get("CHROMIUM_EXECUTABLE_PATH")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or shutil.which("google-chrome")
-    )
+    executable_path = os.environ.get("CHROMIUM_EXECUTABLE_PATH")
     launch_options: dict[str, object] = {
         "headless": os.environ.get("HEADED", "").lower() not in ("1", "true"),
     }
@@ -83,21 +76,21 @@ def page(services_up, browser):
         context_kwargs["storage_state"] = str(DEFAULT_STORAGE_STATE_PATH)
     context = browser.new_context(**context_kwargs)
     page = context.new_page()
-    target_url = f"{GATEWAY_URL}/"
+    target_url = f"{APP_URL}/"
     auth_headers = get_auth_headers()
     target_case_id = DEFAULT_CASE_ID
 
     if auth_headers:
         try:
             session_response = requests.get(
-                f"{GATEWAY_URL}/api/app/session",
+                f"{APP_URL}/api/app/session",
                 headers=auth_headers,
                 timeout=10,
             )
             session_response.raise_for_status()
             session_payload = session_response.json()
             cases_response = requests.get(
-                f"{GATEWAY_URL}/api/app/cases",
+                f"{APP_URL}/api/app/cases",
                 headers=auth_headers,
                 timeout=10,
             )
@@ -111,29 +104,21 @@ def page(services_up, browser):
             if target_case is None and case_payload:
                 target_case = case_payload[0]
             if target_case is not None:
-                workspace_id_value = target_case.get("workspace_id") or session_payload.get("active_workspace_id") or session_payload.get("default_workspace_id")
+                workspace_id_value = target_case.get("workspace_id") or session_payload.get("default_workspace_id")
                 target_case_id = str(target_case.get("id") or DEFAULT_CASE_ID)
                 workspace_id = str(workspace_id_value) if workspace_id_value else ""
-                if workspace_id:
-                    prefix = f"{workspace_id}__"
-                    if target_case_id.startswith(prefix):
-                        case_slug = target_case_id[len(prefix):]
-                        target_url = f"{GATEWAY_URL}/workspaces/{workspace_id}/cases/{case_slug}"
-                    else:
-                        target_url = f"{GATEWAY_URL}/workspaces/{workspace_id}/cases"
-                else:
-                    target_url = f"{GATEWAY_URL}/"
+                target_url = f"{APP_URL}/workspaces/{workspace_id}/cases/{target_case_id}" if workspace_id else f"{APP_URL}/"
             else:
-                workspace_id = session_payload.get("active_workspace_id") or session_payload.get("default_workspace_id")
+                workspace_id = session_payload.get("default_workspace_id")
                 if workspace_id:
-                    target_url = f"{GATEWAY_URL}/workspaces/{workspace_id}/cases"
+                    target_url = f"{APP_URL}/workspaces/{workspace_id}/cases"
         except requests.RequestException:
             pass
 
     page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
     page.wait_for_function(
         """() => {
-          const hasCaseCard = Array.from(document.querySelectorAll('a,button')).some((el) => el.textContent?.includes('Case ID:'));
+          const hasCaseCard = !!document.querySelector('[data-testid^="workspace-case-title-"]');
           const hasUploadButton = Array.from(document.querySelectorAll('button')).some((el) => el.textContent?.includes('Choose MRI File'));
           const hasChatInput = !!document.querySelector('input.chat-input');
           const hasWorkspaceTitle = Array.from(document.querySelectorAll('h1')).some((el) => el.textContent?.includes('NeuroCade Workspaces'));
@@ -145,9 +130,9 @@ def page(services_up, browser):
     if "/sign-in" in page.url or "NeuroCade Sign In" in page.locator("body").inner_text(timeout=5_000):
         pytest.skip("Saved Clerk Playwright storage state is not authenticated; sign in and refresh PLAYWRIGHT_STORAGE_STATE to run GUI tests.")
     if "/cases/" not in page.url.rstrip("/"):
-        case_card = page.locator(f"a:has-text('Case ID: {target_case_id}'), button:has-text('Case ID: {target_case_id}')").first
+        case_card = page.get_by_test_id(f"workspace-case-title-{target_case_id}")
         if case_card.count() == 0:
-            case_card = page.locator("a:has-text('Case ID:'), button:has-text('Case ID:')").first
+            case_card = page.locator("[data-testid^='workspace-case-title-']").first
         case_card.wait_for(state="visible", timeout=20_000)
         case_card.click()
     page.wait_for_url("**/workspaces/*/cases/*", timeout=30_000)

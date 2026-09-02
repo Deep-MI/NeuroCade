@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..');
 const envPath = path.join(repoRoot, '.env');
-const apptainerUpScript = path.join(repoRoot, 'scripts', 'apptainer', 'up.sh');
-const apptainerDownScript = path.join(repoRoot, 'scripts', 'apptainer', 'down.sh');
+const runtimeLauncher = path.join(repoRoot, 'scripts', 'run.sh');
 const appIconPath = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 const electronRuntimeDir = path.join(repoRoot, '.runtime', 'electron');
+const runtimeAppUrlPath = path.join(repoRoot, '.runtime', 'app-url');
 const healthPollMs = 1500;
 const healthTimeoutMs = 600_000;
 const appDisplayName = 'NeuroCade';
@@ -47,6 +47,7 @@ let mainWindow = null;
 let startedStack = false;
 let quitting = false;
 let stopping = false;
+let backendChild = null;
 
 function setLocalAppPath(name, target) {
   mkdirSync(target, { recursive: true });
@@ -147,7 +148,7 @@ function startupHtml() {
 <body>
   <main>
     <h1>Starting ${appDisplayName}</h1>
-    <p>The local analysis services are starting. This window will open the workspace when the backend is ready.</p>
+    <p>The local NeuroCade backend is starting. It serves the application API and runs the background job scheduler in one process. This window will open the workspace when it is ready.</p>
     <div class="bar" aria-hidden="true"></div>
     <details>
       <summary>Startup logs</summary>
@@ -192,16 +193,6 @@ function healthUrlFor(appBaseUrl) {
   return new URL('/api/app/healthz', appBaseUrl).toString();
 }
 
-function apiServiceHealthUrlFor(env) {
-  const apiServiceUrl = env.API_SERVICE_URL;
-  if (!apiServiceUrl) return null;
-  try {
-    return new URL('/api/app/healthz', apiServiceUrl).toString();
-  } catch {
-    return null;
-  }
-}
-
 async function isHealthy(healthUrl) {
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2500) });
@@ -211,77 +202,90 @@ async function isHealthy(healthUrl) {
   }
 }
 
-function spawnLogged(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: repoRoot,
-      env: process.env,
-      shell: false,
-      ...options,
-    });
-    child.stdout?.on('data', (chunk) => appendLog(chunk.toString()));
-    child.stderr?.on('data', (chunk) => appendLog(chunk.toString()));
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`));
-      }
-    });
-  });
+async function resultingAppUrl(fallbackUrl) {
+  try {
+    const value = (await readFile(runtimeAppUrlPath, 'utf8')).trim();
+    return value ? new URL(value).toString() : fallbackUrl;
+  } catch {
+    return fallbackUrl;
+  }
 }
 
-async function waitForGatewayHealth(gatewayHealthUrl, apiServiceHealthUrl) {
-  const finishTiming = timingLogger('Electron gateway health wait');
+async function waitForBackendHealth(fallbackAppUrl) {
+  const finishTiming = timingLogger('Electron backend health wait');
   const deadline = Date.now() + healthTimeoutMs;
-  let apiServiceWasHealthy = false;
   while (Date.now() < deadline) {
-    if (await isHealthy(gatewayHealthUrl)) {
+    const appUrl = await resultingAppUrl(fallbackAppUrl);
+    const healthUrl = healthUrlFor(appUrl);
+    if (await isHealthy(healthUrl)) {
       finishTiming();
-      return;
+      return appUrl;
     }
-    if (apiServiceHealthUrl && await isHealthy(apiServiceHealthUrl)) {
-      apiServiceWasHealthy = true;
+    if (backendChild && backendChild.exitCode !== null) {
+      throw new Error(`${appDisplayName} backend exited (code ${backendChild.exitCode}) before becoming healthy.`);
     }
     await sleep(healthPollMs);
   }
-  if (apiServiceWasHealthy) {
-    throw new Error(
-      `${appDisplayName} API is healthy at ${apiServiceHealthUrl}, but the app gateway is not responding at ${gatewayHealthUrl}. Check Traefik logs and APP_BASE_URL.`,
-    );
-  }
-  throw new Error(`Timed out waiting for ${gatewayHealthUrl}`);
+  throw new Error(`Timed out waiting for ${fallbackAppUrl}`);
 }
 
-async function startBackendIfNeeded(healthUrl, apiServiceHealthUrl) {
+async function startBackendIfNeeded(appBaseUrl) {
   const finishInitialHealthTiming = timingLogger('Electron initial health check');
+  const existingAppUrl = await resultingAppUrl(appBaseUrl);
+  const healthUrl = healthUrlFor(existingAppUrl);
   appendLog(`Checking ${healthUrl}`);
   if (await isHealthy(healthUrl)) {
     finishInitialHealthTiming();
     appendLog('Local backend is already running.');
-    return false;
+    return existingAppUrl;
   }
   finishInitialHealthTiming();
-  appendLog('Starting local Apptainer stack.');
+  appendLog('Starting local NeuroCade backend.');
   startedStack = true;
-  const finishUpTiming = timingLogger('scripts/apptainer/up.sh -d');
-  await spawnLogged(apptainerUpScript, ['-d']);
-  finishUpTiming();
-  appendLog(`Waiting for ${appDisplayName} gateway.`);
-  await waitForGatewayHealth(healthUrl, apiServiceHealthUrl);
-  appendLog(`${appDisplayName} gateway is ready.`);
-  return true;
+  // The generic launcher starts the native bridge and the matched application
+  // runtime. It remains the owned foreground process for orderly shutdown.
+  backendChild = spawn('bash', [runtimeLauncher, 'start'], {
+    cwd: repoRoot,
+    env: process.env,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  backendChild.stdout?.on('data', (chunk) => appendLog(chunk.toString()));
+  backendChild.stderr?.on('data', (chunk) => appendLog(chunk.toString()));
+  backendChild.on('exit', (code) => appendLog(`Backend process exited with code ${code}.`));
+  appendLog(`Waiting for ${appDisplayName} backend.`);
+  const resultingUrl = await waitForBackendHealth(appBaseUrl);
+  appendLog(`${appDisplayName} backend is ready.`);
+  return resultingUrl;
 }
 
 async function stopBackendIfOwned() {
   if (!startedStack || stopping) return;
   stopping = true;
-  appendLog('Stopping local Apptainer stack.');
+  appendLog('Stopping local NeuroCade backend.');
   try {
-    await spawnLogged(apptainerDownScript, []);
+    await new Promise((resolve) => {
+      const stopper = spawn('bash', [runtimeLauncher, 'stop'], {
+        cwd: repoRoot,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      stopper.stdout?.on('data', (chunk) => appendLog(chunk.toString()));
+      stopper.stderr?.on('data', (chunk) => appendLog(chunk.toString()));
+      stopper.on('close', resolve);
+      stopper.on('error', resolve);
+    });
+    if (backendChild && backendChild.pid && backendChild.exitCode === null) {
+      // The generic stop path handles app-before-bridge ordering. Terminate the
+      // owned launcher group only as a final cleanup if it has not exited.
+      try {
+        process.kill(-backendChild.pid, 'SIGTERM');
+      } catch {
+        backendChild.kill('SIGTERM');
+      }
+    }
   } catch (error) {
-    appendLog(`Failed to stop Apptainer stack: ${error.message}`);
+    appendLog(`Failed to stop backend: ${error.message}`);
   }
 }
 
@@ -322,20 +326,18 @@ async function boot() {
   const finishBackendReadyTiming = timingLogger('Electron backend-ready total');
   createWindow();
   const env = await readEnvFile();
-  const appBaseUrl = env.APP_BASE_URL || 'http://localhost:8005';
-  const healthUrl = healthUrlFor(appBaseUrl);
-  const apiServiceHealthUrl = apiServiceHealthUrlFor(env);
+  const appBaseUrl = env.APP_BASE_URL || 'http://localhost:8000';
   try {
-    await startBackendIfNeeded(healthUrl, apiServiceHealthUrl);
+    const resultingUrl = await startBackendIfNeeded(appBaseUrl);
     finishBackendReadyTiming();
-    await mainWindow?.loadURL(appBaseUrl);
+    await mainWindow?.loadURL(resultingUrl);
   } catch (error) {
     appendLog(error.stack || error.message);
     await dialog.showMessageBox(mainWindow, {
       type: 'error',
       title: `${appDisplayName} could not start`,
       message: `The local ${appDisplayName} backend did not start.`,
-      detail: `${error.message}\n\nCheck Apptainer and the service logs, then try ./scripts/desktop/run.sh from the repo root.`,
+      detail: `${error.message}\n\nRun ./scripts/run.sh start from the repo root to see runtime logs.`,
     });
   }
 }

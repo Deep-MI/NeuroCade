@@ -1,14 +1,5 @@
-import {
-  DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,
-  DEFAULT_SURFACE_CURVATURE_POSITIVE_THRESHOLD,
-} from '../constants';
 import type { OutputVolume, Volume } from '../types';
-import { isLayerFile, layerDisplayName, surfaceFileStem } from './layerAliases';
-import { defaultSurfaceColorModeForLayer } from './surfaceColors';
-
-function isDefaultVisibleSurface(filename: string): boolean {
-  return ['lh.pial', 'rh.pial'].includes(surfaceFileStem(filename));
-}
+import { createViewerLayer, defaultOutputVolumeVisible, outputVolumeLayerType } from './layerBuilders.js';
 
 export function dedupeOutputVolumes(volumes: OutputVolume[]): OutputVolume[] {
   return volumes.filter((volume, index, volumesList) => (
@@ -16,12 +7,10 @@ export function dedupeOutputVolumes(volumes: OutputVolume[]): OutputVolume[] {
   ));
 }
 
-export function selectInitialIntensityOutputVolume(volumes: OutputVolume[]): OutputVolume | undefined {
-  const intensityVolumes = volumes.filter((volume) => volume.kind === 'volume' && (volume.type ?? 'intensity') === 'intensity');
-  return intensityVolumes.find((volume) => volume.visible === true)
-    ?? intensityVolumes.find((volume) => isLayerFile(volume.filename, 'orig.mgz'))
-    ?? intensityVolumes.find((volume) => isLayerFile(volume.filename, '001.mgz'))
-    ?? intensityVolumes[0];
+function selectInitialIntensityOutputVolume(volumes: OutputVolume[]): OutputVolume | undefined {
+  return volumes.find((volume) => (
+    volume.kind === 'volume' && volume.type === 'intensity'
+  ));
 }
 
 export function visibleOutputVolumes(volumes: OutputVolume[], closedFilenames: Set<string>): OutputVolume[] {
@@ -29,75 +18,60 @@ export function visibleOutputVolumes(volumes: OutputVolume[], closedFilenames: S
   return restoredVolumes.length > 0 ? restoredVolumes : volumes;
 }
 
-export function outputVolumeToLayer(
+function outputVolumeToLayer(
   volume: OutputVolume,
   options: {
-    hasOrigVolume: boolean;
-    isMaskLikeVolume: (filename: string) => boolean;
     initialIntensityVolume?: OutputVolume;
   },
 ): Volume {
-  const normalized = volume.filename.toLowerCase();
-  const isSurface = volume.type === 'surface';
-  const isSegmentation = normalized.includes('aparc')
-    || normalized.includes('aseg')
-    || normalized.includes('seg')
-    || normalized.includes('mask')
-    || normalized.includes('cereb')
-    || normalized.includes('wmparc')
-    || normalized.includes('hypothalamus');
-  const isInputVolume = isLayerFile(volume.filename, '001.mgz');
-  const isOrigVolume = isLayerFile(volume.filename, 'orig.mgz');
-  const isDefaultSegmentation = isLayerFile(volume.filename, 'aparc.DKTatlas+aseg.deep.mgz');
-  const isBinaryMaskHint = options.isMaskLikeVolume(volume.filename);
-
-  const defaultVisible = isSurface
-    ? isDefaultVisibleSurface(volume.filename)
-    : (volume.filename === options.initialIntensityVolume?.filename || isDefaultSegmentation || (!options.initialIntensityVolume && (isOrigVolume || (!options.hasOrigVolume && isInputVolume))));
-
-  const baseLayer = {
-    id: volume.filename,
-    name: layerDisplayName(volume),
+  const layerType = outputVolumeLayerType(volume);
+  return createViewerLayer({
+    name: volume.name,
     filename: volume.filename,
     artifactId: volume.id,
     url: volume.downloadUrl,
-    opacity: isSurface ? 1.0 : isSegmentation ? 0.7 : 1.0,
-    colormap: isSurface ? 'surface' : volume.filename.includes('aparc') ? 'jet' : (isSegmentation ? 'jet' : 'gray'),
-    visible: volume.visible ?? defaultVisible,
-  };
+    type: layerType,
+    lut: volume.lut,
+    customLutUrl: volume.customLutDownloadUrl,
+    curvatureUrl: volume.curvatureDownloadUrl,
+    annotationUrl: volume.annotationDownloadUrl,
+    visible: volume.visible,
+  }, {
+    defaultVisible: defaultOutputVolumeVisible(volume, options),
+  });
+}
 
-  if (isSurface) {
-    const surfaceLayer = {
-      ...baseLayer,
-      type: 'surface' as const,
-      curvatureUrl: volume.curvatureDownloadUrl,
-      annotationUrl: volume.annotationDownloadUrl,
-      curvatureNegativeThreshold: DEFAULT_SURFACE_CURVATURE_NEGATIVE_THRESHOLD,
-      curvaturePositiveThreshold: DEFAULT_SURFACE_CURVATURE_POSITIVE_THRESHOLD,
-    };
+/**
+ * The outputs endpoint order is the NiiVue load order. The layer panel uses
+ * painter order, so its background/reference volume appears at the bottom.
+ */
+export function outputVolumesToViewerLayers(volumes: OutputVolume[]): Volume[] {
+  const initialIntensityVolume = selectInitialIntensityOutputVolume(volumes);
+  return [...volumes].reverse().map((volume) => (
+    outputVolumeToLayer(volume, { initialIntensityVolume })
+  ));
+}
+
+/** Preserve interactive layer state while adding newly materialized workflow outputs. */
+export function mergeOutputVolumesIntoViewerLayers(current: Volume[], outputs: OutputVolume[]): Volume[] {
+  const incoming = outputVolumesToViewerLayers(outputs);
+  const matchedIds = new Set<string>();
+  const merged = incoming.map((layer) => {
+    const existing = current.find((candidate) => (
+      candidate.artifactId === layer.artifactId || candidate.filename === layer.filename
+    ));
+    if (existing?.type !== layer.type) return layer;
+    matchedIds.add(existing.id);
     return {
-      ...surfaceLayer,
-      surfaceColorMode: defaultSurfaceColorModeForLayer(surfaceLayer),
+      ...layer,
+      ...existing,
+      artifactId: layer.artifactId,
+      url: layer.url,
+      ...(layer.type === 'surface' && existing.type === 'surface' ? {
+        curvatureUrl: layer.curvatureUrl ?? existing.curvatureUrl,
+        annotationUrl: layer.annotationUrl ?? existing.annotationUrl,
+      } : {}),
     };
-  }
-
-  if (isSegmentation) {
-    return {
-      ...baseLayer,
-      type: 'segmentation',
-      lut: (volume.lut === 'binary' || volume.lut === 'freesurfer')
-        ? volume.lut
-        : (isBinaryMaskHint ? 'binary' : 'freesurfer'),
-      customLutUrl: volume.customLutDownloadUrl,
-      brightness: 0,
-      contrast: 1.0,
-    };
-  }
-
-  return {
-    ...baseLayer,
-    type: 'intensity',
-    brightness: 0,
-    contrast: 1.0,
-  };
+  });
+  return [...merged, ...current.filter((layer) => !matchedIds.has(layer.id))];
 }

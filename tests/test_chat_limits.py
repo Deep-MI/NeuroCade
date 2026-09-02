@@ -1,7 +1,7 @@
 """Test chat limits behavior for NeuroCade."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException

@@ -2,41 +2,37 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
-
-class AssistantToolScope(str, Enum):
-    """Assistant scopes that can expose a tool."""
-
-    workspace = "workspace"
-    case = "case"
-
+from api_service.assistant.approval_contracts import AssistantApprovalPresentation
+from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk
 
 ToolDescription = str | Callable[[dict[str, Any]], str]
 ToolParameters = dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]]
+ToolHandler = Callable[
+    [dict[str, Any], ToolExecutionContext, dict[str, Any]],
+    ToolResult | Awaitable[ToolResult],
+]
+ToolApprovalPresenter = Callable[
+    [dict[str, Any], dict[str, Any]],
+    AssistantApprovalPresentation | None,
+]
 
 
 @dataclass(frozen=True)
-class ScopedToolRegistration:
-    """Declarative metadata for one assistant-owned tool."""
+class ToolRegistration:
+    """Bind declarative tool metadata to one state-aware handler."""
 
     name: str
     description: ToolDescription
     parameters: ToolParameters
-    handler_name: str
-    scopes: frozenset[AssistantToolScope]
-    requires_managed_bash: bool = False
-
-    def exposed_in(self, scope: str) -> bool:
-        """Return whether this tool should be exposed in the requested scope."""
-        try:
-            normalized_scope = AssistantToolScope(scope)
-        except ValueError:
-            return False
-        return normalized_scope in self.scopes
+    handler: ToolHandler
+    risk: ToolRisk = ToolRisk.read
+    parallel_safe: bool | None = None
+    approval_presentation: ToolApprovalPresenter | None = None
 
     def resolved_description(self, state: dict[str, Any]) -> str:
         """Return the concrete description for this state."""
@@ -50,7 +46,23 @@ class ScopedToolRegistration:
             return self.parameters(state)
         return self.parameters
 
+    def bind(self, state: dict[str, Any]) -> ToolDefinition:
+        presenter = self.approval_presentation
 
-WORKSPACE_ONLY = frozenset({AssistantToolScope.workspace})
-CASE_ONLY = frozenset({AssistantToolScope.case})
-BOTH_SCOPES = frozenset({AssistantToolScope.workspace, AssistantToolScope.case})
+        async def execute(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+            result = self.handler(state, context, arguments)
+            return await result if inspect.isawaitable(result) else result
+
+        return ToolDefinition(
+            name=self.name,
+            description=self.resolved_description(state),
+            parameters=self.resolved_parameters(state),
+            execute=execute,
+            risk=self.risk,
+            parallel_safe=False if self.parallel_safe is None else self.parallel_safe,
+            approval_presentation=(
+                None
+                if presenter is None
+                else lambda arguments: presenter(state, arguments)
+            ),
+        )

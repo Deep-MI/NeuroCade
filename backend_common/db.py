@@ -1,19 +1,118 @@
 """Provide shared backend db utilities for NeuroCade."""
 
-from collections.abc import Generator
+import time
+from collections.abc import Callable, Generator
 from datetime import datetime
 from enum import Enum
+from typing import TypeVar
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, func, text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event, func, text
+from sqlalchemy import Enum as SqlEnum
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from backend_common.settings import get_settings
 
-
 settings = get_settings()
-engine = create_engine(settings.sqlalchemy_database_url, future=True)
+T = TypeVar("T")
+
+SQLITE_LOCK_RETRY_ATTEMPTS = 3
+SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS = 0.05
+
+
+def _build_engine(url: str) -> Engine:
+    """Create the SQLAlchemy engine, tuned for SQLite/WAL single-node use.
+
+    The API request threads and the in-process JobWorker write concurrently, so
+    SQLite runs in WAL mode (concurrent readers + one serialized writer) with a
+    busy timeout to ride out brief write contention. ``check_same_thread=False``
+    lets a connection move between the worker and request threads.
+    """
+    if not url.startswith("sqlite"):
+        raise RuntimeError("NeuroCade supports SQLite DATABASE_URL values only")
+    return create_engine(
+        url,
+        future=True,
+        connect_args={"check_same_thread": False},
+    )
+
+
+engine = _build_engine(settings.sqlalchemy_database_url)
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite_connection(dbapi_connection, _connection_record):  # noqa: ANN001
+    """Apply WAL/safety pragmas and hand transaction control to SQLAlchemy."""
+    dbapi_connection.isolation_level = None
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # Generous so a writer waits out another writer's short bookkeeping phase
+        # instead of failing; long tool/container runs never hold a transaction.
+        cursor.execute("PRAGMA busy_timeout=15000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
+@event.listens_for(engine, "begin")
+def _sqlite_begin(conn):  # noqa: ANN001
+    """Start SQLite transactions without taking the write lock for reads.
+
+    Request handlers commonly perform read-only DB lookups before awaiting
+    slower work. Using ``BEGIN IMMEDIATE`` for every transaction makes those
+    reads hold SQLite's single write lock and can starve other API requests.
+    Code that truly needs an eager write lock can opt in with the
+    ``sqlite_begin_immediate`` execution option.
+    """
+    if conn.get_execution_options().get("sqlite_begin_immediate"):
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        return
+    conn.exec_driver_sql("BEGIN")
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+
+def is_sqlite_lock_error(exc: BaseException) -> bool:
+    """Return whether an exception represents SQLite write-lock contention."""
+    return isinstance(exc, OperationalError) and "database is locked" in str(exc).lower()
+
+
+def is_sqlite_storage_error(exc: BaseException) -> bool:
+    """Return whether SQLite lost coherent access to its database files."""
+    if not isinstance(exc, DBAPIError):
+        return False
+    message = str(exc).lower()
+    return "disk i/o error" in message or "file is not a database" in message
+
+
+def run_with_sqlite_lock_retry(
+    db: Session,
+    operation: Callable[[], T],
+    *,
+    attempts: int = SQLITE_LOCK_RETRY_ATTEMPTS,
+    base_delay_seconds: float = SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS,
+) -> T:
+    """Run one complete DB unit of work with bounded SQLite-lock retries.
+
+    The callback must contain the full transaction, including its commit.
+    A failed attempt is rolled back before retrying so no partial ORM state is
+    reused. Non-locking failures and exhausted retries are raised unchanged.
+    """
+    max_attempts = max(int(attempts), 1)
+    for attempt in range(max_attempts):
+        try:
+            return operation()
+        except OperationalError as exc:
+            db.rollback()
+            if not is_sqlite_lock_error(exc) or attempt + 1 >= max_attempts:
+                raise
+            time.sleep(max(float(base_delay_seconds), 0.0) * (2**attempt))
+    raise RuntimeError("SQLite retry loop exhausted unexpectedly")
 
 
 class Base(DeclarativeBase):
@@ -67,9 +166,6 @@ class User(Base, TimestampMixin):
 
 class Case(Base, TimestampMixin):
     __tablename__ = "cases"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "title", name="uq_cases_workspace_title"),
-    )
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
@@ -90,7 +186,6 @@ class Workspace(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String(32), default="personal", nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
 
 
 class WorkspaceMembership(Base, TimestampMixin):
@@ -115,7 +210,6 @@ class Artifact(Base, TimestampMixin):
             "case_id",
             "relative_path",
             unique=True,
-            postgresql_where=text("case_id IS NOT NULL"),
             sqlite_where=text("case_id IS NOT NULL"),
         ),
         Index(
@@ -123,7 +217,6 @@ class Artifact(Base, TimestampMixin):
             "workspace_id",
             "relative_path",
             unique=True,
-            postgresql_where=text("case_id IS NULL AND workspace_id IS NOT NULL"),
             sqlite_where=text("case_id IS NULL AND workspace_id IS NOT NULL"),
         ),
     )
@@ -131,7 +224,6 @@ class Artifact(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     case_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True)
     workspace_id: Mapped[str | None] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"))
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
     kind: Mapped[ArtifactKind] = mapped_column(SqlEnum(ArtifactKind), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     relative_path: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -163,33 +255,45 @@ class Run(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_runs_case_status", "case_id", "status"),
         Index("ix_runs_workspace_scope_type", "workspace_id", "scope_type"),
-        Index("ix_runs_parent_status", "parent_run_id", "status"),
         Index(
             "uq_runs_active_case",
             "case_id",
             unique=True,
-            postgresql_where=text("case_id IS NOT NULL AND status IN ('queued', 'running')"),
             sqlite_where=text("case_id IS NOT NULL AND status IN ('queued', 'running')"),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
-    parent_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), index=True)
     scope_type: Mapped[AssistantScope] = mapped_column(SqlEnum(AssistantScope), nullable=False, default=AssistantScope.case)
     case_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
     created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
-    assistant_thread_id: Mapped[str | None] = mapped_column(ForeignKey("assistant_threads.id"), index=True)
     status: Mapped[RunStatus] = mapped_column(SqlEnum(RunStatus), nullable=False, default=RunStatus.queued)
     run_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    thread_id: Mapped[str | None] = mapped_column(String(255))
-    provider_name: Mapped[str | None] = mapped_column(String(64))
-    model_name: Mapped[str | None] = mapped_column(String(255))
-    runtime_job_id: Mapped[str | None] = mapped_column(String(255), index=True)
-    external_task_id: Mapped[str | None] = mapped_column(String(255))
+    job_id: Mapped[str | None] = mapped_column(String(128), index=True)
     input_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class BackgroundJob(Base, TimestampMixin):
+    """Durable submission and lifecycle state for in-process background work."""
+
+    __tablename__ = "background_jobs"
+    __table_args__ = (
+        Index("ix_background_jobs_state_queue", "state", "queue_name"),
+        Index("ix_background_jobs_finished_at", "finished_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    queue_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    kwargs_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    result_json: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuditEvent(Base):
@@ -259,14 +363,56 @@ class AssistantMessage(Base, TimestampMixin):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
 
-class AssistantCheckpoint(Base, TimestampMixin):
-    __tablename__ = "assistant_checkpoints"
+class AssistantTurn(Base, TimestampMixin):
+    """Durable lifecycle record for one private assistant request."""
+
+    __tablename__ = "assistant_turns"
+    __table_args__ = (
+        Index("ix_assistant_turns_thread_status", "thread_id", "status"),
+    )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     thread_id: Mapped[str] = mapped_column(ForeignKey("assistant_threads.id"), nullable=False, index=True)
-    run_id: Mapped[str | None] = mapped_column(String(128), index=True)
-    step_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    state_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
+    case_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    request_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class AssistantToolExecution(Base, TimestampMixin):
+    """Durable, exactly-addressed execution record for one assistant tool call."""
+
+    __tablename__ = "assistant_tool_executions"
+    __table_args__ = (
+        UniqueConstraint("turn_id", "call_id", name="uq_assistant_tool_executions_turn_call"),
+        Index("ix_assistant_tool_executions_turn_status", "turn_id", "status"),
+        Index("ix_assistant_tool_executions_external_run", "external_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
+    turn_id: Mapped[str] = mapped_column(
+        ForeignKey("assistant_turns.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    thread_id: Mapped[str] = mapped_column(ForeignKey("assistant_threads.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True
+    )
+    case_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    call_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    arguments_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    arguments_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    risk: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned")
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    external_run_id: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
 
 
 def get_db() -> Generator[Session, None, None]:

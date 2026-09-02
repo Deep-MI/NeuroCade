@@ -1,41 +1,37 @@
-node_modules
-__pycache__
+# Dependency, language, and build artifacts
+node_modules/
+__pycache__/
 *.pyc
-*.pyo
 *.egg-info/
-*.sif
-*.simg
-.env
-.DS_Store
-dist
-client/.tmp-test/
-build
-site/
+dist/
+build/
 *.tsbuildinfo
-.vscode
-.idea
-llm-data/*
-tests/screenshots/
-tests/artifacts/benchmark/
+
+# Runtime images and generated application data
+*.sif
 neurocade-data/
 .apptainer/
-.lima/
 .node/
 .runtime/
-tmp/
-log/
-reports/pyright-*.txt
-reports/neurocontainers_image_pulls/
-*.log
-.e*
+
+# Credentials and local environment configuration
+.env
+.env.*
 !.env*.example
-.o*
-.xdebug_*
+
+# Local editor and operating-system state
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# Test and developer-generated output
+client/.tmp-test/
+tests/screenshots/
+*.log
 playwright/.clerk/
-docker-compose
-ScienceDirect_files_*.zip
-old_backup/
+
+# Downloaded sample case; keep its documentation and helper script
 sample_case/*
 !sample_case/README.md
-!sample_case/create_fastsurfer_sample_case.sh
 !sample_case/download_sub_rs_mri_proc.sh

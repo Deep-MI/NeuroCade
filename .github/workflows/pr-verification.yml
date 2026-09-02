@@ -25,6 +25,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: client/package-lock.json
+      - run: npm install --global npm@10.9.9
       - run: npm ci
         working-directory: client
       - run: npm run lint
@@ -45,44 +46,23 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: uv venv --python 3.12 .venv
-      - run: uv pip install -r pyproject.toml --extra test
+      - run: uv sync --locked --extra test
       - name: Compile changed Python surfaces
         run: |
           . .venv/bin/activate
           python -m compileall backend_common api-service/api_service packages/neurocade-runtime-tools/src scripts
+      - name: Run Python lint
+        run: |
+          . .venv/bin/activate
+          ruff check .
       - name: Run Python type check
         run: |
           . .venv/bin/activate
           pyright
-      - name: Run focused backend/security tests
+      - name: Run offline backend tests
         run: |
           . .venv/bin/activate
-          pytest \
-            tests/test_install_scripts.py \
-            tests/test_security_hardening.py \
-            tests/test_runtime_service_tools.py \
-            tests/test_assistant_file_tools.py \
-            tests/test_assistant_runtime.py \
-            -q
-
-  runtime-tools:
-    name: NeuroCade runtime tools tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: uv venv --python 3.12 .venv
-      - run: uv pip install pytest -e packages/neurocade-runtime-tools
-      - name: Run runtime tools package tests
-        run: |
-          . .venv/bin/activate
-          pytest packages/neurocade-runtime-tools/tests -q
+          pytest tests -q
 
   repository-policy:
     name: Repository policy checks
@@ -100,6 +80,7 @@ jobs:
             scripts/demo/*.sh \
             scripts/desktop/*.sh \
             scripts/install/*.sh \
+            scripts/lib/*.sh \
             scripts/release/*.sh \
             scripts/runtime/*.sh
           do
