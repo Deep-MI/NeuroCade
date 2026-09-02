@@ -18,7 +18,6 @@ neurocade-data/
 .env
 .env.*
 !.env*.example
-blablador_env
 
 # Local editor and operating-system state
 .DS_Store

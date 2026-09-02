@@ -8,9 +8,11 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -19,6 +21,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service.cases import operations as cases_module  # noqa: E402
 from api_service.cases import run_operations as run_operations_module  # noqa: E402
 from api_service.cases import uploads as uploads_module  # noqa: E402
+from api_service.deps import get_context, get_db  # noqa: E402
 from api_service.helpers import get_case_for_user  # noqa: E402
 from api_service.routers.cases import (  # noqa: E402
     add_case_upload,
@@ -30,16 +33,14 @@ from api_service.routers.cases import (  # noqa: E402
     update_case,
 )
 from api_service.routers.workspaces import (  # noqa: E402
-    create_workspace,
     delete_workspace,
-    list_workspaces,
     update_workspace,
 )
+from api_service.routers.workspaces import router as workspaces_router  # noqa: E402
 from api_service.runtime import workflow_runs as workflow_runs_module  # noqa: E402
 from api_service.schemas import (  # noqa: E402
     CaseUpdateRequest,
     StartRunRequest,
-    WorkspaceCreateRequest,
     WorkspaceDeleteRequest,
     WorkspaceUpdateRequest,
 )
@@ -83,7 +84,12 @@ def nifti_gzip_bytes() -> bytes:
 @pytest.fixture()
 def db_session():
     """Provide an isolated in-memory database session."""
-    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
     Base.metadata.create_all(bind=engine)
     session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)()
     try:
@@ -138,22 +144,24 @@ def seed_fk_workspace_context(db_session, *, workspace_id: str = "workspace-fk",
     return AuthContext(user=user, role=RoleEnum.owner, auth_mode="local"), workspace, case
 
 
-def test_create_workspace_and_list_workspaces(seeded_context):
-    db_session, context, workspace = seeded_context
+def test_workspace_create_and_list_http_contract(seeded_context):
+    """Exercise request validation, dependency wiring, and response serialization."""
+    db_session, context, _workspace = seeded_context
+    app = FastAPI()
+    app.include_router(workspaces_router)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_context] = lambda: context
+    client = TestClient(app)
 
-    created = create_workspace(WorkspaceCreateRequest(name="study-a"), db=db_session, context=context)
-    listed = list_workspaces(db=db_session, context=context)
+    created = client.post("/api/app/workspaces", json={"name": "study-a"})
+    response = client.get("/api/app/workspaces")
+    invalid = client.post("/api/app/workspaces", json={})
 
-    assert created.name == "study-a"
-    assert {item.name for item in listed} == {"personal-workspace", "study-a"}
-
-
-def test_rename_workspace(seeded_context):
-    db_session, context, workspace = seeded_context
-
-    renamed = update_workspace(workspace.id, WorkspaceUpdateRequest(name="my-workspace"), db=db_session, context=context)
-
-    assert renamed.name == "my-workspace"
+    assert created.status_code == 200
+    assert created.json()["name"] == "study-a"
+    assert response.status_code == 200
+    assert {item["name"] for item in response.json()} == {"personal-workspace", "study-a"}
+    assert invalid.status_code == 422
 
 
 def test_rename_workspace_keeps_ids_and_references_stable(seeded_context, monkeypatch):

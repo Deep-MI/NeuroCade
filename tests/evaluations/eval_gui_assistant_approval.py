@@ -2,7 +2,10 @@
 
 import json
 
+import pytest
+
 pytest_plugins = ["conftest_gui"]
+pytestmark = pytest.mark.gui
 
 
 def _mock_approval_response(page, approval):

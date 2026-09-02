@@ -4,7 +4,7 @@
 
 NeuroCade is a neuroimaging workspace for managing MRI cases, running containerized processing tools, and coordinating AI-assisted analysis workflows.
 It can be used as a local app or installed on a server and accessed through a web browser.
-The full MRI viewer supports viewports at least 1024 pixels wide; phone-sized layouts are not supported.
+Learn more on [NeuroCade.org](https://NeuroCade.org).
 
 ## Quick Start
 

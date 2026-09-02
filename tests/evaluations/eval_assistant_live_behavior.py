@@ -11,10 +11,13 @@ from conftest import chat_send, upload_path_as_case_via_api
 from nibabel.loadsave import save
 from nibabel.nifti1 import Nifti1Image
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
-    reason="Live assistant evaluations require RUN_LLM_E2E=1",
-)
+pytestmark = [
+    pytest.mark.live_llm,
+    pytest.mark.skipif(
+        os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
+        reason="Live assistant evaluations require RUN_LLM_E2E=1",
+    ),
+]
 
 
 @pytest.fixture(scope="module")

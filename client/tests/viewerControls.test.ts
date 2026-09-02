@@ -16,7 +16,7 @@ void test('window/level uses NiiVue region contrast', () => {
   assert.equal(niivueDragMode('measurement'), DRAG_MODE.measurement);
 });
 
-void test('arrow navigation stays within the active anatomical plane', () => {
+void test('arrow navigation follows each anatomical plane', () => {
   assert.deepEqual(inPlaneCrosshairDelta(0, 'ArrowUp'), [0, 1, 0]);
   assert.deepEqual(inPlaneCrosshairDelta(0, 'ArrowRight'), [1, 0, 0]);
 
@@ -25,9 +25,6 @@ void test('arrow navigation stays within the active anatomical plane', () => {
 
   assert.deepEqual(inPlaneCrosshairDelta(2, 'ArrowUp'), [0, 0, 1]);
   assert.deepEqual(inPlaneCrosshairDelta(2, 'ArrowRight'), [0, 1, 0]);
-});
-
-void test('opposite arrow keys produce opposite deltas', () => {
   for (const plane of [0, 1, 2] as const) {
     const up = inPlaneCrosshairDelta(plane, 'ArrowUp');
     const down = inPlaneCrosshairDelta(plane, 'ArrowDown');
@@ -36,9 +33,6 @@ void test('opposite arrow keys produce opposite deltas', () => {
     assert.deepEqual(down, up.map((value) => value === 0 ? 0 : -value));
     assert.deepEqual(left, right.map((value) => value === 0 ? 0 : -value));
   }
-});
-
-void test('through-plane arrows move along each plane normal', () => {
   assert.deepEqual(throughPlaneCrosshairDelta(0, 'ArrowUp'), [0, 0, 1]);
   assert.deepEqual(throughPlaneCrosshairDelta(0, 'ArrowDown'), [0, 0, -1]);
   assert.deepEqual(throughPlaneCrosshairDelta(1, 'ArrowUp'), [0, 1, 0]);

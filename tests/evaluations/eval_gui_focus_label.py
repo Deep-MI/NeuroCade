@@ -22,12 +22,14 @@ Prerequisites:
   The current workspace must contain at least one processed case with MRI outputs
 
 Usage:
-  pytest tests/test_gui_focus_label.py -v
-  HEADED=1 pytest tests/test_gui_focus_label.py -v   # watch the browser
+  pytest tests/evaluations/eval_gui_focus_label.py -v
+  HEADED=1 pytest tests/evaluations/eval_gui_focus_label.py -v   # watch the browser
 """
 
+import os
 import time
 
+import pytest
 from gui_helpers import (
     get_current_position,
     load_processed_case,
@@ -37,6 +39,14 @@ from gui_helpers import (
 
 # Register GUI fixtures (browser, page, screenshot_dir, etc.)
 pytest_plugins = ["conftest_gui"]
+pytestmark = [
+    pytest.mark.gui,
+    pytest.mark.live_llm,
+    pytest.mark.skipif(
+        os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
+        reason="Live assistant evaluations require RUN_LLM_E2E=1",
+    ),
+]
 
 
 class TestGuiFocusLabel:

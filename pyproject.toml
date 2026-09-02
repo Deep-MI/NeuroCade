@@ -55,6 +55,13 @@ ignore = ["B008", "E501", "UP042", "UP047"]
 # Tests adjust sys.path before importing application modules.
 "tests/**/*.py" = ["E402"]
 
+[tool.pytest.ini_options]
+markers = [
+  "e2e: requires a running NeuroCade application",
+  "gui: requires a running application and Playwright browser",
+  "live_llm: sends requests to a configured live language model",
+]
+
 [tool.pyright]
 include = [
   "backend_common",

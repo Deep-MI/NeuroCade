@@ -1,11 +1,10 @@
 """
-Shared pytest fixtures for NeuroCade end-to-end tests.
+Shared pytest fixtures for NeuroCade tests.
 
-These fixtures talk to a running local NeuroCade app on port 8000.
-Start the app before running tests:
+The `e2e` and `gui` tiers talk to a running local app on port 8000:
 
     ./scripts/run.sh start -d
-    pytest tests/ -v
+    pytest tests/evaluations/eval_*.py -m e2e -v
 """
 
 import base64
@@ -14,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -24,7 +24,6 @@ import requests
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 APP_URL = os.environ.get("APP_URL", "http://localhost:8000")
-API_TOKEN = os.environ.get("API_TOKEN", "static-token-12345")
 DEFAULT_STORAGE_STATE_PATH = Path(
     os.environ.get(
         "PLAYWRIGHT_STORAGE_STATE",
@@ -222,20 +221,6 @@ def _safe_demo_case_pair(resolver, *args, **kwargs) -> tuple[str | None, str | N
 DEMO_RUN_CASE_ID, DEMO_RUN_UPLOAD_FILENAME = _safe_demo_case_pair(_find_run_demo_case)
 DEMO_CASE_ID, DEMO_UPLOAD_FILENAME = _safe_demo_case_pair(_find_processed_demo_case, exclude_case_id=DEMO_RUN_CASE_ID)
 
-# The standard GUI state when the demo case is fully loaded
-ADNI2_GUI_STATE = {
-    "is_job_running": False,
-    "case_id": DEMO_CASE_ID,
-    "layers": (
-        _gui_layers_for_volumes(_loaded_volumes_for_case(_resolve_case_dir(DEMO_CASE_ID)))
-        if DEMO_CASE_ID
-        else []
-    ),
-    "current_intensity_volume": DEMO_UPLOAD_FILENAME,
-    "current_intensity_artifact_id": None,
-}
-
-
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 
@@ -257,50 +242,6 @@ def _reset_job_manager():
 def app_url():
     """Base URL of the local app."""
     return APP_URL
-
-
-@pytest.fixture(scope="session")
-def api_token():
-    """Bearer token for API requests."""
-    return API_TOKEN
-
-
-@pytest.fixture(scope="session")
-def adni2_state():
-    """Standard GUI state dict for the adni2 test case."""
-    return fresh_processed_case_data()["gui_state"].copy()
-
-
-@pytest.fixture(scope="session")
-def demo_case_id():
-    """Processed demo case id used by GUI tests."""
-    if not DEMO_CASE_ID:
-        pytest.skip("No processed demo case with outputs is available in the configured test outputs directory.")
-    return DEMO_CASE_ID
-
-
-@pytest.fixture(scope="session")
-def demo_upload_filename():
-    """Upload fixture filename for the processed demo case."""
-    if not DEMO_UPLOAD_FILENAME:
-        pytest.skip("No processed demo upload fixture is available.")
-    return DEMO_UPLOAD_FILENAME
-
-
-@pytest.fixture(scope="session")
-def demo_run_case_id():
-    """Demo case id used for run-submission tests."""
-    if not DEMO_RUN_CASE_ID:
-        pytest.skip("No demo upload is available for run tests.")
-    return DEMO_RUN_CASE_ID
-
-
-@pytest.fixture(scope="session")
-def demo_run_upload_filename():
-    """Upload fixture filename used for run-submission tests."""
-    if not DEMO_RUN_UPLOAD_FILENAME:
-        pytest.skip("No demo upload is available for run tests.")
-    return DEMO_RUN_UPLOAD_FILENAME
 
 
 @pytest.fixture(scope="session")
@@ -638,27 +579,24 @@ def fresh_processed_case_data(app_url: str = APP_URL) -> dict:
 
 @pytest.fixture(scope="module")
 def fresh_run_case(services_up):
-    """Fresh uploaded demo case for run-submission tests."""
+    """Fresh uploaded demo case removed after the live test module."""
     if not DEMO_RUN_UPLOAD_FILENAME:
         pytest.skip("No demo upload is available for run tests.")
-    return build_fresh_uploaded_case(
+    case = build_fresh_uploaded_case(
         upload_filename=DEMO_RUN_UPLOAD_FILENAME,
         workspace_prefix="pytest-run-workspace",
         case_prefix="pytest-run-case",
     )
-
-
-@pytest.fixture(scope="module")
-def fresh_processed_case(services_up):
-    """Stable processed demo case for module-scoped read-only tests."""
-    if not DEMO_CASE_ID or not DEMO_UPLOAD_FILENAME:
-        pytest.skip("No processed demo case with outputs is available in the configured test outputs directory.")
-    return build_fresh_processed_case(
-        source_case_key=DEMO_CASE_ID,
-        upload_filename=DEMO_UPLOAD_FILENAME,
-        workspace_prefix="pytest-processed-workspace",
-        case_prefix="pytest-processed-case",
-    )
+    try:
+        yield case
+    finally:
+        with suppress(requests.RequestException):
+            requests.post(
+                f"{APP_URL}/api/app/cases/{case['case_id']}/cancel",
+                headers=get_app_auth_headers(),
+                timeout=10,
+            )
+        delete_workspace_via_api(case["workspace_id"])
 
 
 def list_cases(app_url: str = APP_URL, workspace_id: str | None = None) -> list[dict]:
@@ -747,13 +685,12 @@ def seed_gui_state(
 def chat_send(
     messages: list[dict],
     app_url: str = APP_URL,
-    token: str = API_TOKEN,
     timeout: int = 300,
     workspace_id: str | None = None,
     case_id: str | None = None,
     gui_session_id: str | None = None,
 ) -> dict:
-    """Send a assistant turn request through the app API."""
+    """Send an assistant turn request through the app API."""
     resolved_workspace_id = workspace_id or _LAST_GUI_SCOPE.get("workspace_id")
     resolved_case_id = case_id or _LAST_GUI_SCOPE.get("case_id")
     resolved_gui_session_id = gui_session_id or _LAST_GUI_SCOPE.get("gui_session_id") or DEFAULT_GUI_SESSION_ID

@@ -17,11 +17,12 @@ Prerequisites:
   A fixture MRI must exist under NEUROCADE_UPLOAD_FIXTURES_DIR
 
 Usage:
-  pytest tests/test_gui_agent_run.py -v
-  HEADED=1 pytest tests/test_gui_agent_run.py -v   # watch the browser
+  pytest tests/evaluations/eval_gui_agent_run.py -v
+  HEADED=1 pytest tests/evaluations/eval_gui_agent_run.py -v   # watch the browser
 """
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -39,6 +40,12 @@ from gui_helpers import (
 
 # Register GUI fixtures (browser, page, screenshot_dir, etc.)
 pytest_plugins = ["conftest_gui"]
+pytestmark = pytest.mark.gui
+
+requires_live_llm = pytest.mark.skipif(
+    os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
+    reason="Live assistant evaluations require RUN_LLM_E2E=1",
+)
 
 UPLOAD_FILE = UPLOAD_FIXTURES_DIR / DEMO_RUN_UPLOAD_FILENAME if DEMO_RUN_UPLOAD_FILENAME else None
 
@@ -101,6 +108,8 @@ class TestGuiAgentTriggeredRun:
         take_screenshot(page, "agent_run_01_after_upload", screenshot_dir)
         assert page.locator("input.chat-input").is_visible()
 
+    @pytest.mark.live_llm
+    @requires_live_llm
     def test_agent_triggers_fastsurfer_run(self, page, screenshot_dir, upload_file):
         """Full browser E2E: upload → chat agent → FastSurfer run starts."""
         # Step 1: Upload the MRI file

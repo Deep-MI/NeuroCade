@@ -2,9 +2,11 @@
 
 from urllib.parse import urlparse
 
+import pytest
 from gui_helpers import APP_URL
 
 pytest_plugins = ["conftest_gui"]
+pytestmark = pytest.mark.gui
 
 
 def test_sample_case_shows_loading_state_until_artifacts_arrive(page):

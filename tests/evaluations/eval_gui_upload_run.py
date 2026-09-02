@@ -22,10 +22,11 @@ Prerequisites:
   A fixture MRI must exist under NEUROCADE_UPLOAD_FIXTURES_DIR
 
 Usage:
-  pytest tests/test_gui_upload_run.py -v
-  HEADED=1 pytest tests/test_gui_upload_run.py -v         # watch the browser
+  pytest tests/evaluations/eval_gui_upload_run.py -v
+  HEADED=1 pytest tests/evaluations/eval_gui_upload_run.py -v         # watch the browser
 """
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -48,6 +49,12 @@ from gui_helpers import (
 
 # Register GUI fixtures (browser, page, screenshot_dir, etc.)
 pytest_plugins = ["conftest_gui"]
+pytestmark = pytest.mark.gui
+
+requires_live_llm = pytest.mark.skipif(
+    os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
+    reason="Live assistant evaluations require RUN_LLM_E2E=1",
+)
 
 UPLOAD_FILE = (
     UPLOAD_FIXTURES_DIR / DEMO_RUN_UPLOAD_FILENAME
@@ -101,6 +108,8 @@ def upload_file(tmp_path: Path) -> Path:
 class TestGuiUploadAndRun:
     """Upload an MRI and trigger FastSurfer analysis via the chat interface."""
 
+    @pytest.mark.live_llm
+    @requires_live_llm
     def test_upload_and_run_fastsurfer(self, page, screenshot_dir, upload_file):
         """Full browser E2E: upload → chat → run → cancel."""
         # Step 1: Verify initial page state

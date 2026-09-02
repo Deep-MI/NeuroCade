@@ -94,7 +94,7 @@ def _clear_case_persistence(page) -> None:
     page.add_init_script(
         """() => {
           for (const key of Object.keys(localStorage)) {
-            if (key.startsWith('fastsurfer-case-')) localStorage.removeItem(key);
+            if (key.startsWith('neurocade-case-')) localStorage.removeItem(key);
           }
         }"""
     )

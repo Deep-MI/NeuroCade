@@ -8,8 +8,8 @@ Prerequisites:
     pip install playwright && playwright install chromium
 
 Usage:
-    pytest tests/test_gui_*.py -v
-    HEADED=1 pytest tests/test_gui_*.py -v   # watch the browser
+    pytest tests/evaluations/eval_gui_*.py -v
+    HEADED=1 pytest tests/evaluations/eval_gui_*.py -v   # watch the browser
 
 Note: This module is NOT auto-discovered as a conftest. GUI test files use
 `pytest_plugins = ["conftest_gui"]` to register these fixtures.

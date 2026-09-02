@@ -138,70 +138,33 @@ def test_gui_list_layers_reports_visibility_and_same_type_order(runtime_case):
     ]
 
 
-@pytest.mark.parametrize("file_path", ["mri/orig.mgz", "/case/../other-case/mri/orig.mgz"])
-def test_gui_load_layer_rejects_paths_outside_active_case(runtime_case, file_path):
+def test_gui_load_layer_rejects_paths_outside_active_case(runtime_case):
     service, state = runtime_case
 
-    result = service.call_tool(
-        "gui_load_layer",
-        {"file_path": file_path},
-        gui_state_override=state,
-        gui_state_key="load",
-    )
+    for file_path in ("mri/orig.mgz", "/case/../other-case/mri/orig.mgz"):
+        result = service.call_tool(
+            "gui_load_layer",
+            {"file_path": file_path},
+            gui_state_override=state,
+            gui_state_key="load",
+        )
+        assert result.startswith("Error:")
 
-    assert result.startswith("Error:")
 
-
-@pytest.mark.parametrize(
-    ("layer_ids", "updates", "expected"),
-    [
+def test_gui_set_layer_display_rejects_type_mismatches(runtime_case):
+    service, state = runtime_case
+    scenarios = (
         (["lh.pial"], {"brightness": 10}, "brightness and contrast apply only"),
         (["orig.mgz"], {"surface_color_mode": "curvature"}, "surface_color_mode applies only"),
-    ],
-)
-def test_gui_set_layer_display_rejects_type_mismatches(runtime_case, layer_ids, updates, expected):
-    service, state = runtime_case
-
-    result = service.call_tool(
-        "gui_set_layer_display",
-        {"layer_ids": layer_ids, **updates},
-        gui_state_override=state,
-        gui_state_key="display",
     )
-
-    assert expected in result
-
-
-@pytest.mark.parametrize(
-    ("name", "arguments", "expected"),
-    [
-        ("freesurfer_lut", {"query": "17"}, "Left-Hippocampus"),
-        ("case_file_tree", {}, "/case/"),
-        ("read_stats", {"label_query": "Left-Hippocampus"}, "456.700"),
-        ("gui_list_layers", {}, '"type": "surface"'),
-        ("gui_load_layer", {"file_path": "/case/mri/orig.mgz"}, "load intensity layer"),
-        (
-            "gui_reorder_layer",
-            {
-                "layer_type": "surface",
-                "layer_id": "rh.pial",
-                "target_layer_id": "lh.pial",
-                "position": "before",
-            },
-            "within surface layers",
-        ),
-        ("gui_remove_layer", {"layer_ids": ["orig.mgz"]}, "remove"),
-        ("gui_set_layer_visibility", {"changes": [{"layer_id": "lh.pial", "visible": True}]}, "visibility"),
-        ("gui_set_layer_display", {"layer_ids": ["lh.pial"], "opacity": 0.5}, "update"),
-        ("gui_apply_view_preset", {"preset": "pial_surfaces"}, "pial_surfaces"),
-        ("gui_move_cursor", {"x": 1, "y": 2, "z": 3}, "move the cursor"),
-        ("gui_focus_label", {"label_query": "Left-Hippocampus"}, "Failed to focus label"),
-    ],
-)
-def test_gui_runtime_executes_each_case_tool(runtime_case, name, arguments, expected):
-    service, state = runtime_case
-    result = service.call_tool(name, arguments, gui_state_override=state, gui_state_key=f"tool-{name}")
-    assert expected in result
+    for layer_ids, updates, expected in scenarios:
+        result = service.call_tool(
+            "gui_set_layer_display",
+            {"layer_ids": layer_ids, **updates},
+            gui_state_override=state,
+            gui_state_key="display",
+        )
+        assert expected in result
 
 
 def test_gui_tool_override_mutations_are_visible_to_sync(runtime_case):

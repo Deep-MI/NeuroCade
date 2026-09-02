@@ -33,15 +33,15 @@ Python and integration work should start with the project configuration:
 - `uv sync --locked --extra test`: install the locked Python dependencies into `.venv`.
 - `source .venv/bin/activate && playwright install chromium`: install browser binaries needed for GUI tests.
 - `source .venv/bin/activate && alembic -c config/alembic.ini upgrade head`: apply database migrations manually when needed.
-- `source .venv/bin/activate && pytest tests/test_neuroimaging_workflows.py tests/test_monolith_runtime.py tests/test_assistant_file_tools.py tests/test_assistant_runtime.py tests/test_app_architecture.py -v`: run focused backend/runtime tests from the local `.venv`.
+- `source .venv/bin/activate && pytest tests/test_neuroimaging_workflows.py tests/test_monolith_runtime.py tests/test_assistant_file_tools.py tests/test_assistant_turn_streaming_routes.py tests/test_app_architecture.py -v`: run focused backend/runtime tests from the local `.venv`.
 - `source .venv/bin/activate && ruff check .`: run Python lint checks.
 - `source .venv/bin/activate && pyright`: run Python type checks.
 - `./scripts/run.sh start -d`: start the local Docker app required for API and GUI tests.
 - `./scripts/run.sh build`: build the single Docker image.
 - `./scripts/desktop/run.sh`: run the local desktop launcher from the repository root.
 - `./scripts/install.sh --runtime docker --mode local`: perform the Docker local install flow.
-- `source .venv/bin/activate && pytest tests/ -v`: run the full test suite.
-- `source .venv/bin/activate && HEADED=1 pytest tests/test_gui_upload_run.py -v`: run a browser test with a visible window.
+- `source .venv/bin/activate && pytest tests/ -v`: run the core test suite.
+- `source .venv/bin/activate && HEADED=1 pytest tests/evaluations/eval_gui_upload_run.py -v`: run a browser evaluation with a visible window.
 
 ## Runtime Setup Notes
 Choose exactly one matched `NEUROCADE_RUNTIME=docker|apptainer` profile. Keep `.env` aligned before startup, especially `HOST_DATA_DIR`, `DATABASE_URL`, bridge URL/token settings, application image or SIF settings, `LLM_BACKEND_URL`, auth/provider tokens, and `FREESURFER_LICENSE`. Docker and Apptainer execute only on the host bridge; never add a runtime socket, privileged mode, FUSE device, fakeroot, or nested runtime to the application.

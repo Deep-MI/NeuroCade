@@ -14,7 +14,7 @@ Prerequisites:
   At least one MRI fixture must be available via NEUROCADE_UPLOAD_FIXTURES_DIR
 
 Usage:
-  pytest tests/test_fastsurfer_run_e2e.py -v
+  pytest tests/evaluations/eval_fastsurfer_run.py -v
 """
 
 import os
@@ -33,6 +33,8 @@ from conftest import (
     seed_gui_state,
     utc_timestamp,
 )
+
+pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +75,7 @@ class TestFastSurferRunCancel:
         os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
         reason="Live assistant evaluations require RUN_LLM_E2E=1 and a reachable configured LLM backend.",
     )
+    @pytest.mark.live_llm
     def test_run_and_cancel_fastsurfer(self):
         """Full E2E: chat triggers FastSurfer, then we cancel after 20s."""
         # Step 1: Seed GUI state — idle, ready to run

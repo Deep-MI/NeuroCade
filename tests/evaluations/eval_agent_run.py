@@ -13,7 +13,7 @@ Prerequisites:
   a demo upload fixture and processed case must be configured
 
 Usage:
-  pytest tests/test_agent_run_e2e.py -v
+  pytest tests/evaluations/eval_agent_run.py -v
 """
 
 import os
@@ -39,6 +39,7 @@ requires_live_llm = pytest.mark.skipif(
     os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
     reason="Live assistant evaluations require RUN_LLM_E2E=1 and a reachable configured LLM backend.",
 )
+pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +53,7 @@ class TestAgentRunFastSurfer:
 
     @pytest.fixture(autouse=True)
     def setup(self, app_url, fresh_run_case):
-        """Store application context and a fresh case for each test."""
+        """Store application context and the module's isolated case."""
         self.app_url = app_url
         self.app_headers = require_app_auth_headers()
         self.demo_case = fresh_run_case
@@ -122,38 +123,7 @@ class TestAgentRunFastSurfer:
         assert current.get("current_intensity_volume") == self.demo_case["upload_filename"]
         assert current.get("case_id") == self.demo_case["case_id"]
 
-    @requires_live_llm
-    def test_agent_chat_starts_configured_run(self):
-        """Authenticated chat should create a durable configured workflow run."""
-        seed_gui_state({
-            "is_job_running": False,
-            "case_id": self.demo_case["case_id"],
-            "layers": [{
-                "id": "intensity:input",
-                "filename": self.demo_case["upload_filename"],
-                "type": "intensity",
-                "role": "intensity",
-                "visible": True,
-            }],
-            "current_intensity_artifact_id": self.demo_case["gui_state"]["current_intensity_artifact_id"],
-            "current_intensity_volume": self.demo_case["upload_filename"],
-        }, self.app_url)
-
-        response = chat_send(
-            [{"role": "user", "content": "Run FastSurfer on the current case"}],
-            self.app_url,
-            timeout=120,
-        )
-        content = get_response_content(response)
-        assert "fastsurfer" in content.lower()
-
-        status = self._poll_status(
-            self.demo_case["case_id"],
-            ["queued", "running", "completed", "failed"],
-            timeout=15,
-        )
-        assert status in {"queued", "running", "completed", "failed"}
-
+    @pytest.mark.live_llm
     @requires_live_llm
     def test_agent_chat_triggers_run(self):
         """Full E2E: chat starts the catalog workflow without a GUI-command handoff."""
@@ -194,6 +164,9 @@ class TestAgentRunFastSurfer:
             f"Response doesn't mention FastSurfer execution: {content[:300]}"
         )
 
+        runs = get_case_runs(self.demo_case["id"], self.app_url)
+        assert runs and all(run.get("case_id") == self.demo_case["id"] for run in runs)
+
         # GUI state remains independent; the durable run is the shared authority.
         state_data = seed_gui_state(
             {
@@ -214,6 +187,20 @@ class TestAgentRunFastSurfer:
         print(f"\n  Agent response: {content[:200]}")
         print(f"  State sync keys: {list(state_data.keys())}")
 
+        status = self._poll_status(
+            self.demo_case["id"],
+            ["queued", "starting", "running", "completed", "failed"],
+            timeout=15,
+        )
+        assert status in {"queued", "starting", "running", "completed"}
+        if status in {"queued", "starting", "running"}:
+            cancel = requests.post(
+                f"{self.app_url}/api/app/cases/{self.demo_case['id']}/cancel",
+                headers=self.app_headers,
+                timeout=30,
+            )
+            assert cancel.status_code == 200, f"Cancel failed: {cancel.text}"
+
     def test_submitted_run_transitions_status(self):
         """After submitting /api/app/runs for the case, the status should transition."""
         r = requests.post(
@@ -230,6 +217,9 @@ class TestAgentRunFastSurfer:
         data = r.json()
         assert data.get("case_id") == self.demo_case["id"]
         assert data.get("status") == "queued"
+
+        runs = get_case_runs(self.demo_case["id"], self.app_url)
+        assert runs and all(run.get("case_id") == self.demo_case["id"] for run in runs)
 
         # Wait until the bridge starts the real container, then cancel the
         # long-running workflow so this remains a bounded smoke test.
@@ -252,9 +242,3 @@ class TestAgentRunFastSurfer:
             observed_status = self._poll_status(self.demo_case["id"], ["canceled"], timeout=15)
             assert observed_status == "canceled"
         print(f"\n  Job final status: {observed_status}")
-
-    def test_run_appears_in_case_runs(self):
-        """The authenticated case runs endpoint should return runs for the selected case."""
-        runs = get_case_runs(self.demo_case["id"], self.app_url)
-        assert runs, "Expected at least one run for the demo case"
-        assert all(run.get("case_id") == self.demo_case["id"] for run in runs)

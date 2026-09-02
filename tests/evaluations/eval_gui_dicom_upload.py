@@ -8,7 +8,7 @@ The fixture is intentionally not committed. Download it before running:
       "https://zenodo.org/records/16956/files/DICOM.zip?download=1"
 
 Usage:
-    TEST_DICOM_ZIP=/tmp/fastsurfer-public-dicom/DICOM.zip pytest tests/test_gui_dicom_upload.py -v
+    TEST_DICOM_ZIP=/tmp/fastsurfer-public-dicom/DICOM.zip pytest tests/evaluations/eval_gui_dicom_upload.py -v
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import pytest
 from gui_helpers import APP_URL, get_auth_headers, routed_case_id, slug_name, take_screenshot
 
 pytest_plugins = ["conftest_gui"]
+pytestmark = pytest.mark.gui
 
 PUBLIC_DICOM_URL = "https://zenodo.org/records/16956/files/DICOM.zip?download=1"
 PUBLIC_DICOM_MD5 = "e5cbd0bca91f1787d057b0eac2572bde"

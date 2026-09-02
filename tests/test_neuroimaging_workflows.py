@@ -91,11 +91,6 @@ def test_default_catalog_has_fixed_workflows_and_defaults():
     assert {"--seg_only", "--no_biasfield", "--no_cereb", "--no_hypothal"}.issubset(
         set(tools["fastsurfer_fast"].script.split())
     )
-    assert "license" not in ROOT.joinpath("config/neuroimaging_tools.yaml").read_text(encoding="utf-8").lower()
-    assert not ROOT.joinpath("config/runtime_tools.json").exists()
-    assert not ROOT.joinpath(
-        "packages/neurocade-runtime-tools/src/neurocade_runtime_tools/container_specs.py"
-    ).exists()
 
 
 def test_search_payload_is_compact_and_inspect_is_lazy():

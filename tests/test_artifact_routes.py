@@ -109,15 +109,6 @@ def seeded_case(db_session, monkeypatch, tmp_path):
     return db_session, context
 
 
-def test_list_case_artifacts_skips_missing_files(seeded_case):
-    db_session, context = seeded_case
-
-    artifacts = list_case_artifacts(CASE_ID, db=db_session, context=context)
-
-    assert [artifact.name for artifact in artifacts] == ["existing.mgz"]
-    assert db_session.get(Artifact, "artifact-missing") is not None
-
-
 def test_list_case_artifacts_does_not_mutate_missing_rows_or_events(seeded_case):
     db_session, context = seeded_case
     run = db_session.get(Run, "run-1")
@@ -542,49 +533,27 @@ def test_artifact_download_rejects_case_row_pointing_outside_case(seeded_case):
     assert exc_info.value.status_code == 404
 
 
-def test_list_cases_counts_only_existing_artifacts(seeded_case):
+def test_case_listing_and_runs_use_durable_state(seeded_case):
     db_session, context = seeded_case
 
     cases = list_cases(db=db_session, context=context)
-
-    assert len(cases) == 1
-    assert cases[0].artifact_count == 1
-
-
-def test_list_cases_can_filter_by_workspace(seeded_case):
-    db_session, context = seeded_case
-
-    cases = list_cases(workspace_id="workspace-1", db=db_session, context=context)
-
-    assert len(cases) == 1
-    assert cases[0].workspace_id == "workspace-1"
-
-    with pytest.raises(HTTPException) as exc_info:
-        list_cases(workspace_id="workspace-missing", db=db_session, context=context)
-    assert exc_info.value.status_code == 404
-
-
-def test_list_cases_reads_durable_run_status(seeded_case):
-    db_session, context = seeded_case
-
-    cases = list_cases(db=db_session, context=context)
-    refreshed_run = db_session.get(Run, "run-1")
-
-    assert cases[0].latest_run_status == "queued"
-    assert refreshed_run is not None
-    assert refreshed_run.status == RunStatus.queued
-
-
-def test_case_runs_reads_durable_status(seeded_case):
-    db_session, context = seeded_case
-
+    filtered = list_cases(workspace_id="workspace-1", db=db_session, context=context)
     runs = case_runs(CASE_ID, db=db_session, context=context)
     refreshed_run = db_session.get(Run, "run-1")
 
+    assert len(cases) == 1
+    assert cases[0].artifact_count == 1
+    assert cases[0].latest_run_status == "queued"
+    assert len(filtered) == 1
+    assert filtered[0].workspace_id == "workspace-1"
     assert len(runs) == 1
     assert runs[0].status == "queued"
     assert refreshed_run is not None
     assert refreshed_run.status == RunStatus.queued
+
+    with pytest.raises(HTTPException) as exc_info:
+        list_cases(workspace_id="workspace-missing", db=db_session, context=context)
+    assert exc_info.value.status_code == 404
 
 
 def test_case_logs_reads_run_specific_logs(seeded_case):

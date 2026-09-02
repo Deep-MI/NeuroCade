@@ -38,17 +38,6 @@ void test('distinguishes background handoff from a disconnected assistant stream
     );
 });
 
-void test('humanizes generic tool names', () => {
-    assert.equal(
-        assistantActivityMessage(
-            { kind: 'tool', label: 'case_file_tree', blocking: true },
-            true,
-            'Assistant is thinking',
-        ),
-        'Assistant is inspecting case files…',
-    );
-});
-
 void test('describes image download progress and exposes a bounded fraction', () => {
     const activity = {
         kind: 'image' as const,

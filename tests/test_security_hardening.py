@@ -132,43 +132,22 @@ def test_deployment_policy_profiles_expose_expected_flags(monkeypatch):
     assert policy.feature_flags() == {"uploads": True, "destructive_actions": True}
 
 
-def test_validate_auth_configuration_rejects_local_auth_outside_local_profile(monkeypatch):
+def test_validate_auth_configuration_rejects_invalid_shared_profiles(monkeypatch):
     from backend_common import auth as auth_module
 
+    scenarios = [
+        (True, "https://example.test/jwks", "fastsurfer-app", "LOCAL_AUTH_ENABLED must be false"),
+        (False, None, "fastsurfer-app", "CLERK_JWKS_URL must be configured"),
+        (False, "https://example.test/jwks", None, "CLERK_AUDIENCE must be configured"),
+    ]
     monkeypatch.setattr(auth_module.settings, "deployment_profile", "internal")
-    monkeypatch.setattr(auth_module.settings, "local_auth_enabled", True)
-    monkeypatch.setattr(auth_module.settings, "clerk_jwks_url", "https://example.test/jwks")
     monkeypatch.setattr(auth_module.settings, "clerk_issuer", "https://clerk.example.test")
-    monkeypatch.setattr(auth_module.settings, "clerk_audience", "fastsurfer-app")
-
-    with pytest.raises(RuntimeError, match="LOCAL_AUTH_ENABLED must be false"):
-        validate_auth_configuration()
-
-
-def test_validate_auth_configuration_requires_real_clerk_config_for_shared_profiles(monkeypatch):
-    from backend_common import auth as auth_module
-
-    monkeypatch.setattr(auth_module.settings, "deployment_profile", "internal")
-    monkeypatch.setattr(auth_module.settings, "local_auth_enabled", False)
-    monkeypatch.setattr(auth_module.settings, "clerk_jwks_url", None)
-    monkeypatch.setattr(auth_module.settings, "clerk_issuer", None)
-    monkeypatch.setattr(auth_module.settings, "clerk_audience", "fastsurfer-app")
-
-    with pytest.raises(RuntimeError, match="CLERK_JWKS_URL must be configured"):
-        validate_auth_configuration()
-
-
-def test_validate_auth_configuration_requires_clerk_audience_for_shared_profiles(monkeypatch):
-    from backend_common import auth as auth_module
-
-    monkeypatch.setattr(auth_module.settings, "deployment_profile", "internal")
-    monkeypatch.setattr(auth_module.settings, "local_auth_enabled", False)
-    monkeypatch.setattr(auth_module.settings, "clerk_jwks_url", "https://example.test/jwks")
-    monkeypatch.setattr(auth_module.settings, "clerk_issuer", "https://clerk.example.test")
-    monkeypatch.setattr(auth_module.settings, "clerk_audience", None)
-
-    with pytest.raises(RuntimeError, match="CLERK_AUDIENCE must be configured"):
-        validate_auth_configuration()
+    for local_auth, jwks_url, audience, message in scenarios:
+        monkeypatch.setattr(auth_module.settings, "local_auth_enabled", local_auth)
+        monkeypatch.setattr(auth_module.settings, "clerk_jwks_url", jwks_url)
+        monkeypatch.setattr(auth_module.settings, "clerk_audience", audience)
+        with pytest.raises(RuntimeError, match=message):
+            validate_auth_configuration()
 
 
 def test_validate_auth_configuration_warns_when_local_clerk_has_no_audience(monkeypatch, caplog):

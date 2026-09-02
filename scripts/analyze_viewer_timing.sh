@@ -20,4 +20,4 @@ echo "Running NeuroCade viewer timing analysis against ${APP_URL}"
 echo "Timing artifacts will be written to ${NEUROCADE_TIMING_OUTPUT_DIR}"
 echo "Post-load settle time is ${NEUROCADE_TIMING_SETTLE_MS} ms"
 
-pytest tests/test_gui_viewer_timing.py -v
+pytest tests/viewer_timing_benchmark.py -v

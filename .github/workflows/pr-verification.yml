@@ -59,17 +59,10 @@ jobs:
         run: |
           . .venv/bin/activate
           pyright
-      - name: Run focused backend/security tests
+      - name: Run offline backend tests
         run: |
           . .venv/bin/activate
-          pytest \
-            tests/test_install_scripts.py \
-            tests/test_security_hardening.py \
-            tests/test_neuroimaging_workflows.py \
-            tests/test_monolith_runtime.py \
-            tests/test_assistant_file_tools.py \
-            tests/test_assistant_runtime.py \
-            -q
+          pytest tests -q
 
   repository-policy:
     name: Repository policy checks

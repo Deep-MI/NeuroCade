@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import os
+
+import pytest
 from gui_helpers import send_chat_message, take_screenshot
 
 pytest_plugins = ["conftest_gui"]
+pytestmark = [
+    pytest.mark.gui,
+    pytest.mark.live_llm,
+    pytest.mark.skipif(
+        os.environ.get("RUN_LLM_E2E", "").strip().lower() not in {"1", "true", "yes", "on"},
+        reason="Live assistant evaluations require RUN_LLM_E2E=1",
+    ),
+]
 
 
 def _surface_row(page, filename: str):
