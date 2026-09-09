@@ -213,7 +213,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           app_sif="neurocade-app-${RELEASE_VERSION}-amd64.sif"
-          apptainer pull "$app_sif" "docker://${RELEASE_IMAGE}@${RELEASE_DIGEST}"
+          apptainer pull "$app_sif" "docker://${RELEASE_IMAGE%:*}@${RELEASE_DIGEST}"
           sha256sum "$app_sif" > "$app_sif.sha256"
           chmod 0444 "$app_sif"
           echo "APP_SIF=$app_sif" >> "$GITHUB_ENV"
