@@ -152,15 +152,18 @@ jobs:
           RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
+          launch_id="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-docker"
           container=neurocade-release-smoke
           mkdir -p "$RUNNER_TEMP/neurocade-data" "$RUNNER_TEMP/tool-images"
           "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
             --runtime docker --data-root "$RUNNER_TEMP/neurocade-data" --image-dir "$RUNNER_TEMP/tool-images" \
-            --host 0.0.0.0 --port 18765 --token-file "$RUNNER_TEMP/bridge-token" &
+            --host 0.0.0.0 --port 18765 --token-file "$RUNNER_TEMP/bridge-token" \
+            --launch-id "$launch_id" &
           bridge_pid=$!
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true; kill "$bridge_pid" >/dev/null 2>&1 || true' EXIT
           ./scripts/release/wait_for_http.sh http://127.0.0.1:18765/v1/health 30 1 \
-            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")" \
+            "X-NeuroCade-Launch-ID: $launch_id"
           docker run --detach --name "$container" \
             --user "$(id -u):$(id -g)" \
             --add-host host.docker.internal:host-gateway \
@@ -169,6 +172,7 @@ jobs:
             -e DEPLOYMENT_PROFILE=local \
             -e LOCAL_AUTH_ENABLED=true \
             -e HOST_DATA_DIR=/data \
+            -e NEUROCADE_LAUNCH_ID="$launch_id" \
             -e NEUROCADE_RUNTIME=docker \
             -e NEUROCADE_BRIDGE_URL=http://host.docker.internal:18765 \
             -e NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
@@ -231,16 +235,20 @@ jobs:
       - name: Smoke-test application SIF as non-root
         if: steps.release.outputs.should_release == 'true'
         run: |
+          launch_id="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-apptainer"
           mkdir -p "$RUNNER_TEMP/sif-data" "$RUNNER_TEMP/sif-images"
           "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
             --runtime apptainer --data-root "$RUNNER_TEMP/sif-data" --image-dir "$RUNNER_TEMP/sif-images" \
-            --host 127.0.0.1 --port 18766 --token-file "$RUNNER_TEMP/bridge-token" &
+            --host 127.0.0.1 --port 18766 --token-file "$RUNNER_TEMP/bridge-token" \
+            --launch-id "$launch_id" &
           bridge_pid=$!
           ./scripts/release/wait_for_http.sh http://127.0.0.1:18766/v1/health 30 1 \
-            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")" \
+            "X-NeuroCade-Launch-ID: $launch_id"
           apptainer exec --cleanenv --no-home --containall \
             --bind "$RUNNER_TEMP/sif-data:/data" \
             --bind "$RUNNER_TEMP/bridge-token:/run/neurocade/bridge-token:ro" \
+            --env NEUROCADE_LAUNCH_ID="$launch_id" \
             --env NEUROCADE_RUNTIME=apptainer \
             --env NEUROCADE_BRIDGE_URL=http://127.0.0.1:18766 \
             --env NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
