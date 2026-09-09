@@ -40,3 +40,18 @@ From an existing checkout:
 
 For server installs, choose `--mode internal`. More detailed install
 instructions are in [INSTALL.md](INSTALL.md).
+
+## Release publishing
+
+The release workflow publishes versioned Docker images to `docker.io/deepmi/neurocade`,
+with `beta` and `latest` channel tags for beta and stable releases respectively.
+The Docker Hub repository must be public so release validation and Apptainer
+conversion can pull the image anonymously.
+
+Configure these GitHub Actions secrets before running the release workflow:
+
+- `DOCKERHUB_USERNAME`: the Docker Hub account used to publish images.
+- `DOCKERHUB_TOKEN`: an access token for that account with push access to `deepmi/neurocade`.
+
+GitHub releases continue to host the application SIF, bridge wheel, checksums,
+and release manifest.

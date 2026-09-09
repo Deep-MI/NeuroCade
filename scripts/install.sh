@@ -4,7 +4,7 @@ set -euo pipefail
 
 ARCHIVE_URL="${NEUROCADE_ARCHIVE_URL:-https://github.com/Deep-MI/NeuroCade/archive/refs/heads/main.tar.gz}"
 DEFAULT_INSTALL_DIR="${NEUROCADE_INSTALL_DIR:-$HOME/NeuroCade}"
-DEFAULT_IMAGE="ghcr.io/deep-mi/neurocade:latest"
+DEFAULT_IMAGE="docker.io/deepmi/neurocade:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
 
 usage() {
@@ -23,7 +23,7 @@ Options:
                                   Apptainer on Linux when available.
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
-  --image IMAGE                   Published image tag or digest. Default: ghcr.io/deep-mi/neurocade:latest.
+  --image IMAGE                   Published image tag or digest. Default: docker.io/deepmi/neurocade:latest.
   --build-from-source             Build Docker from this checkout and convert it
                                   to an Apptainer SIF. Requires Docker.
   --bridge-port PORT              Host bridge port. Default: 8765.

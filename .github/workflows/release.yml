@@ -29,7 +29,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 concurrency:
   group: release-${{ github.event_name == 'schedule' && 'beta-main' || format('{0}-{1}', inputs.release_kind, inputs.target_ref) }}
@@ -69,13 +68,13 @@ jobs:
         if: steps.release.outputs.should_release == 'true'
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to GHCR
+      - name: Log in to Docker Hub
         if: steps.release.outputs.should_release == 'true'
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and publish Docker image
         id: app_image
@@ -86,7 +85,7 @@ jobs:
           file: docker/backend.Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          tags: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
           build-args: |
             NEUROCADE_VERSION=${{ steps.release.outputs.version }}
           labels: |
@@ -101,13 +100,13 @@ jobs:
       - name: Verify anonymous image access
         if: steps.release.outputs.should_release == 'true'
         env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
         run: |
           anonymous_config="$RUNNER_TEMP/docker-anonymous"
           mkdir -p "$anonymous_config"
           if ! DOCKER_CONFIG="$anonymous_config" docker pull --platform linux/amd64 "$RELEASE_IMAGE"; then
-            echo "The GHCR package must be public before the GitHub release can be published." >&2
-            echo "Make the neurocade package public in the Deep-MI package settings, then rerun this workflow." >&2
+            echo "The Docker Hub image must be anonymously pullable before the GitHub release can be published." >&2
+            echo "Check that deepmi/neurocade is public on Docker Hub and that Docker Hub pulls are available, then rerun this workflow." >&2
             exit 1
           fi
 
@@ -150,7 +149,7 @@ jobs:
       - name: Smoke-test published image
         if: steps.release.outputs.should_release == 'true'
         env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           container=neurocade-release-smoke
@@ -205,7 +204,7 @@ jobs:
       - name: Convert exact release image to application SIF
         if: steps.release.outputs.should_release == 'true'
         env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
           RELEASE_DIGEST: ${{ steps.app_image.outputs.digest }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
@@ -292,8 +291,8 @@ jobs:
       - name: Publish channel tag
         if: steps.release.outputs.should_release == 'true'
         env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
-          CHANNEL_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.prerelease == 'true' && 'beta' || 'latest' }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
+          CHANNEL_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.prerelease == 'true' && 'beta' || 'latest' }}
         run: docker buildx imagetools create --tag "$CHANNEL_IMAGE" "$RELEASE_IMAGE"
 
       - name: Summarize release
@@ -304,7 +303,7 @@ jobs:
             echo
             echo "- Tag: \`${{ steps.release.outputs.tag }}\`"
             echo "- Commit: \`${{ steps.release.outputs.head_sha }}\`"
-            echo "- Docker image: \`ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}\`"
+            echo "- Docker image: \`docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}\`"
             echo "- Application SIF: \`$APP_SIF\`"
             echo "- Release manifest: \`neurocade-release.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
