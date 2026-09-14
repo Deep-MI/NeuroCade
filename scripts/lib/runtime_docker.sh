@@ -41,6 +41,8 @@ docker_run_args() {
     -e NEUROCADE_RUNTIME=docker -e NEUROCADE_BRIDGE_URL="http://host.docker.internal:$BRIDGE_PORT"
     -e NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token -e HOST_DATA_DIR=/data
     -e NEUROCADE_LAUNCH_ID="$LAUNCH_ID"
+    -e NEUROCADE_MCP_HOST_EXECUTABLE="$BRIDGE_VENV/bin/neurocade-mcp"
+    -e NEUROCADE_MCP_ENABLED="$MCP_ENABLED" -e NEUROCADE_MCP_ACCESS="$MCP_ACCESS" -e APP_HTTP_BIND="$HTTP_BIND"
     -e DATABASE_URL=sqlite+pysqlite:////database/neurocade.db -e HOME=/tmp
     -e NEUROCADE_ACCESS_URL="$(sed -n '1p' "$APP_URL_FILE")"
   )
@@ -53,8 +55,9 @@ runtime_start_application() {
   if [[ "$DETACH" -eq 1 ]]; then
     "${DOCKER_APP_ARGS[@]}" -d --restart unless-stopped "$IMAGE"
   else
-    trap 'stop_bridge' EXIT INT TERM
-    "${DOCKER_APP_ARGS[@]}" --rm "$IMAGE"
+    trap 'stop_mcp_discovery; stop_application; stop_bridge' EXIT INT TERM
+    "${DOCKER_APP_ARGS[@]}" --rm "$IMAGE" &
+    wait "$!"
   fi
 }
 

@@ -55,6 +55,7 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock ./
 COPY packages/neurocade-runtime-tools ./packages/neurocade-runtime-tools
+COPY packages/neurocade-mcp ./packages/neurocade-mcp
 RUN pip install --no-cache-dir uv==0.8.17 \
     && uv sync --locked --no-dev --no-editable \
     && pip uninstall -y uv \

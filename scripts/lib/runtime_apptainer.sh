@@ -25,6 +25,8 @@ build_apptainer_application_command() {
     --env NEUROCADE_RUNTIME=apptainer --env NEUROCADE_BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
     --env NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token --env HOST_DATA_DIR=/data
     --env NEUROCADE_LAUNCH_ID="$LAUNCH_ID"
+    --env NEUROCADE_MCP_HOST_EXECUTABLE="$BRIDGE_VENV/bin/neurocade-mcp"
+    --env NEUROCADE_MCP_ENABLED="$MCP_ENABLED" --env NEUROCADE_MCP_ACCESS="$MCP_ACCESS" --env APP_HTTP_BIND="$HTTP_BIND"
     --env DATABASE_URL=sqlite+pysqlite:////database/neurocade.db
     --env NEUROCADE_ACCESS_URL="$(sed -n '1p' "$APP_URL_FILE")" "$APP_SIF"
     python -m uvicorn api_service.main:app --host "$HTTP_BIND" --port "$HTTP_PORT"
@@ -39,7 +41,7 @@ runtime_start_application() {
   else
     "${APPTAINER_APP_COMMAND[@]}" &
     echo "$!" >"$APP_PID_FILE"
-    trap 'stop_application; stop_bridge' EXIT INT TERM
+    trap 'stop_mcp_discovery; stop_application; stop_bridge' EXIT INT TERM
     wait "$(sed -n '1p' "$APP_PID_FILE")"
   fi
 }
