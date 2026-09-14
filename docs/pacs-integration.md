@@ -7,6 +7,13 @@ older stored PACS failures retain guidance through an exact legacy-message mappi
 on the backend. No additional database migration is required for these codes.
 Import-series error codes are translated to actionable messages in the UI.
 
+Case polling invalidates in-flight responses on navigation/unmount and avoids
+overlapping requests within each polling stream. Log/output publication also checks
+the workspace action generation so older case data cannot enter the current viewer.
+
+For an isolated archive populated with six public MRI cases, see
+[Local PACS QA setup](pacs-qa.md).
+
 PACS imports are disabled by default. Configure the `PACS_*` settings in
 `.env.example`, providing HTTPS QIDO/WADO and OAuth client-credentials endpoints,
 a stable source ID, and an explicit comma-separated workspace-ID allowlist.
