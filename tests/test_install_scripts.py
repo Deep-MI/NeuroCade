@@ -84,6 +84,90 @@ def test_host_arch_detects_apple_silicon_through_rosetta(tmp_path: Path) -> None
     assert result.stdout.splitlines() == ["arm64", "translated"]
 
 
+def _bootstrap_installer(
+    tmp_path: Path,
+    *,
+    install_dir: Path | None,
+) -> subprocess.CompletedProcess[str]:
+    bootstrap_dir = tmp_path / "bootstrap"
+    bootstrap_dir.mkdir()
+    shutil.copy2(REPO_ROOT / "scripts/install.sh", bootstrap_dir / "install.sh")
+    archive_root = tmp_path / "archive/NeuroCade-main"
+    (archive_root / "scripts").mkdir(parents=True)
+    installed_script = archive_root / "scripts/install.sh"
+    installed_script.write_text(
+        '#!/usr/bin/env bash\nroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\n'
+        'printf "installed:%s\\n" "$root"\n',
+        encoding="utf-8",
+    )
+    installed_script.chmod(0o755)
+    archive = tmp_path / "neurocade.tar.gz"
+    subprocess.run(["tar", "-czf", str(archive), "-C", str(archive_root.parent), archive_root.name], check=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text('#!/usr/bin/env bash\nexec /bin/cat "$FAKE_ARCHIVE"\n', encoding="utf-8")
+    fake_curl.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "FAKE_ARCHIVE": str(archive),
+            "HOME": str(tmp_path / "home"),
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+        }
+    )
+    if install_dir is not None:
+        env["NEUROCADE_INSTALL_DIR"] = str(install_dir)
+    else:
+        env.pop("NEUROCADE_INSTALL_DIR", None)
+    return subprocess.run(
+        ["bash", str(bootstrap_dir / "install.sh"), "--yes"],
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+
+def test_noninteractive_bootstrap_reports_default_install_directory(tmp_path: Path) -> None:
+    result = _bootstrap_installer(tmp_path, install_dir=None)
+    expected = tmp_path / "home/NeuroCade"
+
+    assert result.returncode == 0, result.stderr
+    assert f"Installing NeuroCade to {expected}" in result.stdout
+    assert f"installed:{expected}" in result.stdout
+    assert (expected / "scripts/install.sh").is_file()
+
+
+def test_bootstrap_accepts_existing_empty_install_directory(tmp_path: Path) -> None:
+    install_dir = tmp_path / "existing-empty"
+    install_dir.mkdir()
+    result = _bootstrap_installer(tmp_path, install_dir=install_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert f"installed:{install_dir}" in result.stdout
+    assert (install_dir / "scripts/install.sh").is_file()
+    assert not (install_dir / "NeuroCade-main").exists()
+
+
+def test_noninteractive_prompt_uses_default_without_reading_stdin() -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; ASSUME_YES=0; prompt "Provider" "no-llm"',
+            "prompt-test",
+            str(REPO_ROOT / "scripts/install.sh"),
+        ],
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "no-llm\n"
+
+
 def _write_runtime_probe(bin_dir: Path, name: str, body: str) -> None:
     path = bin_dir / name
     path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
@@ -147,6 +231,8 @@ def _render_driver_command(tmp_path: Path, driver: str, builder: str) -> list[st
     app_url.write_text("http://localhost:8000\n", encoding="utf-8")
     data = tmp_path / "data"
     data.mkdir()
+    env_file = tmp_path / ".env"
+    env_file.write_text('LOCAL_AUTH_NAME="Local User"\n', encoding="utf-8")
     env = os.environ.copy()
     env.update(
         {
@@ -159,7 +245,8 @@ def _render_driver_command(tmp_path: Path, driver: str, builder: str) -> list[st
             "BRIDGE_TOKEN_FILE": str(tmp_path / "token"),
             "HTTP_BIND": "127.0.0.1",
             "HTTP_PORT": "8000",
-            "ENV_FILE": str(tmp_path / ".env"),
+            "ENV_FILE": str(env_file),
+            "DOCKER_ENV_FILE": str(tmp_path / "docker.env"),
             "BRIDGE_PORT": "8765",
             "APP_URL_FILE": str(app_url),
             "SAMPLE_CASE_DIR": str(tmp_path / "missing-sample"),
@@ -171,8 +258,9 @@ def _render_driver_command(tmp_path: Path, driver: str, builder: str) -> list[st
         [
             "bash",
             "-c",
-            f'source "$1"; {builder}; printf "%s\\n" "${{{array_name}[@]}}"',
+            f'source "$1"; source "$2"; {builder}; printf "%s\\n" "${{{array_name}[@]}}"',
             "driver-test",
+            str(REPO_ROOT / "scripts/lib/env.sh"),
             str(REPO_ROOT / "scripts/lib" / driver),
         ],
         check=True,
@@ -188,6 +276,8 @@ def test_docker_driver_builds_only_docker_application_command(tmp_path: Path) ->
     assert argv[:2] == ["docker", "run"]
     assert "host.docker.internal:host-gateway" in argv
     assert "apptainer" not in argv
+    assert str(tmp_path / "docker.env") in argv
+    assert (tmp_path / "docker.env").read_text(encoding="utf-8") == "LOCAL_AUTH_NAME=Local User\n"
 
 
 def test_apptainer_driver_builds_only_rootless_application_command(tmp_path: Path) -> None:
@@ -195,6 +285,40 @@ def test_apptainer_driver_builds_only_rootless_application_command(tmp_path: Pat
     assert argv[:5] == ["apptainer", "exec", "--cleanenv", "--no-home", "--containall"]
     assert "--fakeroot" not in argv
     assert "docker" not in argv
+    assert str(tmp_path / ".env") in argv
+
+
+def test_installer_env_serialization_round_trips_shell_characters(tmp_path: Path) -> None:
+    value = 'Local User "quoted" $HOME `command` \\ path'
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; line="$(env_line LOCAL_AUTH_NAME "$2")"; '
+            'encoded="${line#*=}"; decoded="$(decode_env_value "$encoded")"; '
+            'printf "%s\\n%s\\n" "$line" "$decoded"',
+            "env-round-trip-test",
+            str(REPO_ROOT / "scripts/lib/env.sh"),
+            value,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.stdout.splitlines() == [
+        'LOCAL_AUTH_NAME="Local User \\"quoted\\" \\$HOME \\`command\\` \\\\ path"',
+        value,
+    ]
+    env_file = tmp_path / ".env"
+    env_file.write_text(result.stdout.splitlines()[0] + "\n", encoding="utf-8")
+    shell_result = subprocess.run(
+        ["bash", "-c", 'set -a; source "$1"; printf "%s" "$LOCAL_AUTH_NAME"', "env-shell-test", str(env_file)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert shell_result.stdout == value
 
 
 def test_launcher_rejects_missing_runtime_before_mutation(tmp_path: Path) -> None:

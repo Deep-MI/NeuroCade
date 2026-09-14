@@ -50,20 +50,37 @@ bootstrap_checkout() {
   command -v tar >/dev/null 2>&1 || { echo "tar is required to unpack NeuroCade." >&2; exit 1; }
   local install_dir="$DEFAULT_INSTALL_DIR"
   if [[ -t 0 && -t 1 ]]; then
-    read -r -p "Install directory [$DEFAULT_INSTALL_DIR]: " install_dir
+    if ! read -r -p "Install directory [$DEFAULT_INSTALL_DIR]: " install_dir; then
+      install_dir=""
+    fi
     install_dir="${install_dir:-$DEFAULT_INSTALL_DIR}"
   fi
+  echo "Installing NeuroCade to $install_dir"
   if [[ -d "$install_dir/.git" ]]; then
     exec bash "$install_dir/scripts/install.sh" "$@"
   fi
   if [[ -f "$install_dir/scripts/install.sh" ]]; then
     exec bash "$install_dir/scripts/install.sh" "$@"
   fi
-  [[ ! -e "$install_dir" ]] || { echo "Install path exists and is not a NeuroCade checkout: $install_dir" >&2; exit 1; }
+  if [[ -L "$install_dir" || ( -e "$install_dir" && ! -d "$install_dir" ) ]]; then
+    echo "Install path exists and is not a directory: $install_dir" >&2
+    exit 1
+  fi
+  local existing_empty_dir=0
+  if [[ -d "$install_dir" ]]; then
+    if [[ -n "$(find "$install_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      echo "Install path exists and is not an empty directory or NeuroCade checkout: $install_dir" >&2
+      exit 1
+    fi
+    existing_empty_dir=1
+  fi
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$tmp_dir"
   mkdir -p "$(dirname "$install_dir")"
+  if [[ "$existing_empty_dir" -eq 1 ]]; then
+    rmdir "$install_dir"
+  fi
   mv "$tmp_dir"/* "$install_dir"
   rmdir "$tmp_dir"
   mkdir -p "$install_dir/.runtime"
@@ -79,33 +96,30 @@ is_tty() {
 
 prompt() {
   local label="$1" default_value="${2:-}" secret="${3:-false}" value default_hint=""
-  if [[ "${ASSUME_YES:-0}" -eq 1 || ! is_tty ]]; then
+  if [[ "${ASSUME_YES:-0}" -eq 1 ]] || ! is_tty; then
     printf '%s\n' "$default_value"
     return
   fi
   if [[ "$secret" == "true" ]]; then
     [[ -n "$default_value" ]] && default_hint=" [**existing key**]"
-    read -r -s -p "$label${default_hint}: " value
+    if ! read -r -s -p "$label${default_hint}: " value; then
+      value=""
+    fi
     printf '\n' >&2
   else
-    read -r -p "$label${default_value:+ [$default_value]}: " value
+    if ! read -r -p "$label${default_value:+ [$default_value]}: " value; then
+      value=""
+    fi
   fi
   printf '%s\n' "${value:-$default_value}"
-}
-
-env_line() {
-  local value="${2:-}"
-  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
-    echo "Environment values must fit on one line: $1" >&2
-    return 1
-  fi
-  printf '%s=%s\n' "$1" "$value"
 }
 
 env_file_value() {
   local root="$1" key="$2"
   [[ -f "$root/.env" ]] || return 0
-  sed -n "s/^${key}=//p" "$root/.env" | tail -n 1 | sed 's/^"//; s/"$//'
+  local value
+  value="$(sed -n "s/^${key}=//p" "$root/.env" | tail -n 1)"
+  decode_env_value "$value"
 }
 
 configured_or_default() {
@@ -340,6 +354,10 @@ write_env() {
   chmod 600 "$root/.runtime/installed-env"
 }
 
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
 bootstrap_checkout "$@"
 
 MODE="local"
@@ -414,6 +432,7 @@ source "$ROOT_DIR/scripts/lib/managed_python.sh"
 source "$ROOT_DIR/scripts/lib/runtime_selection.sh"
 source "$ROOT_DIR/scripts/lib/docker_cli.sh"
 source "$ROOT_DIR/scripts/lib/apptainer_artifacts.sh"
+source "$ROOT_DIR/scripts/lib/env.sh"
 configure_docker_cli_path
 if [[ -z "$RUNTIME" ]]; then
   RUNTIME="$(configured_or_default "$ROOT_DIR" NEUROCADE_RUNTIME "")"

@@ -13,11 +13,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import yaml
+from neurocade_runtime_tools.images import is_version_scoped_neurodesk_image, load_named_image_manifest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from backend_common.settings import ROOT_DIR
 
 WORKFLOW_CATALOG_PATH = ROOT_DIR / "config" / "neuroimaging_tools.yaml"
+TOOL_IMAGE_MANIFEST_PATH = ROOT_DIR / "config" / "tool_images.json"
 _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 _RUN_ID_TOKEN = "{run_id}"
@@ -160,7 +162,7 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
         cleaned = value.strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]*", cleaned):
             raise ValueError("image must be a valid container image name with an explicit tag")
-        if ":" not in cleaned or cleaned.rsplit(":", 1)[1].lower() == "latest":
+        if cleaned.rsplit(":", 1)[1].lower() == "latest" and not is_version_scoped_neurodesk_image(cleaned):
             raise ValueError("image must use an explicit non-latest tag")
         return cleaned
 
@@ -301,7 +303,11 @@ def _tokens(text: str) -> set[str]:
     return {token.lower() for token in _TOKEN_PATTERN.findall(text)}
 
 
-def _read_workflow_catalog(path: Path) -> WorkflowCatalog:
+def _read_workflow_catalog(
+    path: Path,
+    *,
+    image_aliases: dict[str, str] | None = None,
+) -> WorkflowCatalog:
     """Read and validate one workflow catalog without caching it."""
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -309,6 +315,21 @@ def _read_workflow_catalog(path: Path) -> WorkflowCatalog:
         raise ValueError(f"Neuroimaging workflow catalog was not found: {path}") from exc
     except yaml.YAMLError as exc:
         raise ValueError(f"Neuroimaging workflow catalog is invalid YAML: {path}") from exc
+    if image_aliases is not None and isinstance(payload, dict) and isinstance(payload.get("tools"), list):
+        for tool in payload["tools"]:
+            if not isinstance(tool, dict):
+                continue
+            image = tool.get("image")
+            if not isinstance(image, str) or not image.startswith("@"):
+                continue
+            image_id = image[1:]
+            try:
+                tool["image"] = image_aliases[image_id]
+            except KeyError as exc:
+                tool_id = tool.get("id") or "unknown"
+                raise ValueError(
+                    f"Workflow {tool_id} references missing image pin: {image_id}"
+                ) from exc
     try:
         return WorkflowCatalog.model_validate(payload)
     except ValidationError as exc:
@@ -318,7 +339,9 @@ def _read_workflow_catalog(path: Path) -> WorkflowCatalog:
 @lru_cache(maxsize=1)
 def load_workflow_catalog(path: Path = WORKFLOW_CATALOG_PATH) -> WorkflowCatalog:
     """Return the validated authoritative built-in workflow catalog."""
-    return _read_workflow_catalog(path)
+    images = load_named_image_manifest(TOOL_IMAGE_MANIFEST_PATH)
+    aliases = {image_id: spec.oci_reference for image_id, spec in images.items()}
+    return _read_workflow_catalog(path, image_aliases=aliases)
 
 
 def user_workflow_catalog_path(settings: Any, user_id: str) -> Path:

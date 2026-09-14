@@ -83,7 +83,7 @@ all prompts, preserves configured values, and accepts defaults.
 ```
 
 Startup validates the host, updates the managed bridge, prepares the application
-artifact and pinned tools, verifies bridge protocol/backend compatibility, and
+artifact and policy-managed tools, verifies bridge protocol/backend compatibility, and
 then starts the application. The app is available at `http://localhost:8000` by
 default. The Docker profile maps `host.docker.internal` through Linux's
 host-gateway; the Apptainer profile uses host networking and binds the bridge to
@@ -104,8 +104,11 @@ NEUROCADE_GPU_MODE=auto
 ```
 
 Apptainer release selection is installer-managed. Rerun `scripts/install.sh`
-to update its selected channel, or pass `--version stable|beta|TAG`. Tool OCI
-digests and SIF checksums/URLs are in `config/tool_images.json`.
+to update its selected channel, or pass `--version stable|beta|TAG`. Tool image
+policies, OCI digests, and SIF checksums/URLs are in `config/tool_images.json`.
+Most tools are immutable. Neurodesk tools may instead use a version-scoped
+repository's `latest` tag, allowing image rebuilds without changing the bundled
+tool version.
 
 `NEUROCADE_GPU_MODE=auto` selects CUDA only after the bridge validates the host
 and selected tool image. `cuda` requires it; `cpu` disables it. Neither profile
@@ -121,8 +124,8 @@ Large inputs and outputs may remain under `HOST_DATA_DIR`. Use
 
 ## Hardware and storage
 
-The current pinned FastSurfer and DICOM conversion tool artifacts total about
-1.3 GB to download. Allow several additional GB for the application runtime,
+The current FastSurfer and DICOM conversion tool artifacts total about 1.9 GB
+to download. Allow several additional GB for the application runtime,
 container extraction/cache, MRI inputs, and generated outputs. FastSurfer CPU
 processing requires at least 8 GB RAM; more memory and storage are advisable for
 multiple or high-resolution cases. A supported GPU is optional.
