@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -15,12 +16,13 @@ from api_service.assistant.tools.definition import ToolResult
 from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.policies import require_case_write, require_workspace_write
 from api_service.runtime import workflow_runs
+from api_service.runtime.run_admission import serialize_submission
 from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT
-from api_service.runtime_tools.workflow_catalog import resolve_workflow
+from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
 from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope, Run, RunStatus, run_with_sqlite_lock_retry
-from backend_common.run_statuses import TERMINAL_RUN_STATUSES
+from backend_common.run_statuses import TERMINAL_RUN_STATUSES, run_owns_outputs
 
 RUN_STATUS_POLL_INTERVAL_SECONDS = 0.1
 
@@ -94,12 +96,11 @@ class AssistantCatalogExecutor:
         case_id = state.get("case_id")
         if case_id is None:
             return []
-        _case, _workspace, role, case_dir = get_case_for_user(
-            db, case_id, context.user.id, workspace_id=workspace_id
-        )
+        _case, _workspace, role, case_dir = get_case_for_user(db, case_id, context.user.id, workspace_id=workspace_id)
         require_case_write(role)
         return [RuntimeBind(case_dir, CONTAINER_CASE_ROOT, "rw")]
 
+    @serialize_submission
     def catalog_tool_call(
         self,
         arguments: dict[str, Any],
@@ -111,11 +112,14 @@ class AssistantCatalogExecutor:
         case_id: str | None = None,
         scope: str = AssistantScope.case.value,
         run_id: str | None = None,
+        workflow: NeuroimagingWorkflow | None = None,
+        validate_submission: Callable[[NeuroimagingWorkflow], None] | None = None,
+        gpu_enabled: bool | None = None,
     ) -> ToolResult:
         """Durably enqueue a catalog workflow for cancellable execution."""
         try:
             parsed = CatalogToolCallArgs.model_validate(arguments)
-            tool = resolve_workflow(
+            tool = workflow or resolve_workflow(
                 parsed.tool_id,
                 settings=self.settings,
                 user_id=user_id,
@@ -129,6 +133,7 @@ class AssistantCatalogExecutor:
                 workflow=tool,
                 run_id=run_id,
                 db=db,
+                gpu_enabled=gpu_enabled,
             )
         except Exception as exc:
             return ToolResult.error(f"Error preparing tool execution: {exc}")
@@ -138,8 +143,15 @@ class AssistantCatalogExecutor:
         job_id = str(uuid4())
 
         def persist_run() -> tuple[Run, bool]:
+            # Policy and insertion form one fresh write transaction. A stale WAL
+            # snapshot or lock retry must never skip the authorization callback.
+            db.rollback()
+            db.connection(execution_options={"sqlite_begin_immediate": True})
+            if validate_submission is not None:
+                validate_submission(tool)
             existing = db.get(Run, prepared.run_id)
             if existing is not None:
+                db.commit()
                 return existing, True
             candidate = Run(
                 id=prepared.run_id,
@@ -169,6 +181,9 @@ class AssistantCatalogExecutor:
             if run is None:
                 return ToolResult.error(f"Error submitting background workflow: {exc}")
             idempotent_replay = True
+        except Exception as exc:
+            db.rollback()
+            return ToolResult.error(f"Error admitting workflow: {exc}")
 
         if idempotent_replay:
             expected_inputs = list((run.input_json or {}).get("inputs") or [])
@@ -284,9 +299,7 @@ class AssistantCatalogExecutor:
         run = db.get(Run, run_id)
         if run is None or run.workspace_id != workspace_id or (case_id is not None and run.case_id != case_id):
             return ToolResult.error(f"Error: workflow run {run_id!r} was not found.")
-        if run.status in TERMINAL_RUN_STATUSES:
-            payload = {"run_id": run.id, "status": run.status.value}
-            return ToolResult.structured(payload)
+        if run.status in TERMINAL_RUN_STATUSES and not run_owns_outputs(run):
+            return ToolResult.structured(workflow_runs.cancellation_result(run))
         workflow_runs.cancel_workflow_run(db, run)
-        payload = {"run_id": run_id, "status": "canceled"}
-        return ToolResult.structured(payload)
+        return ToolResult.structured(workflow_runs.cancellation_result(run))

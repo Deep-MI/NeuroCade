@@ -120,8 +120,24 @@ class GuiStateStore:
         state = self.state_for_key(gui_state_key)
         return {key: value for key, value in state.items() if key not in {"commands", "acknowledged_commands"}}
 
+    def sessions(self, *, user_id: str, workspace_id: str) -> list[dict[str, str]]:
+        """List synced viewer sessions for one authorized user/workspace."""
+        prefix = f"user:{user_id}|workspace:{workspace_id}|case:"
+        with self._lock:
+            self._prune(time.monotonic())
+            result = []
+            for key, state in self._state_by_key.items():
+                if not key.startswith(prefix) or not state.get("case_id") or not state.get("_viewer_synced"):
+                    continue
+                suffix = key[len(prefix):]
+                case_id, separator, session_id = suffix.partition("|session:")
+                if separator and case_id == state.get("case_id"):
+                    result.append({"case_id": case_id, "gui_session_id": session_id})
+            return result
+
     def sync(self, payload: dict, *, gui_state_key: str) -> dict[str, Any]:
         gui_state = self.state_for_key(gui_state_key)
+        gui_state["_viewer_synced"] = True
         previous_case_id = gui_state.get("case_id")
         gui_state["commands"] = _active_commands(gui_state)
 

@@ -59,6 +59,7 @@ class ToolRegistration:
             parameters=self.resolved_parameters(state),
             execute=execute,
             risk=self.risk,
+            creates_run=self.name == "tool_call",
             parallel_safe=False if self.parallel_safe is None else self.parallel_safe,
             approval_presentation=(
                 None

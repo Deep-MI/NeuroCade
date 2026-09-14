@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     neurocade_runtime: str = Field(default="", alias="NEUROCADE_RUNTIME")
     app_allowed_hosts: str = Field(default="", alias="APP_ALLOWED_HOSTS")
 
+    mcp_enabled: bool = Field(default=False, alias="NEUROCADE_MCP_ENABLED")
+    mcp_access: str = Field(default="standard", alias="NEUROCADE_MCP_ACCESS")
+    app_http_bind: str = Field(default="127.0.0.1", alias="APP_HTTP_BIND")
+    mcp_approval_seconds: int = Field(default=900, ge=30, le=86400, alias="NEUROCADE_MCP_APPROVAL_SECONDS")
+
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
     fs_data_root: Path = Field(default=ROOT_DIR / "neurocade-data", alias="HOST_DATA_DIR")
