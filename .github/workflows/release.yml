@@ -29,9 +29,10 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
-  group: release-${{ github.event_name == 'schedule' && 'beta-main' || format('{0}-{1}', inputs.release_kind, inputs.target_ref) }}
+  group: release-publication
   cancel-in-progress: false
 
 jobs:
@@ -48,12 +49,37 @@ jobs:
         run: git fetch --force --tags origin
 
       - name: Compute release tag
-        id: release
+        if: github.run_attempt == 1
         env:
           RELEASE_KIND: ${{ github.event_name == 'schedule' && 'beta' || inputs.release_kind }}
           RELEASE_DATE: ${{ github.event.inputs.date || '' }}
           RELEASE_CORRECTION: ${{ github.event.inputs.correction || '' }}
-        run: ./scripts/release/compute_tag.sh
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-plan"
+          GITHUB_OUTPUT="$RUNNER_TEMP/release-plan/plan.txt" ./scripts/release/compute_tag.sh
+
+      - name: Save release plan for retries
+        if: github.run_attempt == 1
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-plan/plan.txt
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Restore original release plan
+        if: github.run_attempt > 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name release-plan --dir "$RUNNER_TEMP/release-plan"
+
+      - name: Prepare original release commit
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/publication.py prepare "$RUNNER_TEMP/release-plan/plan.txt"
 
       - name: Skip when there are no new changes
         if: steps.release.outputs.should_release != 'true'
@@ -76,16 +102,16 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and publish Docker image
+      - name: Build staging Docker image
         id: app_image
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/backend.Dockerfile
           platforms: linux/amd64
           push: true
-          tags: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
+          tags: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: |
             NEUROCADE_VERSION=${{ steps.release.outputs.version }}
           labels: |
@@ -98,9 +124,9 @@ jobs:
           sbom: true
 
       - name: Verify anonymous image access
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
-          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           anonymous_config="$RUNNER_TEMP/docker-anonymous"
           mkdir -p "$anonymous_config"
@@ -111,13 +137,13 @@ jobs:
           fi
 
       - name: Install uv and rootless Apptainer
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.8.17"
 
       - name: Install Apptainer
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
           curl -fsSL -o "$RUNNER_TEMP/apptainer.deb" \
             https://github.com/apptainer/apptainer/releases/download/v1.3.6/apptainer_1.3.6_amd64.deb
@@ -126,7 +152,7 @@ jobs:
           sudo apt-get install -y "$RUNNER_TEMP/apptainer.deb"
 
       - name: Build release bridge artifact
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
           bridge_dist="$RUNNER_TEMP/bridge-dist"
           mkdir -p "$bridge_dist"
@@ -139,7 +165,7 @@ jobs:
           echo "BRIDGE_WHEEL_NAME=$bridge_name" >> "$GITHUB_ENV"
 
       - name: Install release bridge
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
           uv venv --python 3.12 "$RUNNER_TEMP/bridge-venv"
           uv pip install --python "$RUNNER_TEMP/bridge-venv/bin/python" "$BRIDGE_WHEEL"
@@ -147,9 +173,9 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bridge-token"
 
       - name: Smoke-test published image
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
-          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           launch_id="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-docker"
@@ -206,9 +232,9 @@ jobs:
           test "$(docker exec "$container" printenv NEUROCADE_BUILD_VERSION)" = "$RELEASE_VERSION"
 
       - name: Convert exact release image to application SIF
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
-          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
           RELEASE_DIGEST: ${{ steps.app_image.outputs.digest }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
@@ -219,7 +245,7 @@ jobs:
           echo "APP_SIF=$app_sif" >> "$GITHUB_ENV"
 
       - name: Create and validate Apptainer release manifest
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
@@ -233,7 +259,7 @@ jobs:
           ./scripts/release/release_manifest.py read neurocade-release.json
 
       - name: Smoke-test application SIF as non-root
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
           launch_id="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-apptainer"
           mkdir -p "$RUNNER_TEMP/sif-data" "$RUNNER_TEMP/sif-images"
@@ -258,50 +284,12 @@ jobs:
           trap 'kill "$app_pid" "$bridge_pid" >/dev/null 2>&1 || true' EXIT
           ./scripts/release/wait_for_http.sh http://127.0.0.1:18000/api/app/healthz 30 2
 
-      - name: Tag release commit
-        if: steps.release.outputs.should_release == 'true'
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$RELEASE_TAG" -m "NeuroCade $RELEASE_TAG"
-          git push origin "refs/tags/$RELEASE_TAG"
-
-      - name: Publish GitHub release
+      - name: Finish release publication
         if: steps.release.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_KIND: ${{ steps.release.outputs.kind }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_PRERELEASE: ${{ steps.release.outputs.prerelease }}
-        run: |
-          args=(
-            "$RELEASE_TAG"
-            --repo "$GITHUB_REPOSITORY"
-            --generate-notes
-          )
-
-          if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
-            args+=(--title "NeuroCade ${RELEASE_VERSION}" --prerelease --latest=false)
-          else
-            args+=(--title "NeuroCade ${RELEASE_VERSION}" --latest)
-          fi
-
-          gh release create "${args[@]}" \
-            "$APP_SIF" \
-            "$APP_SIF.sha256" \
-            "$BRIDGE_WHEEL" \
-            "$BRIDGE_WHEEL.sha256" \
-            neurocade-release.json
-
-      - name: Publish channel tag
-        if: steps.release.outputs.should_release == 'true'
-        env:
-          RELEASE_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}
-          CHANNEL_IMAGE: docker.io/deepmi/neurocade:${{ steps.release.outputs.prerelease == 'true' && 'beta' || 'latest' }}
-        run: docker buildx imagetools create --tag "$CHANNEL_IMAGE" "$RELEASE_IMAGE"
+          CANDIDATE_DIGEST_IMAGE: docker.io/deepmi/neurocade@${{ steps.app_image.outputs.digest }}
+        run: python3 scripts/release/publication.py publish "$RUNNER_TEMP/release-plan/plan.txt"
 
       - name: Summarize release
         if: steps.release.outputs.should_release == 'true'
@@ -312,6 +300,16 @@ jobs:
             echo "- Tag: \`${{ steps.release.outputs.tag }}\`"
             echo "- Commit: \`${{ steps.release.outputs.head_sha }}\`"
             echo "- Docker image: \`docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}\`"
-            echo "- Application SIF: \`$APP_SIF\`"
+            echo "- Application SIF: \`neurocade-app-${{ steps.release.outputs.version }}-amd64.sif\`"
             echo "- Release manifest: \`neurocade-release.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain release recovery
+        if: failure()
+        run: |
+          {
+            echo "## Release interrupted"
+            echo 'Use **Re-run failed jobs** on this run to resume its saved version and source commit.'
+            echo 'If no release-plan artifact was saved, start a new workflow run instead.'
+            echo 'Staging images are not release versions. A partial draft or version tag will be completed on retry.'
           } >> "$GITHUB_STEP_SUMMARY"
