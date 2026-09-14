@@ -266,7 +266,11 @@ ensure_sample_case() {
   [[ -d "$SAMPLE_CASE_DIR/$SAMPLE_CASE_NAME" ]] && return
   local archive="$RUNTIME_DIR/sample-case.tar.gz"
   "$BRIDGE_BIN" download-verified --url "$SAMPLE_CASE_URL" --sha256 "$SAMPLE_CASE_SHA256" --target "$archive"
-  tar -xzf "$archive" -C "$SAMPLE_CASE_DIR"
+  if tar --help 2>&1 | grep -q -- '--warning'; then
+    tar --warning=no-unknown-keyword -xzf "$archive" -C "$SAMPLE_CASE_DIR"
+  else
+    tar -xzf "$archive" -C "$SAMPLE_CASE_DIR"
+  fi
 }
 
 ensure_application() {
