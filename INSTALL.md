@@ -16,11 +16,27 @@ Automatic install:
 ```
 
 Fresh Linux installs prefer rootless Apptainer and automatically download the
-latest stable NeuroCade release, its checksum, and its matching host bridge.
-The install fails clearly when no stable release exists. Linux falls back to
+latest compatible stable NeuroCade release, its checksum, and its matching host
+bridge. If no compatible stable release exists, the installer falls back to the
+newest compatible release and reports the selected pre-release. Linux uses
 Docker when rootless Apptainer is unavailable; macOS uses Docker.
 An existing `NEUROCADE_RUNTIME` setting is preserved on reinstall; pass
 `--runtime docker|apptainer` to override it.
+
+Install a published beta explicitly:
+
+```bash
+# Docker rolling beta image
+./scripts/install.sh --mode local --runtime docker --image docker.io/deepmi/neurocade:beta
+
+# Latest Apptainer beta release
+./scripts/install.sh --mode local --runtime apptainer --version beta
+```
+
+For a reproducible install, use a versioned Docker Hub image with `--image`, or
+an exact v-prefixed GitHub release tag with Apptainer, for example
+`--version v2026.9.9-beta.1`. The installer rejects `--image` for Apptainer and
+`--version` for Docker so a requested version cannot be silently ignored.
 
 Build an Apptainer installation from the current checkout:
 
@@ -42,9 +58,8 @@ are preserved.
 
 Docker installs build the application from the current checkout by default, so
 the application and host bridge always share one protocol revision. Pass
-`--image IMAGE` to opt into a prebuilt image. Apptainer must be selected
-explicitly only when it is not the automatically selected Linux runtime.
-Release artifacts and checksums are discovered automatically.
+`--image docker.io/deepmi/neurocade:<tag>` to opt into a prebuilt image.
+Apptainer release artifacts and checksums are discovered automatically.
 
 The managed `uv` executable and Python installation live under `.runtime` and
 are used directly by the launcher. They do not need to be added to `PATH` and
@@ -89,8 +104,8 @@ NEUROCADE_GPU_MODE=auto
 ```
 
 Apptainer release selection is installer-managed. Rerun `scripts/install.sh`
-to update to the latest stable release. Tool OCI digests and SIF checksums/URLs
-are in `config/tool_images.json`.
+to update its selected channel, or pass `--version stable|beta|TAG`. Tool OCI
+digests and SIF checksums/URLs are in `config/tool_images.json`.
 
 `NEUROCADE_GPU_MODE=auto` selects CUDA only after the bridge validates the host
 and selected tool image. `cuda` requires it; `cpu` disables it. Neither profile
@@ -103,6 +118,14 @@ files and outputs use the host bind mount. Apptainer keeps SQLite under
 Large inputs and outputs may remain under `HOST_DATA_DIR`. Use
 `./scripts/admin/reset_app_state.sh --yes` for a local reset; it preserves
 `license.txt` and the managed bridge/image installation.
+
+## Hardware and storage
+
+The current pinned FastSurfer and DICOM conversion tool artifacts total about
+1.3 GB to download. Allow several additional GB for the application runtime,
+container extraction/cache, MRI inputs, and generated outputs. FastSurfer CPU
+processing requires at least 8 GB RAM; more memory and storage are advisable for
+multiple or high-resolution cases. A supported GPU is optional.
 
 ## Uninstall
 

@@ -15,9 +15,21 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scrip
 ```
 
 On Linux, the installer prefers rootless Apptainer and downloads the latest
-verified stable release with its matching host bridge. If Apptainer is not
-available it uses Docker; macOS uses Docker. Docker installs build the
-application image from the same source revision as the host runtime bridge.
+verified stable release with its matching host bridge. If no compatible stable
+release exists, it uses the newest compatible release and says so. If Apptainer
+is not available it uses Docker; macOS uses Docker. Force a runtime with
+`--runtime docker` or `--runtime apptainer`. Docker installs build the application
+image from the same source revision as the host runtime bridge.
+
+Install the current beta channel explicitly:
+
+```bash
+# Docker
+bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --runtime docker --image docker.io/deepmi/neurocade:beta
+
+# Rootless Apptainer on Linux amd64
+bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --runtime apptainer --version beta
+```
 
 To build a local checkout into an Apptainer SIF (requires Docker):
 
