@@ -33,9 +33,12 @@ async function main() {
   const child = spawn(config.executable, ['connect-paired', '--pairing-file', path.join(__dirname, 'installation.json')], {
     stdio: ['pipe', 'pipe', 'pipe'], shell: false,
   });
+  process.stdin.on('error', () => child.kill('SIGTERM'));
+  child.stdout.on('error', () => child.kill('SIGTERM'));
   process.stdin.pipe(child.stdin);
   child.stdout.pipe(process.stdout);
   // Credentials and backend tracebacks must never enter the desktop logs.
+  child.stderr.on('error', () => child.kill('SIGTERM'));
   child.stderr.resume();
   child.stdin.on('error', () => {});
   child.on('error', () => {

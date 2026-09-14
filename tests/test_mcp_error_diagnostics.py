@@ -12,6 +12,8 @@ from neurocade_mcp.transfers import check_response, upload
 from test_mcp_adapter import database as database
 from test_mcp_transfers import app_for, headers, volume
 
+__all__ = ["database"]
+
 
 def test_invalid_title_is_rejected_before_file_access(tmp_path):
     with pytest.raises(TransferError) as error:

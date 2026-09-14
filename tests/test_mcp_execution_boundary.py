@@ -17,6 +17,8 @@ from backend_common.case_storage import case_storage_dir
 from backend_common.db import AssistantToolExecution, Run
 from backend_common.settings import get_settings
 
+__all__ = ["database"]
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["preset", "input", "revoke", "read_access", "membership"])

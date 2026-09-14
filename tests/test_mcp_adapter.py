@@ -344,7 +344,8 @@ def test_management_pairing_cannot_use_agent_credentials(database):
         with database() as db:
             row = db.get(McpClient, created["client_id"])
             assert row.token_hash != created["token"]
-        assert client.delete("/api/app/mcp/clients/" + created["client_id"], headers={"X-NeuroCade-UI": "1"}).status_code == 200
+        deleted = client.delete("/api/app/mcp/clients/" + created["client_id"], headers={"X-NeuroCade-UI": "1"})
+        assert deleted.status_code == 200
         assert client.post("/api/app/mcp/clients", json=body, headers={"X-NeuroCade-UI": "1"}).status_code == 405
 
 

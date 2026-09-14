@@ -103,6 +103,7 @@ def wait_archive(timeout=30):
             if response.ok:
                 return
         except requests.RequestException:
+            # The archive is expected to refuse connections during restart.
             pass
         time.sleep(1)
     raise TimeoutError("Dummy PACS did not become healthy after restart")

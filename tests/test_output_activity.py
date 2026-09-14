@@ -44,8 +44,8 @@ def test_snapshot_releases_global_lock_and_cleans_up_on_failure(database):
             ensure_outputs_idle(db, 'other')
             return True
 
-    with database() as db:
-        with pytest.raises(RuntimeError, match='compression failed'), reserve_case_files(db, 'w', 'case-w'):
+    def fail_snapshot(db):
+        with reserve_case_files(db, 'w', 'case-w'):
             with ThreadPoolExecutor(1) as pool:
                 assert pool.submit(unrelated_work).result(timeout=3)
             with pytest.raises(OutputBusy, match='download'):
@@ -56,6 +56,10 @@ def test_snapshot_releases_global_lock_and_cleans_up_on_failure(database):
                 purge_case(db, get_settings(), db.get(Case, 'case-w'), db.get(Workspace, 'w'))
             db.rollback()
             raise RuntimeError('compression failed')
+
+    with database() as db:
+        with pytest.raises(RuntimeError, match='compression failed'):
+            fail_snapshot(db)
         ensure_outputs_idle(db, 'w', 'case-w')
         with reserve_case_files(db, 'w', 'case-w'):
             pass

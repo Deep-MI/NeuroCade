@@ -8,6 +8,8 @@ from backend_common.output_activity import OutputBusy, ensure_outputs_idle
 from backend_common.submission_lock import serialize_submission as serialize_submission
 from backend_common.submission_lock import submission_lock as _submission_lock
 
+__all__ = ["guard_output_submission", "serialize_submission"]
+
 
 def guard_output_submission(function):
     @wraps(function)

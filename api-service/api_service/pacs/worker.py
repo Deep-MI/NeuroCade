@@ -249,6 +249,7 @@ def cleanup_destinations(row):
                 quarantine.parent.mkdir(parents=True, exist_ok=True)
                 destination.rename(quarantine)
             except OSError:
+                # The failed cleanup is recorded below; quarantine is best effort.
                 pass
     return success
 

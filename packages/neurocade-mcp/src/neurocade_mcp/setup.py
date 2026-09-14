@@ -82,6 +82,7 @@ def register(target, name, executable, connection, config_path=None):
         private_json(path, config)
     elif target != "manual":
         raise ValueError("Choose a supported local client; hosted sessions cannot launch a local connector")
+    return None
 
 
 def register_connection(target, executable, pairing_path, saved, config_path=None):

@@ -96,6 +96,7 @@ def setup():
                 print("Orthanc ready at http://127.0.0.1:8042", flush=True)
                 return
         except requests.RequestException:
+            # The archive may refuse connections while Docker is starting.
             pass
         time.sleep(1)
     raise RuntimeError("Orthanc did not become ready")
@@ -190,7 +191,7 @@ def seed():
         patient = str(header.PatientID)
         if patient in patients or header.Modality != "MR":
             continue
-        print(f"Downloading distinct case {len(patients) + 1}/6: {patient}, {len(entries)} instances", flush=True)
+        print(f"Downloading distinct case {len(patients) + 1}/6: {len(entries)} instances", flush=True)
         with ThreadPoolExecutor(max_workers=8) as pool:
             paths = list(pool.map(lambda entry: download(*entry), entries))
         hashes = []
@@ -276,6 +277,7 @@ def start_gateway():
             return
         raise RuntimeError("Port 8443 is occupied by a different service")
     except requests.ConnectionError:
+        # No listener is the expected state before starting the gateway.
         pass
     with (STATE / "gateway.log").open("ab") as log:
         process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "serve"],
@@ -289,6 +291,7 @@ def start_gateway():
             if response.status_code == 401:
                 break
         except requests.ConnectionError:
+            # Retry while the gateway process initializes its TLS listener.
             pass
         time.sleep(0.2)
     else:
@@ -317,7 +320,7 @@ def verify():
     client = PacsClient(settings)
     try:
         assert requests.get(settings.pacs_base_url + "/studies", verify=settings.pacs_ca_bundle, timeout=5).status_code == 401
-        for row in inventory:
+        for index, row in enumerate(inventory, start=1):
             studies = client.query("/studies", {"PatientID": row["patient_id"]})
             assert any(value(item, "0020000D") == row["study_uid"] for item in studies)
             instances = client.instances(row["study_uid"], row["series_uid"])
@@ -329,9 +332,9 @@ def verify():
                 header = pydicom.dcmread(path, stop_before_pixels=True)
                 assert str(header.SOPInstanceUID) == instance
                 assert str(header.PatientID) == row["patient_id"]
-            report.append({"patient_id": row["patient_id"], "instances": len(instances),
+            report.append({"case_index": index, "instances": len(instances),
                            "retrieval_bytes": size, "retrieval_sha256": digest})
-            print(f'PASS {row["patient_id"]}: search, paginated instances, WADO retrieval', flush=True)
+            print(f"PASS case {index}/6: search, paginated instances, WADO retrieval", flush=True)
     finally:
         client.close()
     (STATE / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -358,8 +361,8 @@ def status():
     response.raise_for_status()
     statistics = response.json()
     print(json.dumps({key: statistics[key] for key in ["CountPatients", "CountStudies", "CountSeries", "CountInstances"]}))
-    for row in json.loads((STATE / "inventory.json").read_text()):
-        print(f'{row["patient_id"]}: {row["description"]} ({row["instances"]} instances)')
+    for index, row in enumerate(json.loads((STATE / "inventory.json").read_text()), start=1):
+        print(f'case {index}: {row["instances"]} instances')
 
 
 def configure_app():
