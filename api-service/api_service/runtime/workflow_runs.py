@@ -57,6 +57,7 @@ def submit_workflow_run(
 
 def mark_workflow_run_failed(db: Session, run_id: str, tool_id: str, error: Exception | str) -> Run | None:
     """Persist a submission failure for a run that was already queued."""
+    from api_service.runtime_tools.errors import workflow_error_code
     run = db.get(Run, run_id)
     if run is None:
         return None
@@ -64,6 +65,8 @@ def mark_workflow_run_failed(db: Session, run_id: str, tool_id: str, error: Exce
     run.status = RunStatus.failed
     run.error_message = message
     run.result_json = {"status": "failed", "run_id": run.id, "tool_id": tool_id}
+    if code := workflow_error_code(error):
+        run.result_json = {**run.result_json, "error_code": code}
     db.commit()
     return run
 

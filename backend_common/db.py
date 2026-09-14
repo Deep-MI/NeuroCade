@@ -177,6 +177,25 @@ class Case(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text)
 
 
+class PacsImport(Base, TimestampMixin):
+    __tablename__ = "pacs_imports"
+    __table_args__ = (UniqueConstraint("workspace_id", "submission_key", name="uq_pacs_submission"),)
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", onupdate="CASCADE", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    source_id: Mapped[str] = mapped_column(String(128))
+    study_uid: Mapped[str] = mapped_column(String(64), index=True)
+    submission_key: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    job_id: Mapped[str | None] = mapped_column(String(128))
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    provenance_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    series_json: Mapped[list] = mapped_column(JSON, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+
+
 class Workspace(Base, TimestampMixin):
     __tablename__ = "workspaces"
 

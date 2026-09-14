@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
 from backend_common.case_storage import validate_case_title
-from backend_common.db import Case, Run
+from backend_common.db import Case, PacsImport, Run
 from backend_common.deployment_policy import get_deployment_policy
 from backend_common.run_statuses import ACTIVE_RUN_STATUSES
 
@@ -79,6 +79,8 @@ def raise_case_conflict(exc: IntegrityError, detail: str) -> None:
 
 def ensure_case_not_active(db: Session, case: Case) -> None:
     """Reject case changes while an run is active."""
+    if db.query(PacsImport).filter(PacsImport.case_id == case.id, (PacsImport.state.in_(("queued", "running", "canceling"))) | (PacsImport.error_code == "cleanup_failed")).first():
+        raise HTTPException(status_code=409, detail="Case has an active PACS import")
     active_run = (
         db.query(Run)
         .filter(Run.case_id == case.id, Run.status.in_(ACTIVE_RUN_STATUSES))

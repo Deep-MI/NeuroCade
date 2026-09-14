@@ -42,6 +42,9 @@ class WorkflowInput(StrictWorkflowModel):
 
     name: str = Field(pattern=_ID_PATTERN)
     description: str
+    modalities: list[str] = Field(default_factory=list)
+    dimensions: list[int] = Field(default_factory=list)
+    sequences: list[str] = Field(default_factory=list)
 
 
 class WorkflowOutput(StrictWorkflowModel):

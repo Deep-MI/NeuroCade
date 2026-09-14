@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import tempfile
@@ -10,12 +9,10 @@ import zipfile
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
-from neurocade_runtime_tools.container_request import DCM2NIIX_IMAGE, RuntimeBind, build_container_request
-from neurocade_runtime_tools.execution import RuntimeExecutionRequest, execute_runtime_request
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
-from api_service.runtime_tools.runtime_images import runtime_image_spec
+from api_service.runtime.dicom_conversion import run_dcm2niix as _run_dcm2niix
 from backend_common.case_storage import (
     case_named_upload,
     ensure_case_storage_layout,
@@ -204,39 +201,6 @@ def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member) as source, destination.open("wb") as output:
                 shutil.copyfileobj(source, output)
-
-
-def _run_dcm2niix(input_dir: Path, output_dir: Path) -> None:
-    """Convert staged DICOM files with the configured dcm2niix container."""
-    command = ["dcm2niix", "-z", "y", "-b", "y", "-ba", "y", "-o", "/output", "-f", "%p_%s", "/input"]
-    binds = [
-        RuntimeBind(input_dir, "/input", "ro"),
-        RuntimeBind(output_dir, "/output", "rw"),
-    ]
-    cmd = build_container_request(
-        image=runtime_image_spec(os.environ.get("NEUROCADE_DCM2NIIX_IMAGE", DCM2NIIX_IMAGE)),
-        binds=binds,
-        disable_network=True,
-        command=command,
-    )
-    try:
-        result = execute_runtime_request(
-            RuntimeExecutionRequest(
-                cwd=output_dir,
-                timeout_s=settings.dicom_conversion_timeout_seconds,
-                execution_mode="container",
-                output_root=output_dir,
-                workdir_root=output_dir,
-                container_run=cmd,
-            )
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail="The configured host runtime is not installed or not on PATH") from exc
-    except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="DICOM conversion timed out") from exc
-    if result.returncode != 0:
-        stderr = result.stderr.strip() or result.stdout.strip() or "dcm2niix failed"
-        raise HTTPException(status_code=400, detail=f"DICOM conversion failed: {stderr[-1000:]}")
 
 
 async def _stage_dicom_sources(upload_files: list[UploadFile], input_dir: Path, raw_dir: Path) -> None:

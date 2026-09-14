@@ -76,6 +76,7 @@ class RunSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     error_message: str | None = None
+    error_code: str | None = None
 
 
 class AnalysisToolSummary(BaseModel):

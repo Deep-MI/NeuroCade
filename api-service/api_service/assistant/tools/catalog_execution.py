@@ -128,6 +128,7 @@ class AssistantCatalogExecutor:
                 binds[0],
                 workflow=tool,
                 run_id=run_id,
+                db=db,
             )
         except Exception as exc:
             return ToolResult.error(f"Error preparing tool execution: {exc}")

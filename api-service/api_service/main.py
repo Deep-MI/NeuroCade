@@ -17,7 +17,7 @@ from api_service.jobs.reconcile import reconcile_interrupted_runs
 from api_service.jobs.store import DurableJobStore
 from api_service.jobs.update_checker import start_update_checker
 from api_service.middleware import register_app_middleware
-from api_service.routers import app_runtime, artifacts, assistant, assistant_turns, auth, cases, monitoring, providers, workspaces
+from api_service.routers import app_runtime, artifacts, assistant, assistant_turns, auth, cases, monitoring, pacs, providers, workspaces
 from api_service.runtime import logger
 from api_service.runtime.neuroimaging_tasks import register_neuroimaging_tasks
 from api_service.runtime_tools.workflow_catalog import load_workflow_catalog
@@ -89,6 +89,10 @@ async def lifespan(_app: FastAPI):
         validate_auth_configuration()
         startup_logger.info("Applying database migrations.")
         bootstrap_database(engine)
+        from api_service.pacs.client import validate_config
+        from api_service.pacs.worker import recover_imports
+        validate_config(settings)
+        recover_imports()
         startup_logger.info("Seeding local demo state.")
         with SessionLocal() as startup_db:
             seed_demo_state(startup_db)
@@ -165,6 +169,7 @@ app.include_router(assistant.router)
 app.include_router(assistant_turns.router)
 app.include_router(artifacts.router)
 app.include_router(cases.router)
+app.include_router(pacs.router)
 app.include_router(monitoring.router)
 app.include_router(app_runtime.router)
 

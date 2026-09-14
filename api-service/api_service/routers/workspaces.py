@@ -96,6 +96,8 @@ def ensure_workspace_cases_idle(db: Session, cases: list[Case]) -> None:
     """Reject workspace changes when any selected case has an active run."""
     active_case_ids: list[str] = []
     for case in cases:
+        from api_service.cases.service import ensure_case_not_active
+        ensure_case_not_active(db, case)
         active_run = (
             db.query(Run)
             .filter(Run.case_id == case.id, Run.status.in_(ACTIVE_RUN_STATUSES))

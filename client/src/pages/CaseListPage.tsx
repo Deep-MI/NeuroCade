@@ -16,6 +16,7 @@ import {
 import { SessionActions } from '../auth/AppSession';
 import { useAppSession } from '../auth/sessionContext';
 import { CaseCard } from '../components/CaseCard';
+import { PacsImport } from '../components/PacsImport';
 import { Chat } from '../components/Chat';
 import { UploadCaseModal } from '../components/UploadCaseModal';
 import { WorkspaceDialogs } from '../components/WorkspaceDialogs';
@@ -334,6 +335,7 @@ export function CaseListPage() {
         <button type="button" onClick={() => setIsLight((value) => !value)} className="nc-btn nc-icon-btn" title={isLight ? 'Switch to dark mode' : 'Switch to light mode'}>
           {isLight ? <Moon size={14} /> : <Sun size={14} />}
         </button>
+        {workspaceId && <PacsImport key={workspaceId} workspaceId={workspaceId} />}
         <SessionActions />
       </div>
 

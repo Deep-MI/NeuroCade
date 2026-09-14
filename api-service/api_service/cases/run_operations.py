@@ -21,6 +21,7 @@ from api_service.cases.uploads import _require_run_analysis_input_artifact
 from api_service.helpers import get_case_for_user, log_event
 from api_service.policies import require_case_write
 from api_service.runtime import settings, workflow_runs
+from api_service.runtime_tools.errors import WorkflowInputError
 from api_service.runtime_tools.runtime_images import runtime_image_spec
 from api_service.runtime_tools.workflow_catalog import resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
@@ -121,6 +122,7 @@ async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: 
             workflow=tool,
             run_id=run.id,
             gpu_enabled=gpu_enabled,
+            db=db,
         )
         initialize_run_logs(case_dir, run.id)
         # ``db.refresh(run)`` opened a read transaction. End that snapshot
@@ -139,6 +141,8 @@ async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: 
         )
     except Exception as exc:
         workflow_runs.mark_workflow_run_failed(db, run.id, tool.id, exc)
+        if isinstance(exc, WorkflowInputError):
+            raise HTTPException(422, detail={"code": exc.code, "message": str(exc)}) from exc
         raise
 
     log_event(db, context, "run.started", case_id=case.id, details={"run_id": run.id, "tool_id": tool.id})

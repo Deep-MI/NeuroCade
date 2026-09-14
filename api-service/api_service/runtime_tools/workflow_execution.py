@@ -99,6 +99,7 @@ def prepare_workflow(
     workflow: NeuroimagingWorkflow | None = None,
     run_id: str | None = None,
     gpu_enabled: bool | None = None,
+    db: Session | None = None,
 ) -> PreparedWorkflow:
     """Resolve one workflow invocation and validate all model-supplied paths."""
     tool = workflow or resolve_workflow(tool_id)
@@ -111,8 +112,10 @@ def prepare_workflow(
     host_root = Path(bind.host_path).expanduser().resolve()
     if not host_root.is_dir():
         raise ValueError(f"Authorized workflow root does not exist: {host_root}")
-    for path in inputs:
-        _host_path_for_container_path(path, bind)
+    for path, requirement in zip(inputs, tool.inputs, strict=True):
+        host_input = _host_path_for_container_path(path, bind)
+        from api_service.pacs.compatibility import validate_input
+        validate_input(host_input, requirement, db=db)
 
     resolved_run_id = run_id or str(uuid4())
     host_run_dir = (host_root / ".runs" / resolved_run_id).resolve()
@@ -400,6 +403,7 @@ def execute_workflow(
         workflow=workflow,
         run_id=run_id,
         gpu_enabled=gpu_enabled,
+        db=db,
     )
     return execute_prepared_workflow(
         prepared,

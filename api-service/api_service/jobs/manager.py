@@ -74,7 +74,7 @@ def _int_env(name: str, default: int) -> int:
 def _default_concurrency() -> dict[str, int]:
     api = _int_env("API_WORKER_CONCURRENCY", 2)
     fastsurfer = _int_env("FASTSURFER_CONCURRENCY", 1)
-    return {DEFAULT_QUEUE: api, FASTSURFER_QUEUE: fastsurfer}
+    return {DEFAULT_QUEUE: api, FASTSURFER_QUEUE: fastsurfer, "pacs-import": 1}
 
 
 class JobManager:

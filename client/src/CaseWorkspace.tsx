@@ -6,6 +6,7 @@ import { CaseWorkspaceRightPanel } from './components/CaseWorkspaceRightPanel';
 import { CaseWorkspaceToolbar, type WorkspaceRightPanel } from './components/CaseWorkspaceToolbar';
 import { DownloadCaseModal } from './components/DownloadCaseModal';
 import { LayerPickerModal } from './components/LayerPickerModal';
+import { PacsProvenance } from './components/PacsProvenance';
 import type { ChatMessage, GuiCommand, LocationInfo, MriViewerRef } from './types';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { UploadCaseModal } from './components/UploadCaseModal';
@@ -22,6 +23,7 @@ import { fetchOutputsList, saveGeneratedVolume } from './utils/api';
 import { workspaceCasesPath } from './utils/caseRoutes';
 import { defaultPaneWidth } from './utils/guiSession';
 import { outputVolumeLayerType } from './utils/layerBuilders';
+import { analysisFailureMessage } from './utils/errorMessages';
 
 const NeuroCadeCaseViewer = lazy(() => import('./neurocadeViewer/NeuroCadeCaseViewer').then(module => ({ default: module.NeuroCadeCaseViewer })));
 const CaseManagerModal = lazy(() => import('./components/CaseManagerModal').then(module => ({ default: module.CaseManagerModal })));
@@ -300,7 +302,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     : isRunFailed(displayedRunStatus)
       ? displayedRunStatus === 'canceled'
         ? 'Analysis job canceled.'
-        : 'Analysis job failed.'
+        : analysisFailureMessage(controller.runError, controller.runErrorCode)
       : null;
 
   return (
@@ -331,6 +333,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         onToggleTheme={() => setIsLight((value) => !value)}
       />
 
+      {activeCaseId && <PacsProvenance key={activeCaseId} caseId={activeCaseId} />}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ErrorBoundary label="NeuroCadeCaseViewer">
           <Suspense fallback={<div className="flex h-full min-w-0 flex-1 items-center justify-center bg-[var(--nc-bg-deep)] text-sm text-[var(--nc-tx-muted)]">Loading viewer...</div>}>

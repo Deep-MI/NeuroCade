@@ -6,6 +6,7 @@ import type { AnalysisRunParams, CaseSummary, ChatMessage } from '../types';
 import * as api from '../utils/api';
 import { caseViewerPath } from '../utils/caseRoutes';
 import { workflowStatusNotificationId } from '../utils/runNotifications';
+import { ApiError } from '../utils/errorMessages';
 
 interface UseAnalysisRunControllerArgs {
   initialWorkspaceId: string | null;
@@ -34,6 +35,8 @@ export function useAnalysisRunController({
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<string>('idle');
   const [runId, setRunId] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [runErrorCode, setRunErrorCode] = useState<string | null>(null);
   const [isSubmittingRun, setIsSubmittingRun] = useState(false);
   const [queueMessage, setQueueMessage] = useState<string>('This workflow will run as a background job.');
 
@@ -53,6 +56,8 @@ export function useAnalysisRunController({
     try {
       await api.cancelCaseRun(currentCaseId);
       setRunStatus('canceled');
+      setRunError(null);
+      setRunErrorCode(null);
       setChatNotifications((previous) => [...previous, {
         notificationId: runId ? workflowStatusNotificationId(runId, 'canceled') : undefined,
         role: 'info',
@@ -75,6 +80,8 @@ export function useAnalysisRunController({
       ?? null;
     setShowConfirm(false);
     setIsSubmittingRun(true);
+    setRunError(null);
+    setRunErrorCode(null);
     setLogs(`Starting ${params.tool_id} workflow…\nChecking runtime and queuing analysis.`);
     try {
       const data = await api.startRun({
@@ -99,6 +106,8 @@ export function useAnalysisRunController({
       console.error('Run error:', error);
       const message = error instanceof Error ? error.message : String(error);
       setRunStatus('failed');
+      setRunError(message);
+      setRunErrorCode(error instanceof ApiError ? error.code ?? null : null);
       setLogs(`Could not start ${params.tool_id} workflow.\n${message}`);
       setChatNotifications((previous) => [...previous, {
         role: 'info',
@@ -140,6 +149,10 @@ export function useAnalysisRunController({
     selectedToolId,
     runId,
     runStatus,
+    runError,
+    setRunError,
+    runErrorCode,
+    setRunErrorCode,
     isSubmittingRun,
     setRunId,
     setRunStatus,

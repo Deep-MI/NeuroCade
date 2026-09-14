@@ -21,6 +21,22 @@ class Settings(BaseSettings):
 
     fs_data_root: Path = Field(default=ROOT_DIR / "neurocade-data", alias="HOST_DATA_DIR")
     dicom_conversion_timeout_seconds: int = Field(default=300, alias="DICOM_CONVERSION_TIMEOUT_SECONDS")
+    pacs_enabled: bool = False
+    pacs_workspace_ids: str = ""
+    pacs_source_id: str = "hospital-pacs"
+    pacs_base_url: str = ""
+    pacs_qido_prefix: str | None = None
+    pacs_wado_prefix: str | None = None
+    pacs_token_url: str = ""
+    pacs_client_id: str = ""
+    pacs_client_secret: str = Field(default="", repr=False)
+    pacs_scope: str = ""
+    pacs_ca_bundle: str | None = None
+    pacs_max_instance_bytes: int = Field(default=512 * 1024 * 1024, gt=0)
+    pacs_max_import_bytes: int = Field(default=8 * 1024 * 1024 * 1024, gt=0)
+    pacs_max_instances: int = Field(default=10000, gt=0)
+    pacs_max_series: int = Field(default=100, gt=0)
+    pacs_max_pending: int = Field(default=10, gt=0)
     max_upload_file_size_bytes: int = Field(default=2 * 1024 * 1024 * 1024, alias="MAX_UPLOAD_FILE_SIZE_BYTES")
     dicom_zip_max_entries: int = Field(default=5000, alias="DICOM_ZIP_MAX_ENTRIES")
     dicom_zip_max_expanded_bytes: int = Field(default=4 * 1024 * 1024 * 1024, alias="DICOM_ZIP_MAX_EXPANDED_BYTES")

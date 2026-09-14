@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from api_service.jobs import job_manager
+from api_service.runtime_tools.errors import workflow_error_code
 from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, resolve_workflow
 from api_service.runtime_tools.workflow_execution import execute_workflow
 from backend_common.artifact_reconciliation import reconcile_artifacts
@@ -112,6 +113,8 @@ def run_neuroimaging_workflow_task(
             "return_code": None,
             "stderr": str(exc),
         }
+        if code := workflow_error_code(exc):
+            result["error_code"] = code
 
     with SessionLocal() as db:
         run = db.get(Run, run_id)
@@ -171,3 +174,9 @@ def submit_neuroimaging_workflow(
 def register_neuroimaging_tasks() -> None:
     """Register the generic catalog workflow task."""
     job_manager.register(RUN_NEUROIMAGING_WORKFLOW_TASK, run_neuroimaging_workflow_task)
+    job_manager.register("api_service.pacs.import", run_pacs_import_task)
+
+
+def run_pacs_import_task(*, import_id: str, attempt_id: str | None = None) -> None:
+    from api_service.pacs.worker import run_import
+    run_import(import_id, attempt_id)
