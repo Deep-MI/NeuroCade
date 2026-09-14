@@ -10,6 +10,7 @@ from pathlib import Path
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SAFE_TAG = re.compile(r"^v[0-9][A-Za-z0-9._-]*$")
+MANIFEST_ASSET = "neurocade-release.json"
 
 
 def _safe(value: object, pattern: re.Pattern[str], label: str) -> str:
@@ -40,6 +41,40 @@ def read_manifest(path: Path) -> list[str]:
     return values
 
 
+def resolve_release(releases_path: Path, channel: str) -> tuple[str, bool]:
+    payload = json.loads(releases_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Invalid GitHub releases response")
+
+    compatible: list[tuple[str, bool]] = []
+    for release in payload:
+        if not isinstance(release, dict) or release.get("draft") is not False:
+            continue
+        tag = release.get("tag_name")
+        prerelease = release.get("prerelease")
+        assets = release.get("assets")
+        if not isinstance(tag, str) or not SAFE_TAG.fullmatch(tag) or not isinstance(prerelease, bool):
+            continue
+        if not isinstance(assets, list) or not any(
+            isinstance(asset, dict) and asset.get("name") == MANIFEST_ASSET for asset in assets
+        ):
+            continue
+        compatible.append((tag, prerelease))
+
+    if channel == "beta":
+        candidates = [release for release in compatible if release[1]]
+    elif channel == "stable":
+        candidates = [release for release in compatible if not release[1]]
+        if not candidates:
+            candidates = compatible
+    else:
+        raise ValueError(f"Unsupported release channel: {channel}")
+
+    if not candidates:
+        raise ValueError(f"No compatible NeuroCade {channel} release was found")
+    return candidates[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -53,6 +88,9 @@ def main() -> None:
 
     read = subparsers.add_parser("read")
     read.add_argument("manifest", type=Path)
+    resolve = subparsers.add_parser("resolve")
+    resolve.add_argument("releases", type=Path)
+    resolve.add_argument("--channel", choices=("stable", "beta"), required=True)
     args = parser.parse_args()
 
     if args.command == "create":
@@ -66,8 +104,12 @@ def main() -> None:
         }
         args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         read_manifest(args.output)
-    else:
+    elif args.command == "read":
         print("\n".join(read_manifest(args.manifest)))
+    else:
+        tag, prerelease = resolve_release(args.releases, args.channel)
+        print(tag)
+        print("true" if prerelease else "false")
 
 
 if __name__ == "__main__":

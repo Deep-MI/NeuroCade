@@ -72,7 +72,7 @@ HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
 [[ "$HOST_DATA_DIR" == /* ]] || HOST_DATA_DIR="$ROOT_DIR/$HOST_DATA_DIR"
 CONTAINER_NAME="${NEUROCADE_CONTAINER_NAME:-neurocade}"
 DATABASE_VOLUME="${NEUROCADE_DATABASE_VOLUME:-neurocade-database}"
-IMAGE="${NEUROCADE_IMAGE:-ghcr.io/deep-mi/neurocade:latest}"
+IMAGE="${NEUROCADE_IMAGE:-docker.io/deepmi/neurocade:latest}"
 
 case "$RUNTIME" in
   docker|apptainer) ;;

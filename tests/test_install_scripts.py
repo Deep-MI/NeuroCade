@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -243,6 +244,63 @@ def test_release_manifest_round_trip(tmp_path: Path) -> None:
     ]
 
 
+def test_release_resolver_selects_only_compatible_channel_assets(tmp_path: Path) -> None:
+    releases = tmp_path / "releases.json"
+    releases.write_text(
+        json.dumps(
+            [
+                {
+                    "tag_name": "v2026.9.10",
+                    "draft": False,
+                    "prerelease": False,
+                    "assets": [{"name": "legacy-client.tar.gz"}],
+                },
+                {
+                    "tag_name": "v2026.9.9-beta.1",
+                    "draft": False,
+                    "prerelease": True,
+                    "assets": [{"name": "neurocade-release.json"}],
+                },
+                {
+                    "tag_name": "v2026.9.8",
+                    "draft": False,
+                    "prerelease": False,
+                    "assets": [{"name": "neurocade-release.json"}],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    script = REPO_ROOT / "scripts/release/release_manifest.py"
+
+    stable = subprocess.run(
+        [str(script), "resolve", str(releases), "--channel", "stable"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    beta = subprocess.run(
+        [str(script), "resolve", str(releases), "--channel", "beta"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert stable.stdout.splitlines() == ["v2026.9.8", "false"]
+    assert beta.stdout.splitlines() == ["v2026.9.9-beta.1", "true"]
+
+    payload = json.loads(releases.read_text(encoding="utf-8"))
+    payload.pop()
+    releases.write_text(json.dumps(payload), encoding="utf-8")
+    fallback = subprocess.run(
+        [str(script), "resolve", str(releases), "--channel", "stable"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert fallback.stdout.splitlines() == ["v2026.9.9-beta.1", "true"]
+
+
 def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     release_scripts = checkout / "scripts/release"
@@ -275,6 +333,19 @@ def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path
         ],
         check=True,
     )
+    (assets / "github-releases.json").write_text(
+        json.dumps(
+            [
+                {
+                    "tag_name": "v2026.8.30",
+                    "draft": False,
+                    "prerelease": True,
+                    "assets": [{"name": "neurocade-release.json"}],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_curl = bin_dir / "curl"
@@ -284,7 +355,10 @@ def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path
         "  [[ \"${!i}\" == -o ]] && { j=$((i+1)); target=\"${!j}\"; }\n"
         "  [[ \"${!i}\" == *://* ]] && url=\"${!i}\"\n"
         "done\n"
-        'exec /bin/cp "$FAKE_ASSET_DIR/${url##*/}" "$target"\n',
+        '[[ "$url" == */releases/latest/* ]] && exit 22\n'
+        'if [[ "$url" == *api.github.com* ]]; then source="$FAKE_ASSET_DIR/github-releases.json"; '
+        'else source="$FAKE_ASSET_DIR/${url##*/}"; fi\n'
+        'exec /bin/cp "$source" "$target"\n',
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
@@ -307,6 +381,7 @@ def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path
     )
 
     assert result.returncode == 0, result.stderr
+    assert "No compatible stable Apptainer release was found; using v2026.8.30 instead." in result.stderr
     assert (checkout / ".runtime/images/neurocade-app-amd64.sif").read_bytes() == b"test-sif"
     assert result.stdout.splitlines()[-2:] == [
         str(checkout / ".runtime/release" / bridge_name),

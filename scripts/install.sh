@@ -24,6 +24,9 @@ Options:
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
   --image IMAGE                   Published image tag or digest. Default: docker.io/deepmi/neurocade:latest.
+                                  Docker only.
+  --version stable|beta|TAG       Apptainer release channel or exact v-prefixed tag.
+                                  Default: stable, falling back to the newest compatible release.
   --build-from-source             Build Docker from this checkout and convert it
                                   to an Apptainer SIF. Requires Docker.
   --bridge-port PORT              Host bridge port. Default: 8765.
@@ -343,6 +346,7 @@ MODE="local"
 RUNTIME=""
 LLM_PROVIDER=""
 IMAGE_OVERRIDE=""
+RELEASE_SELECTOR=""
 APP_SIF_MODE=""
 BRIDGE_PACKAGE=""
 RELEASE_VERSION=""
@@ -371,6 +375,11 @@ while [[ $# -gt 0 ]]; do
     --image)
       require_option_value "$1" "${2:-}"
       IMAGE_OVERRIDE="$2"
+      shift 2
+      ;;
+    --version)
+      require_option_value "$1" "${2:-}"
+      RELEASE_SELECTOR="$2"
       shift 2
       ;;
     --build-from-source) BUILD_FROM_SOURCE=1; shift ;;
@@ -417,7 +426,15 @@ if [[ -z "$RUNTIME" ]]; then
 fi
 validate_runtime "$RUNTIME" || exit 1
 if [[ "$RUNTIME" == "apptainer" ]]; then
+  if [[ -n "$IMAGE_OVERRIDE" ]]; then
+    echo "--image only applies to --runtime docker; use --version for Apptainer releases." >&2
+    exit 2
+  fi
   if [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
+    if [[ -n "$RELEASE_SELECTOR" ]]; then
+      echo "--version cannot be combined with --build-from-source." >&2
+      exit 2
+    fi
     command -v docker >/dev/null 2>&1 || {
       echo "Docker is required for --build-from-source. Remove the flag to install the latest release." >&2
       exit 1
@@ -426,6 +443,9 @@ if [[ "$RUNTIME" == "apptainer" ]]; then
   else
     APP_SIF_MODE="release"
   fi
+elif [[ -n "$RELEASE_SELECTOR" ]]; then
+  echo "--version only applies to --runtime apptainer; use --image for Docker images." >&2
+  exit 2
 elif [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
   echo "--build-from-source is only valid with the Apptainer runtime." >&2
   exit 2
@@ -454,7 +474,7 @@ managed_uv python install "$NEUROCADE_PYTHON_VERSION"
 
 if [[ "$APP_SIF_MODE" == "release" ]]; then
   python_bin="$(managed_python_path)"
-  install_latest_apptainer_release "$ROOT_DIR" "$python_bin"
+  install_latest_apptainer_release "$ROOT_DIR" "$python_bin" "${RELEASE_SELECTOR:-stable}"
   BRIDGE_PACKAGE="$NEUROCADE_RESOLVED_BRIDGE_PACKAGE"
   RELEASE_VERSION="$NEUROCADE_RESOLVED_RELEASE_VERSION"
 elif [[ "$APP_SIF_MODE" == "source" ]]; then
