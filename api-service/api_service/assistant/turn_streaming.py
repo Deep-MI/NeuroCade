@@ -256,6 +256,9 @@ async def _run_chat(
             gui_session_id=payload.gui_session_id,
             gui_state_override=payload.gui_state_override,
             tool_approvals=[approval.model_dump() for approval in payload.tool_approvals],
+            # The authenticated user was loaded for this request already. Avoid a
+            # second preference query inside the detached background task.
+            require_tool_approval=getattr(context.user, "assistant_approval", True) is not False,
             scope=payload.scope,
             provider=payload.provider,
             model=payload.model,

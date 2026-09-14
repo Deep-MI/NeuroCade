@@ -1,3 +1,4 @@
+import { useAppAppearance } from './hooks/useAppPreferences';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 
@@ -74,7 +75,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   const [isChatClearing, setIsChatClearing] = useState(false);
   const [viewerDiagnostics, setViewerDiagnostics] = useState<ChatMessage[]>([]);
   const [layerPanelOpen, setLayerPanelOpen] = useState(true);
-  const [isLight, setIsLight] = useState(false);
+  const [isLight] = useAppAppearance();
   const [analysisToolId, setAnalysisToolId] = useState('');
   const [layerPickerType, setLayerPickerType] = useState<LayerType | null>(null);
   const [layerPickerOptions, setLayerPickerOptions] = useState<OutputVolume[]>([]);
@@ -313,7 +314,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         hasCase={controller.hasUploadedCase}
         layerPanelOpen={layerPanelOpen}
         rightPanel={rightPanel}
-        isLight={isLight}
         runStatus={controller.runStatus}
         isSubmittingRun={controller.isSubmittingRun}
         analysisTools={controller.analysisTools}
@@ -330,7 +330,6 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
           void controller.handleCancel();
         }}
         onToggleRightPanel={(panel) => setRightPanel((current) => current === panel ? null : panel)}
-        onToggleTheme={() => setIsLight((value) => !value)}
       />
 
       {activeCaseId && <PacsProvenance key={activeCaseId} caseId={activeCaseId} />}

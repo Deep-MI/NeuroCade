@@ -1,5 +1,86 @@
 @import "tailwindcss";
 
+.nc-settings-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 100;
+  width: min(330px, calc(100vw - 24px));
+  padding: 8px;
+  border: 1px solid var(--nc-border);
+  border-radius: 8px;
+  background: var(--nc-bg-panel);
+  color: var(--nc-tx);
+  box-shadow: 0 12px 36px #0004;
+  -webkit-app-region: no-drag;
+}
+.nc-settings-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 5px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.nc-settings-row:hover, .nc-settings-row:focus-visible { background: var(--nc-row-hover); }
+.nc-agent-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--nc-border);
+  border-radius: 6px;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+.nc-agent-choice:hover { border-color: var(--nc-border-hover); }
+.nc-agent-choice.is-selected {
+  background: var(--nc-interactive-subtle);
+  border-color: var(--nc-interactive);
+}
+.nc-agent-choice svg { color: var(--nc-interactive); }
+.nc-agent-input {
+  border: 1px solid var(--nc-border);
+  border-radius: 5px;
+  background: var(--nc-bg-app);
+  color: var(--nc-tx);
+  padding: 9px 10px;
+  font-size: 13px;
+}
+.nc-agent-input:focus-visible { outline: 2px solid var(--nc-interactive); outline-offset: 2px; }
+.nc-approval-toggle {
+  appearance: none;
+  position: relative;
+  width: 32px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--nc-border-hover);
+  border-radius: 999px;
+  background: var(--nc-bg-app);
+  cursor: pointer;
+  transition: background 150ms;
+}
+.nc-approval-toggle::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--nc-tx-muted);
+  transition: transform 150ms;
+}
+.nc-approval-toggle:checked { background: var(--nc-interactive); border-color: var(--nc-interactive); }
+.nc-approval-toggle:checked::before { transform: translateX(14px); background: white; }
+.nc-approval-toggle:focus-visible { outline: 2px solid var(--nc-interactive); outline-offset: 3px; }
+.nc-approval-toggle:disabled { opacity: 0.5; cursor: wait; }
+
 *, *::before, *::after {
   box-sizing: border-box;
 }
