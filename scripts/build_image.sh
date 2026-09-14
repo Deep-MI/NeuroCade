@@ -14,6 +14,8 @@ configure_docker_cli_path
 IMAGE="${NEUROCADE_IMAGE:-docker.io/deepmi/neurocade:latest}"
 DOCKER_PLATFORM="${NEUROCADE_DOCKER_PLATFORM:-}"
 BUILD_VERSION="${NEUROCADE_BUILD_VERSION:-0.0.0}"
+INSTALL_ID=""
+[[ -s "$ROOT_DIR/.runtime/install-id" ]] && INSTALL_ID="$(sed -n '1p' "$ROOT_DIR/.runtime/install-id")"
 
 build_args=(docker build)
 if [[ -n "$DOCKER_PLATFORM" ]]; then
@@ -24,6 +26,7 @@ echo "==> Building image ${IMAGE}"
 "${build_args[@]}" \
   -f docker/backend.Dockerfile \
   --build-arg "NEUROCADE_VERSION=${BUILD_VERSION}" \
+  --build-arg "NEUROCADE_INSTALL_ID=${INSTALL_ID}" \
   -t "${IMAGE}" \
   .
 

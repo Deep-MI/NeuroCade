@@ -103,3 +103,17 @@ files and outputs use the host bind mount. Apptainer keeps SQLite under
 Large inputs and outputs may remain under `HOST_DATA_DIR`. Use
 `./scripts/admin/reset_app_state.sh --yes` for a local reset; it preserves
 `license.txt` and the managed bridge/image installation.
+
+## Uninstall
+
+```bash
+./scripts/uninstall.sh --yes
+```
+
+The uninstaller removes only resources carrying this installation's ownership
+record. Cases and databases are retained by default; use `--purge-data` to
+remove them when their ownership can be proven. Use `--remove-images` to remove
+a locally built application image when it has the matching ownership label.
+The checkout is always preserved because it may contain user changes. Shared or
+unrecognized containers, volumes, images, data directories, and host-installed
+dependencies are also preserved.

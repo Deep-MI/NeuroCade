@@ -14,7 +14,13 @@ runtime_pull_application() {
 }
 
 runtime_prepare_database() {
-  docker volume create "$DATABASE_VOLUME" >/dev/null
+  if ! docker volume inspect "$DATABASE_VOLUME" >/dev/null 2>&1; then
+    [[ -n "$INSTALL_ID" ]] || fail "The NeuroCade installation ID is missing"
+    docker volume create \
+      --label org.neurocade.managed=true \
+      --label "org.neurocade.install-id=$INSTALL_ID" \
+      "$DATABASE_VOLUME" >/dev/null
+  fi
   local -a volume_init_args=(docker run --rm --user 0)
   [[ -n "$DOCKER_PLATFORM" ]] && volume_init_args+=(--platform "$DOCKER_PLATFORM")
   volume_init_args+=(
@@ -26,7 +32,7 @@ runtime_prepare_database() {
 }
 
 docker_run_args() {
-  DOCKER_APP_ARGS=(docker run --name "$CONTAINER_NAME" --label "org.neurocade.launch-id=$LAUNCH_ID" --user "$(id -u):$(id -g)" --add-host host.docker.internal:host-gateway)
+  DOCKER_APP_ARGS=(docker run --name "$CONTAINER_NAME" --label "org.neurocade.launch-id=$LAUNCH_ID" --label "org.neurocade.install-id=${INSTALL_ID:-}" --user "$(id -u):$(id -g)" --add-host host.docker.internal:host-gateway)
   [[ -n "$DOCKER_PLATFORM" ]] && DOCKER_APP_ARGS+=(--platform "$DOCKER_PLATFORM")
   DOCKER_APP_ARGS+=(
     -v "$HOST_DATA_DIR:/data" -v "$DATABASE_VOLUME:/database"
