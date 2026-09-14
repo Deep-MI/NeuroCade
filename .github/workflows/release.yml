@@ -263,6 +263,14 @@ jobs:
         run: |
           launch_id="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-apptainer"
           mkdir -p "$RUNNER_TEMP/sif-data" "$RUNNER_TEMP/sif-images"
+          source ./scripts/lib/env.sh
+          {
+            env_line DEPLOYMENT_PROFILE local
+            env_line LOCAL_AUTH_ENABLED true
+            env_line LOCAL_AUTH_NAME "Local User"
+            env_line LLM_PROVIDER_DEFAULT no-llm
+          } > "$RUNNER_TEMP/apptainer-smoke.env"
+          chmod 600 "$RUNNER_TEMP/apptainer-smoke.env"
           "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
             --runtime apptainer --data-root "$RUNNER_TEMP/sif-data" --image-dir "$RUNNER_TEMP/sif-images" \
             --host 127.0.0.1 --port 18766 --token-file "$RUNNER_TEMP/bridge-token" \
@@ -272,6 +280,7 @@ jobs:
             "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")" \
             "X-NeuroCade-Launch-ID: $launch_id"
           apptainer exec --cleanenv --no-home --containall \
+            --env-file "$RUNNER_TEMP/apptainer-smoke.env" \
             --bind "$RUNNER_TEMP/sif-data:/data" \
             --bind "$RUNNER_TEMP/bridge-token:/run/neurocade/bridge-token:ro" \
             --env NEUROCADE_LAUNCH_ID="$launch_id" \

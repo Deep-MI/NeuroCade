@@ -7,7 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
-FASTSURFER_REVISION = "7e5334356e5abc0b600c11d6e9890e386d176433"
+FASTSURFER_REVISION = "cdfccea89e6c2bdbd6a2abb3f033f2e618a54538"
 NEUROCADE_REVISION = "3f28b26bfd8a4a98663d9a0f9cbb906db147bfcf"
 
 
@@ -25,7 +25,7 @@ def main():
     paths = git(args.fastsurfer_checkout, "ls-tree", "-r", "--name-only", FASTSURFER_REVISION, "doc/overview").splitlines()
     paths = sorted(path for path in paths if path.endswith(".md") and path.count("/") == 2) + ["README.md"]
     for product, version, checkout, files, revision, repository in [
-        ("fastsurfer", "2.4.2", args.fastsurfer_checkout, paths, FASTSURFER_REVISION, "FastSurfer"),
+        ("fastsurfer", "2.5.4", args.fastsurfer_checkout, paths, FASTSURFER_REVISION, "FastSurfer"),
         ("neurocade", "3f28b26", root, ["README.md", "INSTALL.md"], NEUROCADE_REVISION, "NeuroCade"),
     ]:
         for path in files:
@@ -45,8 +45,8 @@ def main():
                         }
                     )
     data = {
-        "versions": {"fastsurfer": ["2.4.2"], "neurocade": ["3f28b26"]},
-        "image_versions": {"vnmd/fastsurfer_2.4.2:20260115": "2.4.2"},
+        "versions": {"fastsurfer": ["2.5.4"], "neurocade": ["3f28b26"]},
+        "image_versions": {"vnmd/fastsurfer_2.5.4:latest": "2.5.4"},
         "pages": pages,
     }
     raw = (json.dumps(data, indent=2) + "\n").encode()

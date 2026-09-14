@@ -75,7 +75,7 @@ async def test_documentation_matches_installed_catalog(database):
             ToolExecutionContext(call_id="docs"), {"product": "fastsurfer", "query": "seg_only", "tool_id": "fastsurfer_full"}
         )
         assert not result.is_error
-        assert result.details["version"] == "2.4.2"
+        assert result.details["version"] == "2.5.4"
         assert result.details["matched_workflow"]
         assert result.details["matches"]
         result = await tool.execute(ToolExecutionContext(call_id="docs"), {"product": "fastsurfer", "query": "flags", "version": "unknown"})
@@ -182,7 +182,7 @@ async def test_sdk_round_trip_and_auth_gate(database):
             assert result.structuredContent is not None
             assert result.structuredContent["workspace_id"] == "w"
             result = await session.call_tool("neurocade_docs_search", {"arguments": {"product": "fastsurfer", "query": "seg_only"}})
-            assert not result.isError and "2.4.2" in str(result.structuredContent)
+            assert not result.isError and "2.5.4" in str(result.structuredContent)
         with database() as db:
             db.get(McpClient, "c").revoked = True
             db.commit()
@@ -296,7 +296,7 @@ async def test_workflow_approval_queues_once_and_docs_use_run_snapshot(database,
         result = await docs.execute(
             ToolExecutionContext(call_id="doc"), {"product": "fastsurfer", "query": "output", "run_id": done["run_id"]}
         )
-        assert result.details["version"] == "2.4.2"
+        assert result.details["version"] == "2.5.4"
         path.write_bytes(b"changed-input")
         with pytest.raises(HTTPException) as exc:
             await service.invoke(db, "c", "tool_call", payload)

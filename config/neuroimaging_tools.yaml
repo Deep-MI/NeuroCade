@@ -2,7 +2,7 @@ version: 1
 
 tools:
   - id: fastsurfer_full
-    image: vnmd/fastsurfer_2.4.2:20260115
+    image: "@fastsurfer"
     case_output_folder: fastsurfer_output
     description: Run complete FastSurfer segmentation and surface reconstruction.
     details: |
@@ -147,7 +147,7 @@ tools:
         metadata: {layer_role: surface-annotation, surface_format: freesurfer-annot, hemisphere: rh}
     execution:
       mode: background
-      gpu: false
+      gpu: true
       queue: fastsurfer
     ui:
       label: FastSurfer — Full
@@ -161,7 +161,7 @@ tools:
         --viewagg_device "${DEVICE}"
 
   - id: fastsurfer_segmentation
-    image: vnmd/fastsurfer_2.4.2:20260115
+    image: "@fastsurfer"
     case_output_folder: fastsurfer_output
     description: Run FastSurfer segmentation without cortical surface reconstruction.
     details: |
@@ -229,7 +229,7 @@ tools:
         metadata: {lut: binary, visible: false}
     execution:
       mode: background
-      gpu: false
+      gpu: true
       queue: fastsurfer
     ui:
       label: FastSurfer — Segmentation
@@ -244,7 +244,7 @@ tools:
         --viewagg_device "${DEVICE}"
 
   - id: fastsurfer_fast
-    image: vnmd/fastsurfer_2.4.2:20260115
+    image: "@fastsurfer"
     case_output_folder: fastsurfer_output
     description: Run the minimal FastSurfer whole-brain segmentation workflow.
     details: |
@@ -285,7 +285,7 @@ tools:
         metadata: {lut: freesurfer, visible: false}
     execution:
       mode: background
-      gpu: false
+      gpu: true
       queue: fastsurfer
     ui:
       label: FastSurfer — Fast

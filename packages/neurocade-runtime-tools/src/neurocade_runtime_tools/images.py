@@ -50,6 +50,9 @@ _BYTE_UNITS = {
     "tib": 1024**4,
 }
 _GIB = 1024**3
+_VERSION_SCOPED_NEURODESK_IMAGE = re.compile(
+    r"^vnmd/[A-Za-z0-9][A-Za-z0-9._-]*_[A-Za-z0-9][A-Za-z0-9._-]*:latest$"
+)
 
 
 class PreparedImage(str):
@@ -460,7 +463,7 @@ def prepare_image(
     is_cancelled: Callable[[], bool] | None = None,
     progress_observer: ProgressObserver | None = None,
 ) -> PreparedImage:
-    """Prepare an immutable runtime image, serializing concurrent cache misses."""
+    """Prepare a policy-validated runtime image, serializing concurrent cache misses."""
     if backend == "docker":
         host_platform = detected_docker_host_platform()
         tracker = _DockerPullProgress(spec.oci_reference, progress_observer, metadata={"host_platform": host_platform})
@@ -552,18 +555,78 @@ def prepare_image(
     return PreparedImage(str(target))
 
 
-def load_image_manifest(path: Path) -> list[RuntimeImageSpec]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def is_version_scoped_neurodesk_image(reference: str) -> bool:
+    """Return whether a Neurodesk latest tag is scoped by a versioned repository."""
+    return _VERSION_SCOPED_NEURODESK_IMAGE.fullmatch(reference) is not None
+
+
+def load_named_image_manifest(path: Path) -> dict[str, RuntimeImageSpec]:
+    """Load installer-managed images with explicit immutable or version-latest policies."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Tool image manifest was not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Tool image manifest is invalid JSON: {path}: {exc}") from exc
     rows = payload.get("images", payload) if isinstance(payload, dict) else payload
-    result = []
-    for row in rows:
-        result.append(
-            RuntimeImageSpec(
-                oci_reference=row.get("oci_reference") or row["image"],
+    if not isinstance(rows, list):
+        raise ValueError("Tool image manifest must contain an images array")
+
+    result: dict[str, RuntimeImageSpec] = {}
+    references: set[str] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"Tool image manifest entry {index} must be an object")
+        image_id = row.get("id")
+        if not isinstance(image_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", image_id):
+            raise ValueError(f"Tool image manifest entry {index} has an invalid or missing id")
+        if image_id in result:
+            raise ValueError(f"Tool image manifest contains duplicate id: {image_id}")
+        image = row.get("oci_reference") or row.get("image")
+        if not isinstance(image, str):
+            raise ValueError(f"Tool image manifest entry {image_id} has no image reference")
+        update_policy = row.get("update_policy", "immutable")
+        if update_policy not in {"immutable", "version_latest"}:
+            raise ValueError(f"Tool image manifest entry {image_id} has an unsupported update policy")
+        if update_policy == "version_latest":
+            if not is_version_scoped_neurodesk_image(image):
+                raise ValueError(
+                    f"Tool image manifest entry {image_id} must use a version-scoped Neurodesk latest image"
+                )
+            if any(
+                row.get(field)
+                for field in (
+                    "oci_digest",
+                    "sif_url",
+                    "direct_url",
+                    "sif_sha256",
+                    "direct_sha256",
+                    "converted_sif_sha256",
+                    "sha256",
+                )
+            ):
+                raise ValueError(
+                    f"Tool image manifest entry {image_id} cannot combine version_latest with immutable pins"
+                )
+        try:
+            spec = RuntimeImageSpec(
+                oci_reference=image,
                 oci_digest=row.get("oci_digest"),
                 sif_url=row.get("sif_url") or row.get("direct_url"),
                 sif_sha256=row.get("sif_sha256") or row.get("direct_sha256"),
                 converted_sif_sha256=row.get("converted_sif_sha256") or row.get("sha256"),
             )
-        )
+        except ValueError as exc:
+            raise ValueError(f"Invalid tool image manifest entry {image_id}: {exc}") from exc
+        if update_policy == "immutable" and not spec.oci_digest:
+            raise ValueError(f"Tool image manifest entry {image_id} is missing its immutable OCI image pin")
+        if spec.oci_reference in references:
+            raise ValueError(f"Tool image manifest contains duplicate image reference: {spec.oci_reference}")
+        references.add(spec.oci_reference)
+        result[image_id] = spec
     return result
+
+
+def load_image_manifest(path: Path) -> list[RuntimeImageSpec]:
+    """Load installer-managed image specs in their declared order."""
+    return list(load_named_image_manifest(path).values())

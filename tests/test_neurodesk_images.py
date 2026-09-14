@@ -31,6 +31,7 @@ MANIFEST = """\
 ants_2.9.0_20250101 categories:image registration,image segmentation,structural imaging
 ants_2.10.0_20260101 categories:image registration,image segmentation,structural imaging
 fsl_6.0.7_20250201 categories:diffusion imaging,functional imaging
+fastsurfer_2.5.4_20260910 categories:structural imaging
 """
 
 
@@ -78,8 +79,11 @@ def test_dynamic_image_resolution_validates_catalog_without_preparing(monkeypatc
     catalog = parse_catalog_manifest(MANIFEST)
     monkeypatch.setattr(images_module, "load_image_catalog", lambda **_kwargs: LoadedImageCatalog(catalog, "fallback", False))
     assert images_module.validate_catalog_image("vnmd/ants_2.10.0:20260101") == "vnmd/ants_2.10.0:20260101"
+    assert images_module.validate_catalog_image("vnmd/fastsurfer_2.5.4:latest") == "vnmd/fastsurfer_2.5.4:latest"
     with pytest.raises(ValueError, match="Unknown"):
         images_module.validate_catalog_image("vnmd/missing_1:20260101")
+    with pytest.raises(ValueError, match="Unknown"):
+        images_module.validate_catalog_image("vnmd/fastsurfer_2.6.0:latest")
 
 
 def test_assistant_image_search_returns_compact_page(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # noqa: ANN001

@@ -40,6 +40,7 @@ from neurocade_runtime_tools.images import (
     _pull_docker_image,
     _storage_preflight,
     download_verified_file,
+    load_named_image_manifest,
     prepare_image,
     resolve_docker_image_platform,
 )
@@ -75,6 +76,98 @@ def test_runtime_image_spec_rejects_unpinned_tag_and_bad_checksums() -> None:
         RuntimeImageSpec("example/tool:1", oci_digest="latest")
     with pytest.raises(ValueError, match="together"):
         RuntimeImageSpec("example/tool:1", sif_url="https://example.test/tool.sif")
+
+
+def test_tool_image_manifest_requires_named_immutable_pins(tmp_path: Path) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps({"images": [{"id": "fastsurfer", "image": "deepmi/fastsurfer:cu128-v2.5.4"}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fastsurfer is missing its immutable OCI image pin"):
+        load_named_image_manifest(manifest)
+
+
+def test_tool_image_manifest_allows_version_scoped_neurodesk_latest(tmp_path: Path) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {
+                        "id": "fastsurfer",
+                        "image": "vnmd/fastsurfer_2.5.4:latest",
+                        "update_policy": "version_latest",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_named_image_manifest(manifest)["fastsurfer"]
+
+    assert spec.oci_reference == "vnmd/fastsurfer_2.5.4:latest"
+    assert spec.oci_digest is None
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["vnmd/fastsurfer:latest", "deepmi/fastsurfer_2.5.4:latest", "vnmd/fastsurfer_2.5.4:20260910"],
+)
+def test_version_latest_policy_rejects_unscoped_or_non_neurodesk_images(tmp_path: Path, image: str) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {"images": [{"id": "fastsurfer", "image": image, "update_policy": "version_latest"}]}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="version-scoped Neurodesk latest image"):
+        load_named_image_manifest(manifest)
+
+
+def test_version_latest_policy_rejects_immutable_pins(tmp_path: Path) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {
+                        "id": "fastsurfer",
+                        "image": "vnmd/fastsurfer_2.5.4:latest",
+                        "update_policy": "version_latest",
+                        "oci_digest": f"sha256:{'a' * 64}",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="cannot combine version_latest with immutable pins"):
+        load_named_image_manifest(manifest)
+
+
+def test_tool_image_manifest_rejects_duplicate_ids(tmp_path: Path) -> None:
+    digest = f"sha256:{'a' * 64}"
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"id": "fastsurfer", "image": "example/fastsurfer:1", "oci_digest": digest},
+                    {"id": "fastsurfer", "image": "example/fastsurfer:2", "oci_digest": digest},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate id: fastsurfer"):
+        load_named_image_manifest(manifest)
 
 
 def test_runtime_image_spec_uses_backend_compatible_digest_references() -> None:
