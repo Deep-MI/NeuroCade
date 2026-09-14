@@ -55,7 +55,7 @@ export function CaseWorkspaceRightPanel(props: CaseWorkspaceRightPanelProps) {
       ) : (
         <div className="flex min-h-0 flex-1 flex-col bg-[var(--nc-bg-deep)]">
           <div data-testid="terminal-content" className="nc-mono min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap p-3 text-[11px] leading-[1.45]">
-            <pre className="whitespace-pre-wrap text-[var(--nc-tx-muted)]">{props.terminalOutput || 'No analysis run yet. Click Launch to start.'}</pre>
+            <pre className="whitespace-pre-wrap text-[var(--nc-tx-muted)]">{props.terminalOutput || (isRunActive(props.runStatus) ? 'Waiting for analysis output…' : isRunDone(props.runStatus) || isRunFailed(props.runStatus) ? 'This run produced no terminal output.' : 'No analysis run yet. Click Launch to start.')}</pre>
             {props.terminalStatusMessage && <div data-testid="terminal-job-status" role="status" className={`mt-3 border-t border-[var(--nc-border)] pt-2 font-semibold ${isRunDone(props.runStatus) ? 'text-green-500' : 'text-red-500'}`}>{props.terminalStatusMessage}</div>}
           </div>
         </div>

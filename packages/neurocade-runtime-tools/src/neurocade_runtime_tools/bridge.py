@@ -29,6 +29,7 @@ from .protocol import (
     MAX_CAPTURE_BYTES,
     PROTOCOL_VERSION,
     TERMINAL_RESULT_TTL_SECONDS,
+    TERMINAL_RUN_STATES,
     RunState,
     RuntimeImageSpec,
     require_protocol,
@@ -83,6 +84,9 @@ class RunRecord:
     stdout: str = ""
     stderr: str = ""
     finished_at: float | None = None
+    writer_stopped: bool = False
+    cancel_requested: bool = False
+    cancellation_error: str | None = None
     docker_name: str | None = None
     progress: dict[str, Any] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -94,8 +98,12 @@ class RunRecord:
                 "run_id": self.run_id,
                 "state": self.state.value,
                 "returncode": self.returncode,
+                "writer_stopped": self.writer_stopped or (
+                    self.state in TERMINAL_RUN_STATES and self.docker_name is None and self.process is None
+                ),
                 "stdout": self.stdout,
                 "stderr": self.stderr,
+                "cancellation": "requested" if self.cancel_requested and self.state in ACTIVE_RUN_STATES else None,
             }
             if self.progress is not None:
                 payload["progress"] = dict(self.progress)
@@ -186,7 +194,7 @@ class BridgeRuntime:
         with record.lock:
             if process is None:
                 record.process = None
-            elif record.state == RunState.canceled:
+            elif record.cancel_requested:
                 cancel_process = True
             else:
                 record.process = process
@@ -197,12 +205,13 @@ class BridgeRuntime:
     @staticmethod
     def _is_canceled(record: RunRecord) -> bool:
         with record.lock:
-            return record.state == RunState.canceled
+            return record.cancel_requested
 
     @staticmethod
     def _register_running_process(record: RunRecord, process: subprocess.Popen[Any]) -> bool:
         with record.lock:
-            if record.state == RunState.canceled:
+            if record.cancel_requested:
+                record.process = process
                 return False
             record.process = process
             record.state = RunState.running
@@ -426,7 +435,8 @@ class BridgeRuntime:
                 progress_observer=update_progress,
             )
             with record.lock:
-                if record.state == RunState.canceled:
+                if record.cancel_requested:
+                    record.state = RunState.canceled
                     record.finished_at = time.monotonic()
                     return
             argv = (
@@ -459,8 +469,11 @@ class BridgeRuntime:
                 stdout=stdout_target, stderr=stderr_target, start_new_session=True,
             )
             if not self._register_running_process(record, process):
-                _terminate_process_group(process)
+                self.cancel(record.run_id)
                 process.communicate()
+                with record.lock:
+                    record.state = RunState.canceled
+                    record.finished_at = time.monotonic()
                 return
             stdout_capture = _CaptureBuffer() if process.stdout is not None else None
             stderr_capture = _CaptureBuffer() if process.stderr is not None else None
@@ -493,8 +506,27 @@ class BridgeRuntime:
             with record.lock:
                 record.returncode = 1
                 record.stderr = diagnostic
-                record.state = RunState.canceled if record.state == RunState.canceled else RunState.failed
-                record.finished_at = time.monotonic()
+                if record.cancellation_error or (record.process is not None and record.process.poll() is None):
+                    record.state = RunState.running
+                else:
+                    record.state = RunState.canceled if record.cancel_requested else RunState.failed
+                    record.finished_at = time.monotonic()
+
+    @staticmethod
+    def _confirm_container_stopped(record: RunRecord) -> None:
+        if not record.docker_name:
+            return
+        removed = run_managed_command(["docker", "rm", "-f", record.docker_name], timeout=30, capture_output=True)
+        if removed.returncode == 0:
+            return
+        # --rm can already have removed a completed container. A successful
+        # daemon query is required to distinguish absence from disconnection.
+        listing = run_managed_command(
+            ["docker", "container", "ls", "--all", "--quiet", "--filter", f"name=^/{record.docker_name}$"],
+            timeout=30, capture_output=True,
+        )
+        if listing.returncode != 0 or listing.stdout.strip():
+            raise RuntimeError("Docker did not confirm that the output writer stopped")
 
     def _watch(
         self,
@@ -516,13 +548,22 @@ class BridgeRuntime:
                 terminal = RunState.timed_out
                 _terminate_process_group(process)
                 process.wait()
+            try:
+                self._confirm_container_stopped(record)
+            except Exception as exc:
+                with record.lock:
+                    record.cancellation_error = str(exc)
+                    record.stderr = str(exc)
+                return
             for thread in capture_threads:
                 thread.join(timeout=5)
             with record.lock:
-                if record.state == RunState.canceled:
+                record.cancellation_error = None
+                if record.cancel_requested:
                     terminal = RunState.canceled
                 elif terminal != RunState.timed_out and process.returncode != 0:
                     terminal = RunState.failed
+                record.writer_stopped = True
                 record.returncode = process.returncode
                 record.stdout = stdout_capture.value() if stdout_capture is not None else ""
                 record.stderr = stderr_capture.value() if stderr_capture is not None else ""
@@ -548,13 +589,29 @@ class BridgeRuntime:
             process = record.process
             was_active = record.state in ACTIVE_RUN_STATES
             if was_active:
+                record.cancel_requested = True
+                record.cancellation_error = "Stop confirmation pending"
+        if not was_active:
+            return record
+        try:
+            self._confirm_container_stopped(record)
+            if process is not None:
+                _terminate_process_group(process)
+                if process.poll() is None:
+                    raise RuntimeError("Runtime process did not confirm termination")
+        except Exception as exc:
+            with record.lock:
+                record.cancellation_error = str(exc)
+            raise
+        with record.lock:
+            record.cancellation_error = None
+            # A preparation thread may still be launching. It observes the
+            # request and publishes terminal state only after its cleanup.
+            if process is not None and process.poll() is not None:
                 record.state = RunState.canceled
-                if process is None:
-                    record.finished_at = time.monotonic()
-        if was_active and record.docker_name:
-            run_managed_command(["docker", "rm", "-f", record.docker_name], timeout=30, capture_output=True)
-        if process is not None:
-            _terminate_process_group(process)
+                record.writer_stopped = True
+                record.returncode = process.returncode
+                record.finished_at = time.monotonic()
         return record
 
     def shutdown(self) -> None:

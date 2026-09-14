@@ -79,7 +79,8 @@ def test_dicom_conversion_uses_shared_runtime_execution(monkeypatch, tmp_path):
         captured["request"] = request
         return RuntimeExecutionResult(request=request, returncode=0, stdout="converted", stderr="")
 
-    monkeypatch.setattr(uploads_module, "execute_runtime_request", fake_execute)
+    from api_service.runtime import dicom_conversion
+    monkeypatch.setattr(dicom_conversion, "execute_runtime_request", fake_execute)
 
     uploads_module._run_dcm2niix(input_dir, output_dir)
 

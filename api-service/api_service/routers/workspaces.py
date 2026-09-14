@@ -28,7 +28,6 @@ from backend_common.case_storage import (
 from backend_common.db import (
     Artifact,
     AssistantMessage,
-    AssistantScope,
     AssistantThread,
     AssistantTurn,
     AuditEvent,
@@ -40,32 +39,24 @@ from backend_common.db import (
     WorkspaceMembership,
 )
 from backend_common.deployment_policy import get_deployment_policy
-from backend_common.run_statuses import ACTIVE_RUN_STATUSES
+from backend_common.mcp_lifecycle import ScopeDeletionConflict, purge_workspace_clients, reserve_scope_deletion
+from backend_common.output_activity import OutputBusy, ensure_outputs_idle
 from backend_common.storage_transactions import finalize_staged_path, restore_staged_path, stage_path_for_deletion
+from backend_common.submission_lock import serialize_submission
 
 router = APIRouter(prefix="/api/app", tags=["workspaces"])
 
 
 def count_workspace_cases(db: Session, workspace_id: str) -> int:
     """Count cases in a workspace."""
-    return int(
-        db.query(func.count(Case.id))
-        .filter(Case.workspace_id == workspace_id)
-        .scalar()
-        or 0
-    )
+    return int(db.query(func.count(Case.id)).filter(Case.workspace_id == workspace_id).scalar() or 0)
 
 
 def workspace_case_counts(db: Session, workspace_ids: list[str]) -> dict[str, int]:
     """Return case counts keyed by workspace ID."""
     if not workspace_ids:
         return {}
-    rows = (
-        db.query(Case.workspace_id, func.count(Case.id))
-        .filter(Case.workspace_id.in_(workspace_ids))
-        .group_by(Case.workspace_id)
-        .all()
-    )
+    rows = db.query(Case.workspace_id, func.count(Case.id)).filter(Case.workspace_id.in_(workspace_ids)).group_by(Case.workspace_id).all()
     return {workspace_id: int(count) for workspace_id, count in rows}
 
 
@@ -94,33 +85,17 @@ def validate_workspace_name_or_400(name: str) -> str:
 
 def ensure_workspace_cases_idle(db: Session, cases: list[Case]) -> None:
     """Reject workspace changes when any selected case has an active run."""
-    active_case_ids: list[str] = []
     for case in cases:
-        active_run = (
-            db.query(Run)
-            .filter(Run.case_id == case.id, Run.status.in_(ACTIVE_RUN_STATUSES))
-            .order_by(Run.created_at.desc(), Run.id.desc())
-            .first()
-        )
-        if active_run is not None:
-            active_case_ids.append(case.id)
-    if active_case_ids:
-        raise HTTPException(status_code=409, detail=f"Cases already have active runs: {', '.join(active_case_ids)}")
+        from api_service.cases.service import ensure_case_not_active
+        ensure_case_not_active(db, case)
 
 
 def ensure_workspace_runs_idle(db: Session, workspace: Workspace) -> None:
-    """Reject workspace identity changes while a workspace-scoped run is active."""
-    active_run = (
-        db.query(Run)
-        .filter(
-            Run.workspace_id == workspace.id,
-            Run.scope_type == AssistantScope.workspace,
-            Run.status.in_(ACTIVE_RUN_STATUSES),
-        )
-        .first()
-    )
-    if active_run is not None:
-        raise HTTPException(status_code=409, detail="Workspace has an active run")
+    """Reject workspace changes while any writer or download owns its files."""
+    try:
+        ensure_outputs_idle(db, workspace.id)
+    except OutputBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def require_workspace_mutations_enabled() -> None:
@@ -193,6 +168,7 @@ def create_workspace(
 
 
 @router.patch("/workspaces/{workspace_id}", response_model=WorkspaceSummary)
+@serialize_submission
 def update_workspace(
     workspace_id: str,
     request: WorkspaceUpdateRequest,
@@ -210,12 +186,7 @@ def update_workspace(
     if request.name is not None:
         name = validate_workspace_name_or_400(request.name)
         if name != workspace.name:
-            cases = (
-                db.query(Case)
-                .filter(Case.workspace_id == workspace.id)
-                .order_by(Case.id.asc())
-                .all()
-            )
+            cases = db.query(Case).filter(Case.workspace_id == workspace.id).order_by(Case.id.asc()).all()
             ensure_workspace_cases_idle(db, cases)
             ensure_workspace_runs_idle(db, workspace)
             try:
@@ -234,6 +205,7 @@ def update_workspace(
 
 
 @router.delete("/workspaces/{workspace_id}", response_model=dict)
+@serialize_submission
 def delete_workspace(
     workspace_id: str,
     request: WorkspaceDeleteRequest | None = None,
@@ -242,17 +214,16 @@ def delete_workspace(
 ) -> dict:
     """Delete a workspace and all stored data it owns."""
     require_workspace_mutations_enabled()
+    try:
+        reserve_scope_deletion(db)
+    except ScopeDeletionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     workspace, role = get_workspace_for_user(db, workspace_id, context.user.id)
     require_workspace_manage(role)
     if workspace.is_default:
         raise HTTPException(status_code=400, detail="Default workspaces cannot be deleted")
 
-    cases = (
-        db.query(Case)
-        .filter(Case.workspace_id == workspace.id)
-        .order_by(Case.id.asc())
-        .all()
-    )
+    cases = db.query(Case).filter(Case.workspace_id == workspace.id).order_by(Case.id.asc()).all()
     if cases and not (request and request.confirm_non_empty_delete):
         raise HTTPException(status_code=409, detail="Workspace still contains cases; confirm deletion to delete it")
     ensure_workspace_cases_idle(db, cases)
@@ -268,9 +239,7 @@ def delete_workspace(
 
         workspace_artifact_ids = [
             artifact_id
-            for (artifact_id,) in db.query(Artifact.id)
-            .filter(Artifact.workspace_id == workspace.id, Artifact.case_id.is_(None))
-            .all()
+            for (artifact_id,) in db.query(Artifact.id).filter(Artifact.workspace_id == workspace.id, Artifact.case_id.is_(None)).all()
         ]
         if workspace_artifact_ids:
             db.query(AuditEvent).filter(AuditEvent.artifact_id.in_(workspace_artifact_ids)).delete(synchronize_session=False)
@@ -281,6 +250,7 @@ def delete_workspace(
         db.query(AssistantMessage).filter(AssistantMessage.workspace_id == workspace.id).delete(synchronize_session=False)
         db.query(AssistantTurn).filter(AssistantTurn.workspace_id == workspace.id).delete(synchronize_session=False)
         db.query(AssistantThread).filter(AssistantThread.workspace_id == workspace.id).delete(synchronize_session=False)
+        purge_workspace_clients(db, workspace.id)
         db.query(WorkspaceMembership).filter(WorkspaceMembership.workspace_id == workspace.id).delete(synchronize_session=False)
         db.delete(workspace)
         db.commit()

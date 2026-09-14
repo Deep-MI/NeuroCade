@@ -24,6 +24,10 @@ class BridgeError(RuntimeError):
     pass
 
 
+class RuntimeStoppedTimeout(TimeoutError):
+    writer_stopped = True
+
+
 class RuntimeGpuUnavailableError(RuntimeError):
     pass
 
@@ -120,6 +124,9 @@ class BridgeClient:
             request_timeout=(10, preparation_timeout),
         )
 
+    def status(self, run_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/runs/{run_id}")
+
     def cancel(self, run_id: str) -> None:
         self._request("DELETE", f"/v1/runs/{run_id}")
 
@@ -214,13 +221,15 @@ class BridgeClient:
                     last_progress = dict(progress)
                     last_progress_publish_at = now
                 if run_state in TERMINAL_RUN_STATES:
+                    if state.get("writer_stopped") is not True:
+                        raise BridgeError("Runtime bridge has not confirmed that the output writer stopped")
                     terminal = True
                     if run_state == RunState.timed_out:
-                        raise TimeoutError(f"Runtime command timed out after {request.timeout_s}s")
+                        raise RuntimeStoppedTimeout(f"Runtime command timed out after {request.timeout_s}s")
                     result = RuntimeExecutionResult(
                         request=request, returncode=int(state.get("returncode") or 0),
                         stdout=str(state.get("stdout") or ""), stderr=str(state.get("stderr") or ""),
-                        logs=list(request.log_lines), execution_backend="bridge",
+                        logs=list(request.log_lines), execution_backend="bridge", writer_stopped=True,
                     )
                     if request.check and result.returncode != 0:
                         raise BridgeError(f"Runtime command failed with exit code {result.returncode}: {result.stderr}")

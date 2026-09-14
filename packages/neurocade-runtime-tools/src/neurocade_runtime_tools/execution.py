@@ -134,6 +134,7 @@ class RuntimeExecutionResult:
     stderr: str = ""
     logs: list[str] = field(default_factory=list)
     execution_backend: str = "local-subprocess"
+    writer_stopped: bool = False
 
 
 def _resolved_path(value: Path | str | None) -> Path | None:
@@ -350,6 +351,7 @@ def execute_local_runtime_request(request: RuntimeExecutionRequest) -> RuntimeEx
         stderr=stderr_text or "",
         logs=list(request.log_lines),
         execution_backend=request.execution_mode,
+        writer_stopped=True,
     )
 
 

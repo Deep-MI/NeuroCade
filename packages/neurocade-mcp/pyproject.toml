@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neurocade-mcp"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = ["mcp==1.30.0"]
+
+[project.scripts]
+neurocade-mcp = "neurocade_mcp:main"

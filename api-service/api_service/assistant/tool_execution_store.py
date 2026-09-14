@@ -9,11 +9,12 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import HTTPException
+from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api_service.assistant.tools.definition import ToolDefinition, ToolResult
-from backend_common.db import AssistantToolExecution, AssistantTurn, Run
+from backend_common.db import AssistantToolExecution, AssistantTurn, Run, run_with_sqlite_lock_retry
 
 TERMINAL_EXECUTION_STATUSES = {"succeeded", "failed", "ambiguous"}
 
@@ -155,7 +156,7 @@ class AssistantToolExecutionStore:
             risk=tool.risk.value,
             status="approved" if approved else "planned",
             result_json={},
-            external_run_id=workflow_run_id(turn.id, call_id) if tool.name == "tool_call" else None,
+            external_run_id=workflow_run_id(turn.id, call_id) if tool.creates_run or tool.name == "tool_call" else None,
         )
         db.add(execution)
         try:
@@ -190,6 +191,8 @@ class AssistantToolExecutionStore:
     def begin(
         db: Session | None,
         execution: AssistantToolExecution | None,
+        *,
+        approve_planned: bool = False,
     ) -> ToolResult | None:
         """Enter the execution window or return a prior terminal result."""
         if db is None or execution is None:
@@ -209,10 +212,25 @@ class AssistantToolExecutionStore:
                 details={"ledger_status": "ambiguous"},
                 terminal=True,
             )
-        if execution.status != "approved":
-            raise HTTPException(status_code=409, detail="Assistant tool call has not been approved")
-        execution.status = "executing"
-        db.commit()
+        expected_status = "planned" if approve_planned else "approved"
+        if execution.status != expected_status:
+            raise HTTPException(status_code=409, detail="Tool call has not been approved")
+        execution_id = execution.id
+
+        def claim():
+            db.rollback()
+            db.connection(execution_options={"sqlite_begin_immediate": True})
+            claimed = db.query(AssistantToolExecution).filter(
+                AssistantToolExecution.id == execution_id,
+                AssistantToolExecution.status == expected_status,
+            ).update({"status": "executing"}, synchronize_session=False)
+            db.commit()
+            return claimed
+
+        claimed = run_with_sqlite_lock_retry(db, claim)
+        db.refresh(execution)
+        if not claimed:
+            return ToolResult.error("Invocation already claimed", details={"ledger_status": execution.status})
         return None
 
     @staticmethod
@@ -220,16 +238,36 @@ class AssistantToolExecutionStore:
         db: Session | None,
         execution: AssistantToolExecution | None,
         result: ToolResult,
+        *,
+        retain_arguments: bool = True,
     ) -> None:
         if db is None or execution is None:
             return
-        current = db.get(AssistantToolExecution, execution.id)
-        if current is None:
-            return
-        current.status = "failed" if result.is_error else "succeeded"
-        current.result_json = result.as_dict()
-        current.error_message = result.content if result.is_error else None
-        db.commit()
+        identity = inspect(execution).identity
+        if identity is None:
+            raise ValueError("Completion requires a persisted invocation")
+        execution_id = identity[0]
+        values: dict[Any, Any] = {
+            "status": "failed" if result.is_error else "succeeded",
+            "result_json": result.as_dict(),
+            "error_message": result.content if result.is_error else None,
+        }
+        if not retain_arguments:
+            values["arguments_json"] = {}
+
+        def persist_completion():
+            # The handler has finished; only this bookkeeping transaction retries.
+            # Drop any read snapshot left by preparation or a concurrent worker.
+            db.rollback()
+            db.connection(execution_options={"sqlite_begin_immediate": True})
+            db.query(AssistantToolExecution).filter(
+                AssistantToolExecution.id == execution_id,
+                AssistantToolExecution.status == "executing",
+            ).update(values, synchronize_session=False)
+            db.commit()
+
+        run_with_sqlite_lock_retry(db, persist_completion)
+        db.refresh(execution)
 
     @staticmethod
     def interrupt(
@@ -261,6 +299,9 @@ class AssistantToolExecutionStore:
 def reconcile_interrupted_tool_executions(db: Session) -> list[dict[str, Any]]:
     """Resolve tool calls left inside the crash window without re-executing them."""
     recovered: list[dict[str, Any]] = []
+    db.query(AssistantToolExecution).filter(
+        AssistantToolExecution.source == "mcp", AssistantToolExecution.status == "approved",
+    ).update({"status": "ambiguous", "result_json": ToolResult.error("Interrupted before execution; submit a fresh read request").as_dict()})
     executions = (
         db.query(AssistantToolExecution)
         .filter(AssistantToolExecution.status == "executing")
@@ -306,6 +347,5 @@ def reconcile_interrupted_tool_executions(db: Session) -> list[dict[str, Any]]:
                 "external_run_id": execution.external_run_id,
             }
         )
-    if executions:
-        db.commit()
+    db.commit()
     return recovered

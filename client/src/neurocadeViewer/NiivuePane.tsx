@@ -176,7 +176,7 @@ export function NiivuePane({
       sliceType,
       showRender,
       multiplanarType: MULTIPLANAR_TYPE.GRID,
-      isEqualSize: true,
+      isEqualSize: sliceType === 3,
       // 3D pane only: let dark voxels become transparent so the mesh shows
       // through. 2D planes keep dark voxels opaque (the Niivue default).
       volumeIsAlphaClipDark: sliceType === 4,
@@ -250,7 +250,9 @@ export function NiivuePane({
     nv.sliceType = sliceType;
     nv.showRender = showRender;
     nv.multiplanarType = MULTIPLANAR_TYPE.GRID;
-    nv.isEqualSize = true;
+    // Equal-sized anatomical axes are useful in the four-up view, but forcing
+    // them in a single plane needlessly reduces non-cubic images to a square.
+    nv.isEqualSize = sliceType === 3;
     nv.isOrientationTextVisible = showOrientationLabels && sliceType === 3;
     nv.volumeIsAlphaClipDark = sliceType === 4;
     nv.drawScene();

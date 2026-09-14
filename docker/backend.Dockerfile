@@ -31,8 +31,10 @@ RUN apt-get update \
 FROM python:3.12-slim
 
 ARG NEUROCADE_VERSION=0.0.0
+ARG NEUROCADE_INSTALL_ID=""
 
 LABEL org.opencontainers.image.source="https://github.com/Deep-MI/NeuroCade"
+LABEL org.neurocade.install-id="$NEUROCADE_INSTALL_ID"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -53,6 +55,7 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock ./
 COPY packages/neurocade-runtime-tools ./packages/neurocade-runtime-tools
+COPY packages/neurocade-mcp ./packages/neurocade-mcp
 RUN pip install --no-cache-dir uv==0.8.17 \
     && uv sync --locked --no-dev --no-editable \
     && pip uninstall -y uv \

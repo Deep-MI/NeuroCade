@@ -99,6 +99,7 @@ def prepare_workflow(
     workflow: NeuroimagingWorkflow | None = None,
     run_id: str | None = None,
     gpu_enabled: bool | None = None,
+    db: Session | None = None,
 ) -> PreparedWorkflow:
     """Resolve one workflow invocation and validate all model-supplied paths."""
     tool = workflow or resolve_workflow(tool_id)
@@ -111,8 +112,8 @@ def prepare_workflow(
     host_root = Path(bind.host_path).expanduser().resolve()
     if not host_root.is_dir():
         raise ValueError(f"Authorized workflow root does not exist: {host_root}")
-    for path in inputs:
-        _host_path_for_container_path(path, bind)
+    from api_service.runtime_tools.workflow_validation import validate_workflow_inputs
+    validate_workflow_inputs(tool, [_host_path_for_container_path(path, bind) for path in inputs], db=db)
 
     resolved_run_id = run_id or str(uuid4())
     host_run_dir = (host_root / ".runs" / resolved_run_id).resolve()
@@ -361,6 +362,7 @@ def execute_prepared_workflow(
         "tool_id": prepared.tool.id,
         "run_id": prepared.run_id,
         "status": "completed" if return_code == 0 else "failed",
+        "writer_stopped": result.writer_stopped,
     }
     if "return_code" in include or return_code != 0:
         payload["return_code"] = return_code
@@ -400,6 +402,7 @@ def execute_workflow(
         workflow=workflow,
         run_id=run_id,
         gpu_enabled=gpu_enabled,
+        db=db,
     )
     return execute_prepared_workflow(
         prepared,

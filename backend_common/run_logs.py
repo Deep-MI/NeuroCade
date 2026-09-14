@@ -55,3 +55,38 @@ def render_run_logs(case_dir: Path, run_id: str, *, max_lines: int = 1000) -> st
                 processed.append(stripped + "\n")
                 break
     return "".join(processed[-max_lines:])
+
+
+def read_run_log_page(root: Path, run_id: str, *, stream: str = "stdout", offset: int = 0, max_bytes: int = 20000) -> dict:
+    """Read one bounded byte page from a fixed run stream within its authorized root."""
+    if stream not in {"stdout", "stderr"} or offset < 0 or not 1 <= max_bytes <= 20000:
+        raise ValueError("Invalid log pagination")
+    paths = run_log_paths(root, run_id)
+    path = paths[0 if stream == "stdout" else 1]
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise ValueError("Run log escapes the authorized root")
+    try:
+        with resolved.open("rb") as handle:
+            handle.seek(offset)
+            data = handle.read(max_bytes)
+            size = handle.seek(0, 2)
+    except FileNotFoundError:
+        return {
+            "stream": stream,
+            "text": "",
+            "offset": offset,
+            "next_offset": offset,
+            "size_bytes": 0,
+            "available": False,
+            "has_more": False,
+        }
+    return {
+        "stream": stream,
+        "text": data.decode("utf-8", errors="replace"),
+        "offset": offset,
+        "next_offset": offset + len(data),
+        "size_bytes": size,
+        "available": True,
+        "has_more": offset + len(data) < size,
+    }

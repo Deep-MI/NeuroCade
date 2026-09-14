@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from api_service.jobs import job_manager
+from api_service.runtime_tools.errors import workflow_error_code
 from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, resolve_workflow
 from api_service.runtime_tools.workflow_execution import execute_workflow
 from backend_common.artifact_reconciliation import reconcile_artifacts
@@ -21,8 +22,19 @@ def _update_run(run_id: str, *, status: RunStatus, result: dict[str, Any], error
             run = db.get(Run, run_id)
             if run is None or run.status == RunStatus.canceled:
                 return False
-            run.status = status
-            run.result_json = result
+            cancellation = (run.result_json or {}).get("cancellation")
+            if status == RunStatus.running and cancellation in {"requested", "unresolved"}:
+                run.status = RunStatus.canceled
+                run.result_json = {**result, "status": "canceled", "cancellation": "stopped", "output_ownership": "released"}
+                db.commit()
+                return False
+            terminal = status in {RunStatus.completed, RunStatus.failed, RunStatus.canceled}
+            confirmed = result.get("writer_stopped") is True
+            ownership = "released" if terminal and confirmed else "unresolved" if terminal else "held"
+            run.status = RunStatus.canceled if terminal and confirmed and cancellation in {"requested", "unresolved"} else status
+            run.result_json = {**result, "status": run.status.value, "output_ownership": ownership}
+            if cancellation:
+                run.result_json = {**run.result_json, "cancellation": "stopped" if ownership == "released" else "unresolved" if terminal else "requested"}
             run.error_message = error
             db.commit()
             return True
@@ -37,7 +49,7 @@ def _store_canceled_result(run_id: str, result: dict[str, Any]) -> None:
             run = db.get(Run, run_id)
             if run is None or run.status != RunStatus.canceled:
                 return
-            run.result_json = result
+            run.result_json = {**result, "cancellation": "stopped", "output_ownership": "released"}
             db.commit()
 
         run_with_sqlite_lock_retry(db, operation)
@@ -111,7 +123,10 @@ def run_neuroimaging_workflow_task(
             "tool_id": tool_id,
             "return_code": None,
             "stderr": str(exc),
+            "writer_stopped": getattr(exc, "writer_stopped", False) is True,
         }
+        if code := workflow_error_code(exc):
+            result["error_code"] = code
 
     with SessionLocal() as db:
         run = db.get(Run, run_id)
@@ -171,3 +186,9 @@ def submit_neuroimaging_workflow(
 def register_neuroimaging_tasks() -> None:
     """Register the generic catalog workflow task."""
     job_manager.register(RUN_NEUROIMAGING_WORKFLOW_TASK, run_neuroimaging_workflow_task)
+    job_manager.register("api_service.pacs.import", run_pacs_import_task)
+
+
+def run_pacs_import_task(*, import_id: str, attempt_id: str | None = None) -> None:
+    from api_service.pacs.worker import run_import
+    run_import(import_id, attempt_id)

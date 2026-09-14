@@ -5,7 +5,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi==0.139.2",
   "starlette==1.3.1",
-  "uvicorn[standard]==0.31.0",
+  "uvicorn[standard]==0.31.1",
   "sqlalchemy==2.0.36",
   "alembic==1.14.0",
   "pydantic-settings==2.6.1",
@@ -20,8 +20,12 @@ dependencies = [
   "nibabel==5.2.1",
   "numpy==1.26.4",
   "requests>=2.31,<3",
+  "pydicom==3.0.2",
   "tqdm>=4.67,<5",
   "neurocade-runtime-tools",
+  "mcp==1.30.0",
+  "jsonschema>=4.23,<5",
+  "neurocade-mcp",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +41,12 @@ test = [
 
 [tool.uv.sources]
 neurocade-runtime-tools = { path = "packages/neurocade-runtime-tools", editable = true }
+neurocade-mcp = { workspace = true, editable = true }
+
+[tool.uv.workspace]
+members = [
+    "packages/neurocade-mcp",
+]
 
 [tool.uv]
 package = false

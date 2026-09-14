@@ -189,26 +189,48 @@ class AssistantCatalogTools:
         case_id = state.get("case_id")
         return str(case_id) if state.get("scope") == AssistantScope.case.value and case_id else None
 
-    async def call(
-        self, state: dict[str, Any], execution_context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def call(self, state: dict[str, Any], execution_context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         try:
             parsed = CatalogToolCallArgs.model_validate(arguments)
             user_id = self.user_id(state)
-            tool = resolve_workflow(
-                parsed.tool_id,
-                settings=self.catalog_executor.settings,
-                user_id=user_id,
+            from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow
+
+            tool = (
+                NeuroimagingWorkflow.model_validate_json(execution_context.workflow_snapshot)
+                if execution_context.workflow_snapshot
+                else resolve_workflow(
+                    parsed.tool_id,
+                    settings=self.catalog_executor.settings,
+                    user_id=user_id,
+                )
             )
+            # No SQLite read snapshot may span slow image/capability preparation.
+            db = state.get("db")
+            if db is not None:
+                db.rollback()
             await asyncio.to_thread(
                 validate_catalog_image,
                 tool.neurodesk_image,
                 settings=self.catalog_executor.settings,
             )
+            from api_service.runtime_tools import workflow_execution
+            from api_service.runtime_tools.runtime_images import runtime_image_spec
+
+            gpu_enabled = await asyncio.to_thread(
+                workflow_execution.resolve_gpu_enabled,
+                tool.execution.gpu,
+                image=runtime_image_spec(tool.neurodesk_image),
+            )
         except Exception as exc:
             return ToolResult.error(f"Error preparing tool image: {exc}")
         binds = self.catalog_executor.catalog_runtime_binds(state)
         db = state.get("db")
+        def validate_submission(submitted_workflow):
+            # This runs inside every fresh admission transaction, including retries.
+            self.catalog_executor.catalog_runtime_binds(state)
+            if execution_context.validate_submission is not None:
+                execution_context.validate_submission(submitted_workflow)
+
         result = self.catalog_executor.catalog_tool_call(
             arguments,
             binds,
@@ -218,6 +240,9 @@ class AssistantCatalogTools:
             case_id=state.get("case_id"),
             scope=str(state.get("scope") or AssistantScope.case.value),
             run_id=execution_context.external_run_id,
+            workflow=tool,
+            validate_submission=validate_submission,
+            gpu_enabled=gpu_enabled,
         )
         if result.is_error:
             return result
@@ -241,6 +266,7 @@ class AssistantCatalogTools:
             )
         if (
             not isinstance(execution, dict)
+            or state.get("submit_without_wait", False)
             or mode != "synchronous"
             or not isinstance(run_id, str)
             or db is None
@@ -267,9 +293,7 @@ class AssistantCatalogTools:
             )
         return completed or result
 
-    def search(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def search(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         parsed = CatalogSearchArgs.model_validate(arguments)
         try:
             user_id = self.user_id(state)
@@ -293,9 +317,7 @@ class AssistantCatalogTools:
             payload.append(row)
         return ToolResult.structured(payload, details={"matches": payload})
 
-    def inspect(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def inspect(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         try:
             tool_id = str(arguments.get("tool_id") or "").strip()
             user_id = self.user_id(state)
@@ -313,9 +335,7 @@ class AssistantCatalogTools:
         except Exception as exc:
             return ToolResult.error(f"Error inspecting workflow: {exc}")
 
-    def config_get(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def config_get(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         try:
             user_id = self.user_id(state)
             if user_id is None:
@@ -338,9 +358,7 @@ class AssistantCatalogTools:
         except Exception as exc:
             return ToolResult.error(f"Error reading workflow configuration: {exc}")
 
-    def config_upsert(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def config_upsert(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         try:
             user_id = self.user_id(state)
             if user_id is None:
@@ -360,9 +378,7 @@ class AssistantCatalogTools:
         except Exception as exc:
             return ToolResult.error(f"Error updating workflow configuration: {exc}")
 
-    def config_delete(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def config_delete(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         try:
             user_id = self.user_id(state)
             if user_id is None:
@@ -381,9 +397,7 @@ class AssistantCatalogTools:
                 "status": "reloaded",
                 "deleted_tool_id": removed.id,
                 "effective_definition": (
-                    effective.model_dump(mode="json", by_alias=True, exclude_none=True)
-                    if effective is not None
-                    else None
+                    effective.model_dump(mode="json", by_alias=True, exclude_none=True) if effective is not None else None
                 ),
                 "effective_source": (
                     workflow_source(
@@ -399,9 +413,7 @@ class AssistantCatalogTools:
         except Exception as exc:
             return ToolResult.error(f"Error deleting workflow configuration: {exc}")
 
-    def status(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def status(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         parsed = CatalogRunArgs.model_validate(arguments)
         if state.get("db") is None or state.get("workspace_id") is None:
             return ToolResult.error("Error: workflow status requires an active workspace.")
@@ -412,9 +424,7 @@ class AssistantCatalogTools:
             case_id=self.case_id(state),
         )
 
-    def list_runs(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def list_runs(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         parsed = CatalogRunListArgs.model_validate(arguments)
         if state.get("db") is None or state.get("workspace_id") is None:
             return ToolResult.error("Error: listing workflow runs requires an active workspace.")
@@ -425,9 +435,7 @@ class AssistantCatalogTools:
             case_id=self.case_id(state),
         )
 
-    def cancel(
-        self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    def cancel(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         parsed = CatalogRunArgs.model_validate(arguments)
         if state.get("db") is None or state.get("workspace_id") is None:
             return ToolResult.error("Error: workflow cancellation requires an active workspace.")

@@ -2,7 +2,7 @@
 
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from neurocade_runtime_tools.bridge_client import BridgeClient
@@ -17,7 +17,7 @@ from api_service.jobs.reconcile import reconcile_interrupted_runs
 from api_service.jobs.store import DurableJobStore
 from api_service.jobs.update_checker import start_update_checker
 from api_service.middleware import register_app_middleware
-from api_service.routers import app_runtime, artifacts, assistant, assistant_turns, auth, cases, monitoring, providers, workspaces
+from api_service.routers import app_runtime, artifacts, assistant, assistant_turns, auth, cases, monitoring, pacs, providers, workspaces
 from api_service.runtime import logger
 from api_service.runtime.neuroimaging_tasks import register_neuroimaging_tasks
 from api_service.runtime_tools.workflow_catalog import load_workflow_catalog
@@ -89,6 +89,10 @@ async def lifespan(_app: FastAPI):
         validate_auth_configuration()
         startup_logger.info("Applying database migrations.")
         bootstrap_database(engine)
+        from api_service.pacs.client import validate_config
+        from api_service.pacs.worker import recover_imports
+        validate_config(settings)
+        recover_imports()
         startup_logger.info("Seeding local demo state.")
         with SessionLocal() as startup_db:
             seed_demo_state(startup_db)
@@ -132,7 +136,11 @@ async def lifespan(_app: FastAPI):
         startup_logger.exception("NeuroCade backend startup failed.")
         raise
     try:
-        yield
+        async with AsyncExitStack() as stack:
+            manager = getattr(_app.state, "mcp_manager", None)
+            if manager is not None:
+                await stack.enter_async_context(manager.run())
+            yield
     finally:
         await assistant_turn_manager.shutdown()
         job_manager.shutdown(wait=False)
@@ -150,12 +158,30 @@ app = FastAPI(
 
 register_app_middleware(app)
 
+if settings.mcp_enabled:
+    if settings.deployment_profile != "local" or settings.app_http_bind not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError("MCP requires the local profile and loopback host publication")
+    if settings.mcp_access not in {"read", "standard"}:
+        raise RuntimeError("NEUROCADE_MCP_ACCESS must be read or standard")
+    from starlette.routing import Route
+
+    from api_service.mcp_adapter.management import router as mcp_management_router
+    from api_service.mcp_adapter.server import create_adapter
+    mcp_endpoint, app.state.mcp_manager = create_adapter()
+    class McpEndpoint:
+        async def __call__(self, scope, receive, send):
+            await mcp_endpoint(scope, receive, send)
+    app.router.routes.append(Route("/mcp", endpoint=McpEndpoint(), methods=["GET", "POST", "DELETE"]))
+    app.include_router(mcp_management_router)
+    from api_service.mcp_adapter.transfers import router as mcp_transfer_router
+    app.include_router(mcp_transfer_router)
+
 
 
 @app.get("/api/app/healthz")
 def healthz() -> dict:
     """Return the API service health status."""
-    return {"status": "ok"}
+    return {"status": "ok", "mcp_enabled": settings.mcp_enabled, "mcp_access": settings.mcp_access, "launch_id": os.environ.get("NEUROCADE_LAUNCH_ID", "development")}
 
 
 app.include_router(auth.router)
@@ -165,6 +191,7 @@ app.include_router(assistant.router)
 app.include_router(assistant_turns.router)
 app.include_router(artifacts.router)
 app.include_router(cases.router)
+app.include_router(pacs.router)
 app.include_router(monitoring.router)
 app.include_router(app_runtime.router)
 
@@ -211,7 +238,7 @@ def _mount_client(application: FastAPI) -> None:
         if (
             exc.status_code == 404
             and request.method == "GET"
-            and not request.url.path.startswith(("/api/", "/assets/"))
+            and not request.url.path.startswith(("/api/", "/assets/", "/mcp"))
         ):
             dist_file = dist_file_for_path(request.url.path)
             if dist_file is not None:

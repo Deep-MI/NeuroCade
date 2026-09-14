@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from api_service.assistant.approval_contracts import (
@@ -20,14 +19,12 @@ from api_service.assistant.approval_contracts import (
     AssistantWorkflowApprovalPresentation,
 )
 from api_service.assistant.approval_presentations import approval_description
+from api_service.assistant.invocation import ToolInvocationService
 from api_service.assistant.tool_execution_store import AssistantToolExecutionStore, approval_digest
 from api_service.assistant.tool_results import ToolResultRenderer
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult
-from backend_common.settings import get_settings
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
-GUI_ACK_POLL_INTERVAL_SECONDS = 0.25
 AssistantState = dict[str, Any]
 
 
@@ -37,26 +34,7 @@ class AssistantToolExecutor:
     def __init__(self, executions: AssistantToolExecutionStore) -> None:
         self.executions = executions
 
-    @staticmethod
-    async def execute_tool(
-        tool: ToolDefinition,
-        execution_context: ToolExecutionContext,
-        arguments: dict[str, Any],
-    ) -> ToolResult:
-        if tool.name != "gui_command_status":
-            return await tool.execute(execution_context, arguments)
-        deadline = time.monotonic() + settings.assistant_gui_ack_wait_seconds
-        while True:
-            result = await tool.execute(execution_context, arguments)
-            try:
-                if json.loads(result.content).get("status") != "pending":
-                    return result
-            except (json.JSONDecodeError, AttributeError, TypeError):
-                return result
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return result
-            await asyncio.sleep(min(GUI_ACK_POLL_INTERVAL_SECONDS, remaining))
+    execute_tool = staticmethod(ToolInvocationService.execute_tool)
 
     @staticmethod
     def fingerprint(name: str, arguments: dict[str, Any]) -> str:
@@ -194,13 +172,13 @@ class AssistantToolExecutor:
                 tool=tool,
                 call_id=call_id,
                 arguments=arguments,
-                approved=not tool.risk.requires_confirmation,
+                approved=not tool.risk.requires_confirmation or not state.get("require_tool_approval", True),
             )
-            if tool.risk.requires_confirmation and (execution is None or execution.status == "planned"):
+            if tool.risk.requires_confirmation and state.get("require_tool_approval", True) and (execution is None or execution.status == "planned"):
                 if not self.consume_approval(state, tool.name, arguments, call_id=call_id):
                     presenter = tool.approval_presentation
                     assert presenter is not None
-                    presentation = presenter(arguments)
+                    presentation = ToolInvocationService.approval_presentation(tool, arguments)
                     approval_request = self.approval_request(
                         tool.name,
                         arguments,
@@ -243,47 +221,9 @@ class AssistantToolExecutor:
                     execution_id=getattr(execution, "id", None),
                     external_run_id=getattr(execution, "external_run_id", None),
                 )
-                try:
-                    tool_result = await self.execute_tool(tool, context, arguments)
-                except asyncio.CancelledError:
-                    elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                    logger.warning(
-                        "assistant.tool_call.cancelled request_id=%s round=%s tool=%s elapsed_ms=%s",
-                        request_id,
-                        state.get("round_count"),
-                        tool.name,
-                        elapsed_ms,
-                    )
-                    self.executions.interrupt(
-                        db,
-                        execution,
-                        reason="The assistant request was canceled while this tool was executing.",
-                    )
-                    raise
-                except Exception as exc:
-                    if db is not None and db.in_transaction():
-                        db.rollback()
-                    elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                    tool_result = ToolResultRenderer.from_exception(exc)
-                    if isinstance(exc, HTTPException):
-                        logger.warning(
-                            "assistant.tool_call.failed request_id=%s round=%s tool=%s elapsed_ms=%s status_code=%s detail=%s",
-                            request_id,
-                            state.get("round_count"),
-                            tool.name,
-                            elapsed_ms,
-                            exc.status_code,
-                            exc.detail,
-                        )
-                    else:
-                        logger.exception(
-                            "assistant.tool_call.failed request_id=%s round=%s tool=%s elapsed_ms=%s",
-                            request_id,
-                            state.get("round_count"),
-                            tool.name,
-                            elapsed_ms,
-                        )
-                self.executions.complete(db, execution, tool_result)
+                tool_result = await ToolInvocationService.execute_claimed(
+                    tool, context, arguments, store=self.executions, db=db, execution=execution, handler=self.execute_tool,
+                )
 
             entry = await self.record_result(
                 state,
@@ -391,7 +331,9 @@ class AssistantToolExecutor:
                     execution_id=getattr(execution, "id", None),
                     external_run_id=getattr(execution, "external_run_id", None),
                 )
-                tool_result = await self.execute_tool(tool, context, arguments)
+                tool_result = await ToolInvocationService.execute_claimed(
+                    tool, context, arguments, store=self.executions, db=db, execution=execution, handler=self.execute_tool,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -411,9 +353,7 @@ class AssistantToolExecutor:
             raise
 
         terminal_result = None
-        for tool, call_id, arguments, execution, tool_result, started_at, executed in completed:
-            if executed:
-                self.executions.complete(db, execution, tool_result)
+        for tool, call_id, arguments, execution, tool_result, started_at, _executed in completed:
             entry = await self.record_result(
                 state,
                 tool,

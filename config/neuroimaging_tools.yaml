@@ -14,6 +14,9 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        modalities: [MR]
+        dimensions: [3]
+        sequences: [T1]
     outputs:
       - name: whole_brain_segmentation
         type: segmentation_volume
@@ -169,6 +172,9 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        modalities: [MR]
+        dimensions: [3]
+        sequences: [T1]
     outputs:
       - name: whole_brain_segmentation
         type: segmentation_volume
@@ -250,6 +256,9 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        modalities: [MR]
+        dimensions: [3]
+        sequences: [T1]
     outputs:
       - name: whole_brain_segmentation
         type: segmentation_volume

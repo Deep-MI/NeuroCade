@@ -45,3 +45,38 @@ def finalize_staged_path(staged: StagedStorage | None) -> None:
         path.unlink(missing_ok=True)
     elif path.exists():
         shutil.rmtree(path)
+
+
+def stage_deletion_for_transaction(db, path: Path, trash_root: Path) -> None:
+    """Keep admin-reset storage recoverable until the outer DB transaction ends."""
+    from sqlalchemy import event
+
+    staged = stage_path_for_deletion(path, trash_root)
+    if staged is None:
+        return
+    db.info.setdefault("staged_deletions", []).append(staged)
+    if db.info.get("staged_deletion_hooks"):
+        return
+    db.info["staged_deletion_hooks"] = True
+
+    def committed(session):
+        if session.in_nested_transaction():
+            return
+        for item in session.info.pop("staged_deletions", []):
+            finalize_staged_path(item)
+
+    def restore(session):
+        for item in reversed(session.info.pop("staged_deletions", [])):
+            if item.original_path.exists():
+                # A reset may already have created its replacement sample. Preserve
+                # that new tree separately while putting the original back.
+                stage_path_for_deletion(item.original_path, item.staged_path.parent / "rollback-conflicts")
+            restore_staged_path(item)
+
+    def ended(session, transaction):
+        if transaction.parent is None:
+            restore(session)
+
+    event.listen(db, "after_commit", committed)
+    event.listen(db, "after_rollback", restore)
+    event.listen(db, "after_transaction_end", ended)

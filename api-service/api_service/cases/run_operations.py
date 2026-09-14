@@ -21,6 +21,8 @@ from api_service.cases.uploads import _require_run_analysis_input_artifact
 from api_service.helpers import get_case_for_user, log_event
 from api_service.policies import require_case_write
 from api_service.runtime import settings, workflow_runs
+from api_service.runtime.run_admission import serialize_submission
+from api_service.runtime_tools.errors import WorkflowInputError
 from api_service.runtime_tools.runtime_images import runtime_image_spec
 from api_service.runtime_tools.workflow_catalog import resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
@@ -28,7 +30,7 @@ from api_service.schemas import RunSummary, StartRunRequest
 from backend_common.auth import AuthContext
 from backend_common.db import Run, RunStatus
 from backend_common.run_logs import initialize_run_logs
-from backend_common.run_statuses import TERMINAL_RUN_STATUSES
+from backend_common.run_statuses import TERMINAL_RUN_STATUSES, run_owns_outputs
 from backend_common.storage import resolve_artifact_path
 
 
@@ -57,6 +59,11 @@ def _validate_output_name_overrides(request: StartRunRequest, tool) -> dict[str,
 
 
 async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: StartRunRequest) -> RunSummary:
+    return _start_neuroimaging_run(db, context, request=request)
+
+
+@serialize_submission
+def _start_neuroimaging_run(db: Session, context: AuthContext, *, request: StartRunRequest) -> RunSummary:
     """Create and submit a catalog-defined background workflow for a case."""
     require_mutations_enabled()
     tool = resolve_workflow(request.tool_id, settings=settings, user_id=context.user.id)
@@ -121,6 +128,7 @@ async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: 
             workflow=tool,
             run_id=run.id,
             gpu_enabled=gpu_enabled,
+            db=db,
         )
         initialize_run_logs(case_dir, run.id)
         # ``db.refresh(run)`` opened a read transaction. End that snapshot
@@ -139,6 +147,8 @@ async def start_neuroimaging_run(db: Session, context: AuthContext, *, request: 
         )
     except Exception as exc:
         workflow_runs.mark_workflow_run_failed(db, run.id, tool.id, exc)
+        if isinstance(exc, WorkflowInputError):
+            raise HTTPException(422, detail={"code": exc.code, "message": str(exc)}) from exc
         raise
 
     log_event(db, context, "run.started", case_id=case.id, details={"run_id": run.id, "tool_id": tool.id})
@@ -151,8 +161,8 @@ def cancel_active_case_run(db: Session, context: AuthContext, *, case_id: str) -
     case, _workspace, role, _case_dir = get_case_for_user(db, case_id, context.user.id)
     require_case_write(role, detail="Case not found")
     latest_run = latest_case_run(db, case_id)
-    if latest_run is None or latest_run.status in TERMINAL_RUN_STATUSES:
+    if latest_run is None or (latest_run.status in TERMINAL_RUN_STATUSES and not run_owns_outputs(latest_run)):
         raise HTTPException(status_code=409, detail="Case has no active run")
     workflow_runs.cancel_workflow_run(db, latest_run, cancel_job_first=True)
     log_event(db, context, "run.canceled", case_id=case_id)
-    return {"status": "canceled", "case_id": case_id}
+    return {**workflow_runs.cancellation_result(latest_run), "case_id": case_id}
