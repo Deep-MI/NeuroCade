@@ -162,6 +162,8 @@ class User(Base, TimestampMixin):
     external_auth_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    light_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    assistant_approval: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
 
 
 class Case(Base, TimestampMixin):
@@ -401,6 +403,37 @@ class AssistantTurn(Base, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text)
 
 
+class McpClient(Base, TimestampMixin):
+    """Revocable local agent credential, bound to one user and workspace."""
+
+    __tablename__ = "mcp_clients"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    access: Mapped[str] = mapped_column(String(32), nullable=False)
+    require_approval: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_seen: Mapped[int | None] = mapped_column(Integer)
+
+
+class McpPairing(Base, TimestampMixin):
+    """Short-lived setup grant; only its hash is stored."""
+
+    __tablename__ = "mcp_pairings"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    access: Mapped[str] = mapped_column(String(32), nullable=False)
+    require_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    installation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
 class AssistantToolExecution(Base, TimestampMixin):
     """Durable, exactly-addressed execution record for one assistant tool call."""
 
@@ -409,13 +442,19 @@ class AssistantToolExecution(Base, TimestampMixin):
         UniqueConstraint("turn_id", "call_id", name="uq_assistant_tool_executions_turn_call"),
         Index("ix_assistant_tool_executions_turn_status", "turn_id", "status"),
         Index("ix_assistant_tool_executions_external_run", "external_run_id"),
+        UniqueConstraint("client_id", "call_id", name="uq_tool_execution_client_call"),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
-    turn_id: Mapped[str] = mapped_column(
-        ForeignKey("assistant_turns.id", ondelete="CASCADE"), nullable=False, index=True
+    turn_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assistant_turns.id", ondelete="CASCADE"), nullable=True, index=True
     )
-    thread_id: Mapped[str] = mapped_column(ForeignKey("assistant_threads.id"), nullable=False, index=True)
+    thread_id: Mapped[str | None] = mapped_column(ForeignKey("assistant_threads.id"), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="builtin_assistant", server_default="builtin_assistant", nullable=False)
+    client_id: Mapped[str | None] = mapped_column(ForeignKey("mcp_clients.id"))
+    configuration_digest: Mapped[str | None] = mapped_column(String(64))
+    approval_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    expires_at: Mapped[int | None] = mapped_column(Integer)
     workspace_id: Mapped[str] = mapped_column(
         ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True
     )

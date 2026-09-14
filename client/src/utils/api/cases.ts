@@ -1,3 +1,4 @@
+import type { RunCancellation } from '../runCancellation';
 import type {
   AnalysisToolSummary,
   ArtifactListItem,
@@ -323,8 +324,8 @@ export async function addUploadToCase(
   );
 }
 
-export async function cancelCaseRun(caseId: string): Promise<void> {
-  await appOk(`/cases/${encodeURIComponent(caseId)}/cancel`, 'Cancel failed', { method: 'POST' });
+export async function cancelCaseRun(caseId: string): Promise<RunCancellation> {
+  return appJson<RunCancellation>(`/cases/${encodeURIComponent(caseId)}/cancel`, 'Cancel failed', { method: 'POST' });
 }
 
 export async function updateCase(

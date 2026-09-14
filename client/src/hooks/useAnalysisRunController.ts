@@ -7,6 +7,7 @@ import * as api from '../utils/api';
 import { caseViewerPath } from '../utils/caseRoutes';
 import { workflowStatusNotificationId } from '../utils/runNotifications';
 import { ApiError } from '../utils/errorMessages';
+import { describeCancellation } from '../utils/runCancellation';
 
 interface UseAnalysisRunControllerArgs {
   initialWorkspaceId: string | null;
@@ -54,14 +55,15 @@ export function useAnalysisRunController({
     if (!currentCaseId) return;
     if (!confirm('Are you sure you want to cancel this run?')) return;
     try {
-      await api.cancelCaseRun(currentCaseId);
-      setRunStatus('canceled');
+      const result = await api.cancelCaseRun(currentCaseId);
+      const { stopped, message } = describeCancellation(result);
+      setRunStatus(result.status);
       setRunError(null);
       setRunErrorCode(null);
       setChatNotifications((previous) => [...previous, {
-        notificationId: runId ? workflowStatusNotificationId(runId, 'canceled') : undefined,
+        notificationId: stopped && runId ? workflowStatusNotificationId(runId, 'canceled') : undefined,
         role: 'info',
-        content: 'Run canceled by user.',
+        content: message,
       }]);
     } catch (error) {
       console.error('Failed to cancel run', error);

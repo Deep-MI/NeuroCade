@@ -112,10 +112,8 @@ def prepare_workflow(
     host_root = Path(bind.host_path).expanduser().resolve()
     if not host_root.is_dir():
         raise ValueError(f"Authorized workflow root does not exist: {host_root}")
-    for path, requirement in zip(inputs, tool.inputs, strict=True):
-        host_input = _host_path_for_container_path(path, bind)
-        from api_service.pacs.compatibility import validate_input
-        validate_input(host_input, requirement, db=db)
+    from api_service.runtime_tools.workflow_validation import validate_workflow_inputs
+    validate_workflow_inputs(tool, [_host_path_for_container_path(path, bind) for path in inputs], db=db)
 
     resolved_run_id = run_id or str(uuid4())
     host_run_dir = (host_root / ".runs" / resolved_run_id).resolve()
@@ -364,6 +362,7 @@ def execute_prepared_workflow(
         "tool_id": prepared.tool.id,
         "run_id": prepared.run_id,
         "status": "completed" if return_code == 0 else "failed",
+        "writer_stopped": result.writer_stopped,
     }
     if "return_code" in include or return_code != 0:
         payload["return_code"] = return_code

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from contextlib import contextmanager
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -11,9 +12,9 @@ from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
 from backend_common.case_storage import validate_case_title
-from backend_common.db import Case, PacsImport, Run
+from backend_common.db import Case, Run
 from backend_common.deployment_policy import get_deployment_policy
-from backend_common.run_statuses import ACTIVE_RUN_STATUSES
+from backend_common.output_activity import OutputBusy, ensure_outputs_idle, reserve_case_files
 
 
 def validate_case_name_or_400(name: str) -> str:
@@ -78,17 +79,11 @@ def raise_case_conflict(exc: IntegrityError, detail: str) -> None:
 
 
 def ensure_case_not_active(db: Session, case: Case) -> None:
-    """Reject case changes while an run is active."""
-    if db.query(PacsImport).filter(PacsImport.case_id == case.id, (PacsImport.state.in_(("queued", "running", "canceling"))) | (PacsImport.error_code == "cleanup_failed")).first():
-        raise HTTPException(status_code=409, detail="Case has an active PACS import")
-    active_run = (
-        db.query(Run)
-        .filter(Run.case_id == case.id, Run.status.in_(ACTIVE_RUN_STATUSES))
-        .order_by(Run.created_at.desc(), Run.id.desc())
-        .first()
-    )
-    if active_run is not None:
-        raise HTTPException(status_code=409, detail="Cannot modify a case that is currently running")
+    """Reject case changes while processing or a snapshot owns its files."""
+    try:
+        ensure_outputs_idle(db, case.workspace_id, case.id)
+    except OutputBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def require_uploads_enabled() -> None:
@@ -101,3 +96,12 @@ def require_mutations_enabled() -> None:
     """Reject mutating requests when deployment policy disables destructive actions."""
     if not get_deployment_policy(settings).destructive_actions_enabled:
         raise HTTPException(status_code=403, detail="This action is disabled for this deployment")
+
+
+@contextmanager
+def reserve_case_file_update(db: Session, case: Case):
+    try:
+        with reserve_case_files(db, case.workspace_id, case.id):
+            yield
+    except OutputBusy as exc:
+        raise HTTPException(409, str(exc)) from exc

@@ -486,6 +486,7 @@ def test_bridge_duplicate_run_ids_and_lifecycle(monkeypatch: pytest.MonkeyPatch,
         "build_docker_argv",
         lambda *_args, **_kwargs: [sys.executable, "-c", "print('bridge-ok')"],
     )
+    monkeypatch.setattr(runtime, "_confirm_container_stopped", lambda _record: None)
     payload = _payload(data_root)
     run, created = runtime.start(payload)
     assert created is True
@@ -563,7 +564,7 @@ def test_bridge_client_recovers_from_transient_poll_failure(monkeypatch: pytest.
         {},
         BridgeError("temporary disconnect"),
         {"state": "accepted"},
-        {"state": "completed", "returncode": 0, "stdout": "ok"},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "stdout": "ok"},
     ]
 
     def request(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -587,7 +588,7 @@ def test_bridge_client_publishes_changed_progress(monkeypatch: pytest.MonkeyPatc
         {},
         {"state": "accepted", "progress": progress},
         {"state": "accepted", "progress": progress},
-        {"state": "completed", "returncode": 0, "progress": {**progress, "progress": 1.0}},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "progress": {**progress, "progress": 1.0}},
     ]
     observed: list[dict] = []
     monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: responses.pop(0))
@@ -614,7 +615,7 @@ def test_bridge_client_republishes_unchanged_progress_as_heartbeat(
         {},
         {"state": "accepted", "progress": progress},
         {"state": "accepted", "progress": progress},
-        {"state": "completed", "returncode": 0, "progress": {**progress, "progress": 1.0}},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "progress": {**progress, "progress": 1.0}},
     ]
     clock = iter((100.0, 106.0, 107.0))
     observed: list[dict] = []

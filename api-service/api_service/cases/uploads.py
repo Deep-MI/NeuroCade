@@ -84,7 +84,8 @@ def _validate_uploaded_volume_header(path: Path, source_name: str) -> None:
     """Reject malformed direct MRI volume uploads before creating an artifact."""
     lower = source_name.lower()
     try:
-        header = path.read_bytes()[:352]
+        with path.open("rb") as handle:
+            header = handle.read(352)
     except OSError as exc:
         raise HTTPException(status_code=400, detail="Uploaded MRI file could not be read") from exc
     if lower.endswith((".mgz", ".nii.gz")):
@@ -106,7 +107,8 @@ def _validate_dicom_source_header(path: Path, source_name: str) -> None:
             raise HTTPException(status_code=400, detail="DICOM ZIP upload is not a valid ZIP archive")
         return
     try:
-        header = path.read_bytes()[:132]
+        with path.open("rb") as handle:
+            header = handle.read(132)
     except OSError as exc:
         raise HTTPException(status_code=400, detail="DICOM upload could not be read") from exc
     if len(header) >= 132 and header[128:132] != b"DICM":
@@ -299,6 +301,9 @@ async def _store_case_dicom_uploads(
         raw_dir.mkdir(parents=True, exist_ok=True)
 
         await _stage_dicom_sources(upload_files, input_dir, raw_dir)
+        # No SQLite snapshot should span slow external conversion. The caller
+        # retains its case reservation while other cases continue normally.
+        db.commit()
         _run_dcm2niix(input_dir, output_dir)
 
         converted_paths = sorted(

@@ -35,6 +35,9 @@ DEFAULT_GUI_SESSION_ID = os.environ.get("TEST_GUI_SESSION_ID", "pytest-default-s
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "api-service"))
+# Source regressions must not silently exercise a stale copied bridge wheel.
+sys.path.insert(0, str(REPO_ROOT / "packages/neurocade-runtime-tools/src"))
+sys.path.insert(0, str(REPO_ROOT / "packages/neurocade-mcp/src"))
 from backend_common.case_storage import (  # noqa: E402
     UPLOAD_SUFFIXES,
     case_id_from_storage_dir,

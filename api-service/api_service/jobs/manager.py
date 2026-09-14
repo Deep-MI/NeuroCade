@@ -63,6 +63,8 @@ class JobHandle:
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     shutdown_requested: threading.Event = field(default_factory=threading.Event)
+    stopped_before_start: bool = False
+    cancellation_error: str | None = None
     _cancel_callback: Callable[[], None] | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -177,7 +179,10 @@ class JobManager:
     def _run(self, handle: JobHandle, name: str, func: Callable[..., Any], kwargs: dict[str, Any]) -> None:
         if handle.cancel_requested.is_set():
             handle.state = JobState.canceled
+            handle.stopped_before_start = True
             handle.finished_at = time.monotonic()
+            if self._durable_store is not None:
+                self._durable_store.cancel(handle.id)
             logger.info("job.canceled_before_start id=%s task=%s", handle.id, name)
             return
         durable_store = self._durable_store
@@ -234,6 +239,9 @@ class JobManager:
             "ready": ready,
             "result": handle.result if ready else None,
             "error": handle.error,
+            "cancellation": "requested" if handle.cancel_requested.is_set() and not ready else None,
+            "cancellation_error": handle.cancellation_error,
+            "stopped_before_start": handle.stopped_before_start,
         }
 
     def queue_status(self, queue_names: set[str] | None = None) -> dict[str, int]:
@@ -263,7 +271,7 @@ class JobManager:
             return False
         self._request_cancel(handle)
         durable_store = self._durable_store
-        if durable_store is not None:
+        if durable_store is not None and handle.stopped_before_start:
             durable_store.cancel(job_id)
         logger.info("job.cancel id=%s", job_id)
         return True
@@ -282,9 +290,12 @@ class JobManager:
         if cancel_callback is not None:
             try:
                 cancel_callback()
-            except Exception:  # noqa: BLE001 - cancellation remains best effort
+                handle.cancellation_error = None
+            except Exception as exc:  # noqa: BLE001 - retain ownership on failed cancellation
+                handle.cancellation_error = str(exc)
                 logger.exception("job.runtime_cancel_failed id=%s", handle.id)
-        if canceled_before_start or (mark_terminal and handle.state not in _TERMINAL):
+        if canceled_before_start:
+            handle.stopped_before_start = True
             handle.state = JobState.canceled
             handle.finished_at = time.monotonic()
 
