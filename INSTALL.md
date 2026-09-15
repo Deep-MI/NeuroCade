@@ -21,7 +21,9 @@ bridge. If no compatible stable release exists, the installer falls back to the
 newest compatible release and reports the selected pre-release. Linux uses
 Docker when rootless Apptainer is unavailable; macOS uses Docker.
 An existing `NEUROCADE_RUNTIME` setting is preserved on reinstall; pass
-`--runtime docker|apptainer` to override it.
+`--runtime docker|apptainer` to override it in a Git checkout. Transactional
+archive updates intentionally reject runtime changes because the two database
+stores require an explicit migration rather than ordinary rollback.
 
 Install a published beta explicitly:
 
@@ -108,12 +110,17 @@ edited, and preserves `.env`, runtime state, cases, outputs, uploads, and
 source, installs the matching runtime artifacts, and waits for a healthy start.
 If installation or startup fails, it restores the prior source, database,
 runtime artifact, configuration, and Docker image tag, then restarts the prior
-version.
+version. Rollback material is kept under `.runtime/update-transaction` while
+the application is stopped, so an abrupt host interruption does not discard it.
+If automatic rollback cannot complete, the previous app is not restarted and
+the updater prints the retained recovery path for manual repair.
 
 The same path repairs older archive installations when the remote installer is
 run again. Git checkouts are never overwritten; update them with Git and rerun
-`scripts/install.sh`. Updates remain an explicit command and are not started by
-the web UI or the read-only update checker.
+`scripts/install.sh`. Update mode rejects forwarded installer options such as a
+runtime change or `--no-start`; a successful update always includes a verified
+healthy start. Updates remain an explicit command and are not started by the
+web UI or the read-only update checker.
 
 ## Configuration
 

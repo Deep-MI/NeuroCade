@@ -39,10 +39,26 @@ EOF
 }
 
 bootstrap_release_source() {
-  local tmp_dir="$1" manifest release_values tag source checksum base digest expected
+  local tmp_dir="$1" selector="${2:-stable}" manifest manifest_url releases release_values tag source checksum base digest expected
   manifest="$tmp_dir/neurocade-release.json"
-  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$manifest" "$RELEASE_MANIFEST_URL"
-  release_values="$(python3 -c 'import json,re,sys; p=json.load(open(sys.argv[1])); a=p.get("source_archive",{}); ok=lambda v: isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",v); assert p.get("schema_version")==2 and re.fullmatch(r"v[0-9][A-Za-z0-9._-]*",p.get("tag","")) and ok(a.get("filename")) and ok(a.get("sha256_filename")) and a["sha256_filename"]==a["filename"]+".sha256"; print(p["tag"],a["filename"],a["sha256_filename"],sep="\n")' "$manifest")" || {
+  case "$selector" in
+    stable) manifest_url="$RELEASE_MANIFEST_URL" ;;
+    beta)
+      releases="$tmp_dir/releases.json"
+      curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$releases" \
+        "${NEUROCADE_RELEASES_API_URL:-https://api.github.com/repos/Deep-MI/NeuroCade/releases?per_page=100}"
+      tag="$(python3 -c 'import json,re,sys; releases=json.load(open(sys.argv[1]));
+for item in releases:
+ assets=item.get("assets",[]) if isinstance(item,dict) else []
+ if item.get("draft") is False and item.get("prerelease") is True and re.fullmatch(r"v[0-9][A-Za-z0-9._-]*",item.get("tag_name","")) and any(a.get("name")=="neurocade-release.json" for a in assets if isinstance(a,dict)): print(item["tag_name"]); break
+else: raise SystemExit(1)' "$releases")" || { echo "No compatible NeuroCade beta release was found." >&2; exit 1; }
+      manifest_url="https://github.com/Deep-MI/NeuroCade/releases/download/$tag/neurocade-release.json"
+      ;;
+    v*) manifest_url="https://github.com/Deep-MI/NeuroCade/releases/download/$selector/neurocade-release.json" ;;
+    *) echo "Invalid bootstrap release selector: $selector" >&2; exit 2 ;;
+  esac
+  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$manifest" "$manifest_url"
+  release_values="$(python3 -c 'import json,re,sys; p=json.load(open(sys.argv[1])); a=p.get("source_archive",{}); ok=lambda v: isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",v); assert p.get("schema_version")==1 and re.fullmatch(r"v[0-9][A-Za-z0-9._-]*",p.get("tag","")) and ok(a.get("filename")) and ok(a.get("sha256_filename")) and a["sha256_filename"]==a["filename"]+".sha256"; print(p["tag"],a["filename"],a["sha256_filename"],sep="\n")' "$manifest")" || {
     echo "The latest NeuroCade release does not support verified source installation." >&2; exit 1;
   }
   tag="$(printf '%s\n' "$release_values" | sed -n '1p')"
@@ -74,6 +90,22 @@ bootstrap_checkout() {
   command -v tar >/dev/null 2>&1 || { echo "tar is required to unpack NeuroCade." >&2; exit 1; }
   command -v python3 >/dev/null 2>&1 || { echo "Python 3 is required to verify NeuroCade releases." >&2; exit 1; }
   local install_dir="$DEFAULT_INSTALL_DIR"
+  local bootstrap_selector="stable" arg previous_arg=""
+  for arg in "$@"; do
+    if [[ "$previous_arg" == --version ]]; then
+      bootstrap_selector="$arg"
+      previous_arg=""
+      continue
+    fi
+    case "$arg" in
+      --version) previous_arg=--version ;;
+      --version=*) bootstrap_selector="${arg#*=}" ;;
+    esac
+  done
+  [[ -z "$previous_arg" ]] || { echo "--version requires a value." >&2; exit 2; }
+  [[ "$bootstrap_selector" == stable || "$bootstrap_selector" == beta || "$bootstrap_selector" =~ ^v[0-9][A-Za-z0-9._-]*$ ]] || {
+    echo "Invalid release selector: $bootstrap_selector" >&2; exit 2;
+  }
   if [[ -t 0 && -t 1 ]]; then
     if ! read -r -p "Install directory [$DEFAULT_INSTALL_DIR]: " install_dir; then
       install_dir=""
@@ -85,13 +117,24 @@ bootstrap_checkout() {
     exec bash "$install_dir/scripts/install.sh" "$@"
   fi
   if [[ -f "$install_dir/scripts/install.sh" && -f "$install_dir/.runtime/runtime-root-owned" ]]; then
-    local update_tmp source_root
+    local update_tmp source_root update_option=()
+    local -a allowed_update_args=("$@")
+    local index=0
+    while (( index < ${#allowed_update_args[@]} )); do
+      case "${allowed_update_args[index]}" in
+        --yes|-y) index=$((index + 1)) ;;
+        --version) index=$((index + 2)) ;;
+        --version=*) index=$((index + 1)) ;;
+        *) echo "Archive updates do not accept installer option ${allowed_update_args[index]}; use scripts/update.sh without changing runtime or startup behavior." >&2; exit 2 ;;
+      esac
+    done
     update_tmp="$(mktemp -d)"
-    source_root="$(bootstrap_release_source "$update_tmp")"
+    source_root="$(bootstrap_release_source "$update_tmp" "$bootstrap_selector")"
+    if [[ "$bootstrap_selector" == beta ]]; then update_option=(--channel beta); elif [[ "$bootstrap_selector" == v* ]]; then update_option=(--version "$bootstrap_selector"); fi
     set +e
     env NEUROCADE_INSTALL_DIR="$install_dir" bash "$source_root/scripts/update.sh" \
       --bootstrap-staged "$update_tmp/$(basename "$(find "$update_tmp" -maxdepth 1 -name 'neurocade-source-*.tar.gz' -print -quit)")" \
-      "$update_tmp/neurocade-release.json" --yes -- "$@"
+      "$update_tmp/neurocade-release.json" "${update_option[@]+"${update_option[@]}"}" --yes
     local update_status=$?
     rm -rf "$update_tmp"
     exit "$update_status"
@@ -113,11 +156,17 @@ bootstrap_checkout() {
   fi
   local tmp_dir source_root
   tmp_dir="$(mktemp -d)"
+  for arg in "$@"; do
+    [[ "$arg" != --image && "$arg" != --image=* ]] || {
+      echo "Remote archive installs cannot verify a separately selected Docker image. Install the matched source build, then use scripts/update.sh --channel stable|beta." >&2
+      exit 2
+    }
+  done
   if [[ -n "${NEUROCADE_ARCHIVE_URL+x}" ]]; then
     curl --fail --location --silent --show-error --retry 4 --retry-all-errors "$ARCHIVE_URL" | tar -xz -C "$tmp_dir"
     source_root="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
   else
-    source_root="$(bootstrap_release_source "$tmp_dir")"
+    source_root="$(bootstrap_release_source "$tmp_dir" "$bootstrap_selector")"
   fi
   mkdir -p "$(dirname "$install_dir")"
   if [[ "$existing_empty_dir" -eq 1 ]]; then
@@ -131,8 +180,10 @@ bootstrap_checkout() {
   rm -rf "$tmp_dir"
   mkdir -p "$install_dir/.runtime"
   : >"$install_dir/.runtime/runtime-root-owned"
+  bootstrap_channel=stable
+  [[ "$bootstrap_selector" != beta && "$bootstrap_selector" != *-beta.* ]] || bootstrap_channel=beta
   exec env NEUROCADE_INSTALL_VERSION="${bootstrap_version:-development}" \
-    NEUROCADE_INSTALL_REVISION="${bootstrap_revision:-unknown}" NEUROCADE_INSTALL_CHANNEL=stable \
+    NEUROCADE_INSTALL_REVISION="${bootstrap_revision:-unknown}" NEUROCADE_INSTALL_CHANNEL="$bootstrap_channel" \
     bash "$install_dir/scripts/install.sh" "$@"
 }
 

@@ -33,7 +33,7 @@ def _artifact(payload: dict, name: str) -> tuple[str, str]:
 
 def read_manifest(path: Path) -> list[str]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema_version") not in {1, 2} or payload.get("architecture") != "amd64":
+    if payload.get("schema_version") != 1 or payload.get("architecture") != "amd64":
         raise ValueError("Unsupported NeuroCade release manifest")
     tag = _safe(payload.get("tag"), SAFE_TAG, "tag")
     version = _safe(payload.get("version"), SAFE_NAME, "version")
@@ -50,7 +50,7 @@ def read_manifest(path: Path) -> list[str]:
 def read_update(path: Path) -> list[str]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     read_manifest(path)
-    if payload.get("schema_version") != 2:
+    if payload.get("schema_version") != 1 or "source_archive" not in payload:
         raise ValueError("This release does not contain verified updater metadata")
     revision = _safe(payload.get("source_revision"), re.compile(r"^[0-9a-f]{40}$"), "source revision")
     minimum = payload.get("minimum_updater_version")
@@ -118,7 +118,9 @@ def main() -> None:
 
     if args.command == "create":
         payload = {
-            "schema_version": 2,
+            # Keep schema 1 so already-deployed Apptainer installers continue
+            # to read the canonical manifest. Updater fields are additive.
+            "schema_version": 1,
             "tag": args.tag,
             "version": args.version,
             "architecture": "amd64",

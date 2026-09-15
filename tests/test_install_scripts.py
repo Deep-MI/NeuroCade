@@ -491,6 +491,7 @@ def test_release_manifest_round_trip(tmp_path: Path) -> None:
         ],
         check=True,
     )
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 1
     result = subprocess.run([str(script), "read", str(manifest)], check=True, text=True, capture_output=True)
     assert result.stdout.splitlines() == [
         "v2026.8.30",

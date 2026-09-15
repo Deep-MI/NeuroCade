@@ -24,12 +24,15 @@ image from the same source revision as the host runtime bridge.
 Install the current beta channel explicitly:
 
 ```bash
-# Docker
-bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --runtime docker --image docker.io/deepmi/neurocade:beta
-
 # Rootless Apptainer on Linux amd64
 bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --runtime apptainer --version beta
 ```
+
+Docker archive installs deliberately build the application and host bridge from
+the same verified source release. Install stable first, then use
+`./scripts/update.sh --channel beta --yes` to move a Docker installation to the
+matched beta source; the remote bootstrap rejects a separately selected rolling
+Docker image because its source revision cannot be proven.
 
 To build a local checkout into an Apptainer SIF (requires Docker):
 

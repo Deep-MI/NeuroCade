@@ -12,7 +12,8 @@ CHECK_ONLY=0
 ASSUME_YES=0
 STAGED_SOURCE=""
 STAGED_MANIFEST=""
-INSTALLER_ARGS=()
+KEEP_WORK_DIR=0
+TRANSACTION_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -47,7 +48,7 @@ while [[ $# -gt 0 ]]; do
     --version) [[ "${2:-}" =~ ^v[0-9][A-Za-z0-9._-]*$ ]] || fail "--version requires a v-prefixed release tag"; SELECTOR="$2"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --bootstrap-staged) STAGED_SOURCE="$2"; STAGED_MANIFEST="$3"; shift 3 ;;
-    --) shift; INSTALLER_ARGS=("$@"); break ;;
+    --) fail "Installer options cannot be forwarded through an update; runtime changes and --no-start are not supported" ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown option: $1" ;;
   esac
@@ -57,7 +58,8 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v python3 >/dev/null 2>&1 || fail "Python 3 is required"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/neurocade-update.XXXXXX")"
 cleanup() {
-  rm -rf "$WORK_DIR"
+  (( KEEP_WORK_DIR )) || rm -rf "$WORK_DIR"
+  if (( ! KEEP_WORK_DIR )) && [[ -n "$TRANSACTION_DIR" ]]; then rm -rf "$TRANSACTION_DIR"; fi
 }
 trap cleanup EXIT
 MANIFEST="$WORK_DIR/neurocade-release.json"
@@ -100,8 +102,21 @@ fi
 [[ ! -d "$ROOT_DIR/.git" ]] || fail "This is a Git checkout. Update it with Git, then rerun scripts/install.sh."
 [[ -f "$ROOT_DIR/.runtime/runtime-root-owned" ]] || fail "Refusing to update a directory not owned by the NeuroCade installer"
 LOCK="$ROOT_DIR/.runtime/update.lock"
-mkdir "$LOCK" 2>/dev/null || fail "Another NeuroCade update is already running"
-trap 'rmdir "$LOCK" 2>/dev/null || true; cleanup' EXIT
+if ! mkdir "$LOCK" 2>/dev/null; then
+  lock_pid="$(sed -n '1p' "$LOCK/pid" 2>/dev/null || true)"
+  if [[ "$lock_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+    rm -rf "$LOCK"
+    mkdir "$LOCK" || fail "Could not replace a stale NeuroCade update lock"
+  else
+    fail "Another NeuroCade update is already running"
+  fi
+fi
+printf '%s\n' "$$" >"$LOCK/pid"
+release_update_lock() {
+  rm -f "$LOCK/pid"
+  rmdir "$LOCK" 2>/dev/null || true
+}
+trap 'release_update_lock; cleanup' EXIT
 
 SOURCE_ARCHIVE="$WORK_DIR/$SOURCE_NAME"
 SOURCE_CHECKSUM="$WORK_DIR/$CHECKSUM_NAME"
@@ -164,8 +179,17 @@ active_runs="$(active_workflow_count)" || fail "Could not determine whether work
 
 runtime="${NEUROCADE_RUNTIME:-}"; mode="${DEPLOYMENT_PROFILE:-local}"; provider="${LLM_PROVIDER_DEFAULT:-no-llm}"
 [[ "$runtime" == docker || "$runtime" == apptainer ]] || fail "The installed runtime is not configured"
-BACKUP="$WORK_DIR/rollback"; mkdir -p "$BACKUP/source" "$BACKUP/database"
+TRANSACTION_DIR="$ROOT_DIR/.runtime/update-transaction"
+[[ ! -e "$TRANSACTION_DIR" ]] || fail "An interrupted update recovery set already exists at $TRANSACTION_DIR; inspect it before retrying"
+mkdir "$TRANSACTION_DIR"
+BACKUP="$TRANSACTION_DIR/rollback"; mkdir -p "$BACKUP/source" "$BACKUP/database" "$BACKUP/metadata"
 cp "$ROOT_DIR/.env" "$BACKUP/env"
+for metadata_name in provenance.json source-manifest.json; do
+  if [[ -f "$ROOT_DIR/.runtime/$metadata_name" ]]; then
+    cp "$ROOT_DIR/.runtime/$metadata_name" "$BACKUP/metadata/$metadata_name"
+    : >"$BACKUP/metadata/$metadata_name.present"
+  fi
+done
 RECORD="$BACKUP/source-record.json"
 old_image="${NEUROCADE_IMAGE:-}"
 old_image_id=""
@@ -174,30 +198,72 @@ if [[ "$runtime" == docker ]]; then
   [[ -n "$old_image" && -n "$old_image_id" ]] || fail "The currently configured Docker image is unavailable; refusing an update without rollback"
 else
   cp -a "$ROOT_DIR/.runtime/images" "$BACKUP/images"
-  cp -a "$ROOT_DIR/.runtime/release" "$BACKUP/release" 2>/dev/null || true
-fi
-
-rollback() {
-  local status=$?
-  trap - ERR
-  echo "Update failed; restoring NeuroCade ${current:-previous version}." >&2
-  "$ROOT_DIR/scripts/run.sh" stop >/dev/null 2>&1 || true
-  python3 "$SOURCE_ROOT/scripts/update_source.py" rollback "$ROOT_DIR" "$BACKUP/source" "$RECORD" || true
-  cp "$BACKUP/env" "$ROOT_DIR/.env"
-  if [[ "$runtime" == docker ]]; then
-    [[ -z "$old_image_id" ]] || docker tag "$old_image_id" "$old_image" >/dev/null
-    docker run --rm -v "${NEUROCADE_DATABASE_VOLUME:-neurocade-database}:/database" -v "$BACKUP/database:/backup:ro" --entrypoint sh "$old_image" -c 'rm -rf /database/* /database/.[!.]* /database/..?*; cp -a /backup/. /database/' || true
-  else
-    rm -rf "$ROOT_DIR/.runtime/database" "$ROOT_DIR/.runtime/images" "$ROOT_DIR/.runtime/release"
-    mkdir -p "$ROOT_DIR/.runtime"
-    cp -a "$BACKUP/database" "$ROOT_DIR/.runtime/database"
-    cp -a "$BACKUP/images" "$ROOT_DIR/.runtime/images"
-    [[ ! -d "$BACKUP/release" ]] || cp -a "$BACKUP/release" "$ROOT_DIR/.runtime/release"
+  if [[ -e "$ROOT_DIR/.runtime/release" ]]; then
+    cp -a "$ROOT_DIR/.runtime/release" "$BACKUP/release" || fail "Could not back up the installed Apptainer release artifacts"
   fi
-  "$ROOT_DIR/scripts/run.sh" start -d >/dev/null 2>&1 || echo "Previous version was restored but could not be restarted automatically." >&2
+fi
+{
+  printf 'runtime=%s\n' "$runtime"
+  printf 'from_version=%s\n' "${current:-legacy}"
+  printf 'to_version=%s\n' "$VERSION"
+  printf 'old_image=%s\n' "$old_image"
+  printf 'old_image_id=%s\n' "$old_image_id"
+} >"$TRANSACTION_DIR/recovery-info"
+
+PHASE=prepared
+rollback() {
+  local status=$? restore_failed=0 metadata_name
+  trap - ERR INT TERM
+  set +e
+  if [[ "$PHASE" != mutating ]]; then
+    echo "Update interrupted before any installed state changed; restarting the previous application." >&2
+    "$ROOT_DIR/scripts/run.sh" start -d >/dev/null 2>&1 || restore_failed=1
+  else
+    echo "Update failed; restoring NeuroCade ${current:-previous version}." >&2
+    if ! "$ROOT_DIR/scripts/run.sh" stop >/dev/null 2>&1; then
+      KEEP_WORK_DIR=1
+      echo "ROLLBACK INCOMPLETE: the updated application could not be stopped. Recovery backup retained at $BACKUP" >&2
+      (( status != 0 )) || status=1
+      exit "$status"
+    fi
+    python3 "$SOURCE_ROOT/scripts/update_source.py" rollback "$ROOT_DIR" "$BACKUP/source" "$RECORD" || restore_failed=1
+    cp "$BACKUP/env" "$ROOT_DIR/.env" || restore_failed=1
+    if [[ "$runtime" == docker ]]; then
+      docker tag "$old_image_id" "$old_image" >/dev/null || restore_failed=1
+      docker run --rm -v "${NEUROCADE_DATABASE_VOLUME:-neurocade-database}:/database" -v "$BACKUP/database:/backup:ro" --entrypoint sh "$old_image" -c 'rm -rf /database/* /database/.[!.]* /database/..?*; cp -a /backup/. /database/' || restore_failed=1
+    else
+      rm -rf "$ROOT_DIR/.runtime/database.restore" "$ROOT_DIR/.runtime/images.restore" "$ROOT_DIR/.runtime/release.restore"
+      cp -a "$BACKUP/database" "$ROOT_DIR/.runtime/database.restore" || restore_failed=1
+      cp -a "$BACKUP/images" "$ROOT_DIR/.runtime/images.restore" || restore_failed=1
+      if [[ -d "$BACKUP/release" ]]; then cp -a "$BACKUP/release" "$ROOT_DIR/.runtime/release.restore" || restore_failed=1; fi
+      if (( restore_failed == 0 )); then
+        rm -rf "$ROOT_DIR/.runtime/database" "$ROOT_DIR/.runtime/images" "$ROOT_DIR/.runtime/release"
+        mv "$ROOT_DIR/.runtime/database.restore" "$ROOT_DIR/.runtime/database" || restore_failed=1
+        mv "$ROOT_DIR/.runtime/images.restore" "$ROOT_DIR/.runtime/images" || restore_failed=1
+        if [[ -d "$ROOT_DIR/.runtime/release.restore" ]]; then mv "$ROOT_DIR/.runtime/release.restore" "$ROOT_DIR/.runtime/release" || restore_failed=1; fi
+      fi
+    fi
+    for metadata_name in provenance.json source-manifest.json; do
+      if [[ -f "$BACKUP/metadata/$metadata_name.present" ]]; then
+        cp "$BACKUP/metadata/$metadata_name" "$ROOT_DIR/.runtime/$metadata_name" || restore_failed=1
+      else
+        rm -f "$ROOT_DIR/.runtime/$metadata_name" || restore_failed=1
+      fi
+    done
+    if (( restore_failed == 0 )); then
+      "$ROOT_DIR/scripts/run.sh" start -d >/dev/null 2>&1 || restore_failed=1
+    fi
+  fi
+  if (( restore_failed )); then
+    KEEP_WORK_DIR=1
+    echo "ROLLBACK INCOMPLETE: the previous application was not restarted. Recovery backup retained at $BACKUP" >&2
+  fi
+  (( status != 0 )) || status=1
   exit "$status"
 }
 
+trap rollback ERR INT TERM
+PHASE=stopped
 "$ROOT_DIR/scripts/run.sh" stop
 if [[ "$runtime" == docker ]]; then
   if ! docker run --rm -v "${NEUROCADE_DATABASE_VOLUME:-neurocade-database}:/database:ro" -v "$BACKUP/database:/backup" --entrypoint sh "$old_image" -c 'cp -a /database/. /backup/'; then
@@ -210,11 +276,10 @@ else
     fail "Database backup failed; the previous application was restarted"
   fi
 fi
-trap rollback ERR INT TERM
+PHASE=mutating
 python3 "$TOOL_ROOT/scripts/update_source.py" apply "$SOURCE_ROOT" "$ROOT_DIR" "$BACKUP/source" "$RECORD"
 args=(--runtime "$runtime" --mode "$mode" --llm-provider "$provider" --yes)
 if [[ "$runtime" == apptainer ]]; then args+=(--version "$TAG"); fi
-if (( ${#INSTALLER_ARGS[@]} )); then args+=("${INSTALLER_ARGS[@]}"); fi
 NEUROCADE_INSTALL_VERSION="$VERSION" NEUROCADE_INSTALL_REVISION="$REVISION" \
 NEUROCADE_INSTALL_CHANNEL="$CHANNEL" NEUROCADE_INSTALL_ARTIFACT="$SOURCE_IDENTITY" \
   "$ROOT_DIR/scripts/install.sh" "${args[@]}"
