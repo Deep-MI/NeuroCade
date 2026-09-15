@@ -9,6 +9,7 @@ source "$ROOT_DIR/scripts/lib/env.sh"
 source "$ROOT_DIR/scripts/lib/managed_python.sh"
 source "$ROOT_DIR/scripts/lib/docker_cli.sh"
 source "$ROOT_DIR/scripts/lib/processes.sh"
+source "$ROOT_DIR/scripts/lib/provenance.sh"
 load_env_file
 configure_docker_cli_path
 
@@ -365,6 +366,9 @@ case "$COMMAND" in
     ;;
   stop) stop_application; stop_bridge; rm -f "$LAUNCH_ID_FILE" "$RUNTIME_DIR/mcp.json" ;;
   status)
+    installed_version="$(provenance_value "$ROOT_DIR" version)"
+    installed_revision="$(provenance_value "$ROOT_DIR" source_revision)"
+    [[ -z "$installed_version" ]] || echo "Installed release: $installed_version (${installed_revision:0:12})"
     mcp_status
     load_launch_id
     if bridge_health; then echo "Runtime bridge: running"; else echo "Runtime bridge: stopped"; fi

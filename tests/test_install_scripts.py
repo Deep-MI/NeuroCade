@@ -201,6 +201,7 @@ def _bootstrap_installer(
     env.update(
         {
             "FAKE_ARCHIVE": str(archive),
+            "NEUROCADE_ARCHIVE_URL": "https://example.invalid/neurocade.tar.gz",
             "HOME": str(tmp_path / "home"),
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
         }
@@ -481,6 +482,10 @@ def test_release_manifest_round_trip(tmp_path: Path) -> None:
             "neurocade-app-2026.8.30-amd64.sif",
             "--bridge",
             "neurocade_runtime_tools-0.2.0-py3-none-any.whl",
+            "--source",
+            "neurocade-source-2026.8.30.tar.gz",
+            "--source-revision",
+            "a" * 40,
             "--output",
             str(manifest),
         ],
@@ -494,6 +499,11 @@ def test_release_manifest_round_trip(tmp_path: Path) -> None:
         "neurocade-app-2026.8.30-amd64.sif.sha256",
         "neurocade_runtime_tools-0.2.0-py3-none-any.whl",
         "neurocade_runtime_tools-0.2.0-py3-none-any.whl.sha256",
+    ]
+    update = subprocess.run([str(script), "read-update", str(manifest)], check=True, text=True, capture_output=True)
+    assert update.stdout.splitlines() == [
+        "v2026.8.30", "2026.8.30", "a" * 40, "1",
+        "neurocade-source-2026.8.30.tar.gz", "neurocade-source-2026.8.30.tar.gz.sha256",
     ]
 
 
@@ -581,6 +591,10 @@ def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path
             sif_name,
             "--bridge",
             bridge_name,
+            "--source",
+            "neurocade-source-2026.8.30.tar.gz",
+            "--source-revision",
+            "a" * 40,
             "--output",
             str(assets / "neurocade-release.json"),
         ],

@@ -24,6 +24,7 @@ def state(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("APP_SIF", "app.sif")
     monkeypatch.setenv("BRIDGE_WHEEL", "bridge.whl")
+    monkeypatch.setenv("SOURCE_ARCHIVE", "source.tar.gz")
     monkeypatch.setenv("CANDIDATE_DIGEST_IMAGE", "docker.io/deepmi/neurocade@sha256:123")
     monkeypatch.setenv("GITHUB_REPOSITORY", "Deep-MI/NeuroCade")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "outputs"))
@@ -116,6 +117,14 @@ def test_upload_failure_does_not_promote_image_or_tag(state):
     assert data["releases"][0]["draft"]
     assert not data["tag"]
     assert not any(a[0] == "docker" for a in data["calls"])
+
+
+def test_release_upload_includes_verified_source_archive(state):
+    plan, data = state
+    publication.publish(plan)
+    upload = next(args for args in data["calls"] if args[:3] == ("gh", "release", "upload"))
+    assert "source.tar.gz" in upload
+    assert "source.tar.gz.sha256" in upload
 
 
 def test_stable_publication_and_retry(state):

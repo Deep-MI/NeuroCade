@@ -98,9 +98,9 @@ def publish(path: Path) -> None:
                 "--title", f"NeuroCade {plan['version']}", "--generate-notes",
                 f"--prerelease={plan['prerelease']}")
         # Incomplete assets remain hidden in a draft until every upload succeeds.
-        sif, wheel = os.environ["APP_SIF"], os.environ["BRIDGE_WHEEL"]
+        sif, wheel, source = os.environ["APP_SIF"], os.environ["BRIDGE_WHEEL"], os.environ["SOURCE_ARCHIVE"]
         run("gh", "release", "upload", tag, sif, f"{sif}.sha256", wheel, f"{wheel}.sha256",
-            "neurocade-release.json", "--clobber")
+            source, f"{source}.sha256", "neurocade-release.json", "--clobber")
         run("docker", "buildx", "imagetools", "create", "--tag", image, os.environ["CANDIDATE_DIGEST_IMAGE"])
         if not has_tag:
             run("git", "config", "user.name", "github-actions[bot]")
