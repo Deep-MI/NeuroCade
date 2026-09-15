@@ -50,6 +50,9 @@ _BYTE_UNITS = {
     "tib": 1024**4,
 }
 _GIB = 1024**3
+_DOWNLOAD_ATTEMPTS = 4
+_DOWNLOAD_RETRY_DELAY_SECONDS = 2
+_TRANSIENT_DOWNLOAD_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 _VERSION_SCOPED_NEURODESK_IMAGE = re.compile(
     r"^vnmd/[A-Za-z0-9][A-Za-z0-9._-]*_[A-Za-z0-9][A-Za-z0-9._-]*:latest$"
 )
@@ -406,6 +409,35 @@ def sif_cache_path(spec: RuntimeImageSpec, image_dir: Path) -> Path:
     return image_dir / f"{stem}.sif"
 
 
+def _download_file_once(
+    url: str,
+    partial: Path,
+    *,
+    is_cancelled: Callable[[], bool] | None,
+    progress_observer: ProgressObserver | None,
+    label: str,
+) -> None:
+    with requests.get(url, stream=True, timeout=(15, 60)) as response:
+        response.raise_for_status()
+        total = int(response.headers.get("Content-Length") or 0)
+        current = 0
+        with partial.open("wb") as output:
+            for chunk in response.iter_content(4 * 1024 * 1024):
+                if is_cancelled is not None and is_cancelled():
+                    raise InterruptedError(f"{label} was canceled")
+                if chunk:
+                    output.write(chunk)
+                    current += len(chunk)
+                    if progress_observer is not None:
+                        progress_observer({
+                            "kind": "image",
+                            "phase": "downloading",
+                            "progress": current / total if total else None,
+                            "current_bytes": current,
+                            "total_bytes": total or None,
+                        })
+
+
 def download_verified_file(
     url: str,
     target: Path,
@@ -425,33 +457,43 @@ def download_verified_file(
     partial = target.with_suffix(target.suffix + ".partial")
     partial.unlink(missing_ok=True)
     try:
-        with requests.get(url, stream=True, timeout=(15, 60)) as response:
-            response.raise_for_status()
-            total = int(response.headers.get("Content-Length") or 0)
-            current = 0
-            with partial.open("wb") as output:
-                for chunk in response.iter_content(4 * 1024 * 1024):
-                    if is_cancelled is not None and is_cancelled():
-                        raise InterruptedError(f"{label} was canceled")
-                    if chunk:
-                        output.write(chunk)
-                        current += len(chunk)
-                        if progress_observer is not None:
-                            progress_observer({
-                                "kind": "image",
-                                "phase": "downloading",
-                                "progress": current / total if total else None,
-                                "current_bytes": current,
-                                "total_bytes": total or None,
-                            })
-        if expected_sha256 is not None:
-            actual = sha256_file(partial)
-            if actual != expected_sha256:
-                raise RuntimeError(f"{label} checksum mismatch: expected {expected_sha256}, got {actual}")
-        os.replace(partial, target)
+        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+            partial.unlink(missing_ok=True)
+            try:
+                _download_file_once(
+                    url,
+                    partial,
+                    is_cancelled=is_cancelled,
+                    progress_observer=progress_observer,
+                    label=label,
+                )
+                if expected_sha256 is not None:
+                    actual = sha256_file(partial)
+                    if actual != expected_sha256:
+                        raise RuntimeError(f"{label} checksum mismatch: expected {expected_sha256}, got {actual}")
+                os.replace(partial, target)
+                return target
+            except requests.RequestException as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                retryable_transport = isinstance(exc, (requests.ConnectionError, requests.Timeout)) and not isinstance(
+                    exc, requests.exceptions.SSLError
+                )
+                retryable = status in _TRANSIENT_DOWNLOAD_STATUSES if status is not None else retryable_transport
+                if not retryable or attempt == _DOWNLOAD_ATTEMPTS:
+                    raise
+                if is_cancelled is not None and is_cancelled():
+                    raise InterruptedError(f"{label} was canceled") from exc
+                if progress_observer is not None:
+                    progress_observer({
+                        "kind": "image",
+                        "phase": "retrying",
+                        "attempt": attempt + 1,
+                        "attempts": _DOWNLOAD_ATTEMPTS,
+                    })
+                time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS * attempt)
     finally:
         partial.unlink(missing_ok=True)
-    return target
+    raise AssertionError("unreachable")
 
 
 def prepare_image(

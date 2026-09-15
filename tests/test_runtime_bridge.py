@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "api-service"))
@@ -244,6 +245,77 @@ def test_verified_download_uses_valid_cache(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", lambda *_args, **_kwargs: pytest.fail("downloaded"))
 
     assert download_verified_file("https://example.test/tool.sif", target, expected_sha256=checksum) == target
+
+
+def test_verified_download_retries_transient_http_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "tool.sif"
+    payload = b"verified"
+    checksum = hashlib.sha256(payload).hexdigest()
+    responses: list[requests.Response] = []
+    for status, content in ((502, b""), (200, payload)):
+        response = requests.Response()
+        response.status_code = status
+        response._content = content
+        response._content_consumed = True
+        response.url = "https://example.test/tool.sif"
+        response.headers["Content-Length"] = str(len(content))
+        responses.append(response)
+    sleeps: list[int] = []
+    progress: list[dict[str, object]] = []
+    monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", lambda *_args, **_kwargs: responses.pop(0))
+    monkeypatch.setattr("neurocade_runtime_tools.images.time.sleep", sleeps.append)
+
+    assert download_verified_file(
+        "https://example.test/tool.sif",
+        target,
+        expected_sha256=checksum,
+        progress_observer=progress.append,
+    ) == target
+    assert target.read_bytes() == payload
+    assert sleeps == [2]
+    assert any(update.get("phase") == "retrying" and update.get("attempt") == 2 for update in progress)
+
+
+def test_verified_download_does_not_retry_permanent_http_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "tool.sif"
+    response = requests.Response()
+    response.status_code = 404
+    response._content_consumed = True
+    response.url = "https://example.test/tool.sif"
+    calls = 0
+
+    def fail(*_args, **_kwargs):  # noqa: ANN202
+        nonlocal calls
+        calls += 1
+        return response
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", fail)
+    monkeypatch.setattr(
+        "neurocade_runtime_tools.images.time.sleep", lambda *_args: pytest.fail("retried permanent failure")
+    )
+
+    with pytest.raises(requests.HTTPError):
+        download_verified_file("https://example.test/tool.sif", target)
+    assert calls == 1
+
+
+def test_verified_download_does_not_retry_tls_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "tool.sif"
+    calls = 0
+
+    def fail(*_args, **_kwargs):  # noqa: ANN202
+        nonlocal calls
+        calls += 1
+        raise requests.exceptions.SSLError("certificate verification failed")
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", fail)
+    monkeypatch.setattr("neurocade_runtime_tools.images.time.sleep", lambda *_args: pytest.fail("retried TLS failure"))
+
+    with pytest.raises(requests.exceptions.SSLError):
+        download_verified_file("https://example.test/tool.sif", target)
+    assert calls == 1
 
 
 def test_capture_buffer_never_exceeds_protocol_limit() -> None:
