@@ -12,6 +12,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _shell_command(*parts: str) -> str:
+    return " ".join(parts)
+
+
 def _run_managed_python_helper(tmp_path: Path, command: str, *, path: str | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     if path is not None:
@@ -68,8 +72,10 @@ def test_existing_app_check_handles_missing_app_url_cleanly(tmp_path: Path) -> N
         [
             "bash",
             "-c",
-            'APP_URL_FILE="$1/missing-app-url"; BRIDGE_VENV="$1/missing-venv"; '
-            'MCP_ENABLED=false; MCP_ACCESS=standard; source "$2"; mcp_check_existing',
+            _shell_command(
+                'APP_URL_FILE="$1/missing-app-url"; BRIDGE_VENV="$1/missing-venv";',
+                'MCP_ENABLED=false; MCP_ACCESS=standard; source "$2"; mcp_check_existing',
+            ),
             "mcp-existing-test",
             str(tmp_path),
             str(REPO_ROOT / "scripts/lib/mcp.sh"),
@@ -108,9 +114,11 @@ def test_apptainer_stop_matches_rewritten_runtime_process(tmp_path: Path) -> Non
         [
             "bash",
             "-c",
-            'APP_PID_FILE="$1/app.pid"; APP_SIF="$1/images/neurocade-app-amd64.sif"; '
-            'ROOT_DIR="$1"; stop_pid_file() { printf "%s\\n%s\\n" "$1" "$2"; }; '
-            'source "$2"; runtime_stop_application',
+            _shell_command(
+                'APP_PID_FILE="$1/app.pid"; APP_SIF="$1/images/neurocade-app-amd64.sif";',
+                'ROOT_DIR="$1"; stop_pid_file() { printf "%s\\n%s\\n" "$1" "$2"; };',
+                'source "$2"; runtime_stop_application',
+            ),
             "apptainer-stop-test",
             str(tmp_path),
             str(REPO_ROOT / "scripts/lib/runtime_apptainer.sh"),
@@ -130,15 +138,17 @@ def test_process_identity_checks_start_time_and_stops_match(tmp_path: Path) -> N
         [
             "bash",
             "-c",
-            'set -e; REAL_UID="$(id -u)"; CURRENT_START=456; STOPPED=0; '
-            'source "$1"; '
-            'id() { echo "$REAL_UID"; }; '
-            'ps() { if [[ "$*" == *"uid="* ]]; then echo "$REAL_UID"; else echo "Apptainer runtime parent: neurocade-app-amd64.sif"; fi; }; '
-            'pid_start_time() { printf "%s\\n" "$CURRENT_START"; }; '
-            'kill() { if [[ "$1" == "-0" ]]; then [[ "$STOPPED" -eq 0 ]]; else STOPPED=1; echo "$1 $2"; fi; }; '
-            'pid_matches "$2" neurocade-app-amd64.sif; '
-            'CURRENT_START=999; if pid_matches "$2" neurocade-app-amd64.sif; then exit 9; fi; '
-            'CURRENT_START=456; stop_pid_file "$2" neurocade-app-amd64.sif',
+            _shell_command(
+                'set -e; REAL_UID="$(id -u)"; CURRENT_START=456; STOPPED=0;',
+                'source "$1";',
+                'id() { echo "$REAL_UID"; };',
+                'ps() { if [[ "$*" == *"uid="* ]]; then echo "$REAL_UID"; else echo "Apptainer runtime parent: neurocade-app-amd64.sif"; fi; };',
+                'pid_start_time() { printf "%s\\n" "$CURRENT_START"; };',
+                'kill() { if [[ "$1" == "-0" ]]; then [[ "$STOPPED" -eq 0 ]]; else STOPPED=1; echo "$1 $2"; fi; };',
+                'pid_matches "$2" neurocade-app-amd64.sif;',
+                'CURRENT_START=999; if pid_matches "$2" neurocade-app-amd64.sif; then exit 9; fi;',
+                'CURRENT_START=456; stop_pid_file "$2" neurocade-app-amd64.sif',
+            ),
             "process-identity-test",
             str(REPO_ROOT / "scripts/lib/processes.sh"),
             str(pid_file),
@@ -383,9 +393,11 @@ def test_docker_database_rejects_volume_owned_by_another_install(tmp_path: Path)
         [
             "bash",
             "-c",
-            'set -e; DATABASE_VOLUME=neurocade-database; INSTALL_ID=current-install; '
-            'docker() { if [[ "$*" == *--format* ]]; then echo other-install; fi; }; '
-            'fail() { echo "ERROR: $*" >&2; return 1; }; source "$1"; runtime_prepare_database',
+            _shell_command(
+                "set -e; DATABASE_VOLUME=neurocade-database; INSTALL_ID=current-install;",
+                'docker() { if [[ "$*" == *--format* ]]; then echo other-install; fi; };',
+                'fail() { echo "ERROR: $*" >&2; return 1; }; source "$1"; runtime_prepare_database',
+            ),
             "docker-volume-owner-test",
             str(REPO_ROOT / "scripts/lib/runtime_docker.sh"),
         ],
@@ -402,11 +414,13 @@ def test_docker_database_warns_when_reusing_unowned_volume(tmp_path: Path) -> No
         [
             "bash",
             "-c",
-            'set -e; DATABASE_VOLUME=neurocade-database; INSTALL_ID=current-install; '
-            'IMAGE=neurocade:test; DOCKER_PLATFORM=""; '
-            'docker() { if [[ "$*" == *--format* ]]; then echo "<no value>"; fi; }; '
-            'fail() { echo "ERROR: $*" >&2; return 1; }; '
-            'source "$1"; runtime_prepare_database',
+            _shell_command(
+                "set -e; DATABASE_VOLUME=neurocade-database; INSTALL_ID=current-install;",
+                'IMAGE=neurocade:test; DOCKER_PLATFORM="";',
+                'docker() { if [[ "$*" == *--format* ]]; then echo "<no value>"; fi; };',
+                'fail() { echo "ERROR: $*" >&2; return 1; };',
+                'source "$1"; runtime_prepare_database',
+            ),
             "docker-volume-unowned-test",
             str(REPO_ROOT / "scripts/lib/runtime_docker.sh"),
         ],
