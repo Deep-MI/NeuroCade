@@ -39,7 +39,7 @@ LABEL org.neurocade.install-id="$NEUROCADE_INSTALL_ID"
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     NEUROCADE_BUILD_VERSION="$NEUROCADE_VERSION" \
-    PYTHONPATH=/app/api-service:/app:/app/packages/neurocade-runtime-tools/src \
+    PYTHONPATH=/app/api-service:/app \
     UV_PROJECT_ENVIRONMENT=/opt/neurocade-venv \
     PATH="/opt/neurocade-venv/bin:$PATH"
 
