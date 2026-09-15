@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/lib/env.sh"
 source "$ROOT_DIR/scripts/lib/managed_python.sh"
 source "$ROOT_DIR/scripts/lib/docker_cli.sh"
+source "$ROOT_DIR/scripts/lib/processes.sh"
 load_env_file
 configure_docker_cli_path
 
@@ -178,18 +179,6 @@ select_http_port() {
   [[ "$HTTP_PORT" == "$requested" ]] || echo "Port $requested is occupied; using $HTTP_PORT."
 }
 
-pid_matches() {
-  local pid_file="$1" identity="$2" pid command_line owner_uid
-  [[ -f "$pid_file" ]] || return 1
-  pid="$(sed -n '1p' "$pid_file")"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  owner_uid="$(ps -p "$pid" -o uid= 2>/dev/null | tr -d ' ')"
-  [[ "$owner_uid" == "$(id -u)" ]] || return 1
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  [[ "$command_line" == *"$identity"* ]]
-}
-
 bridge_health() {
   [[ -n "${LAUNCH_ID:-}" ]] || return 1
   "$BRIDGE_VENV/bin/python" -c 'import sys,requests; from neurocade_runtime_tools.protocol import PROTOCOL_VERSION; h={"Authorization":"Bearer "+open(sys.argv[2]).read().strip(),"X-NeuroCade-Launch-ID":sys.argv[4]}; r=requests.get(sys.argv[1]+"/v1/health",headers=h,timeout=5); r.raise_for_status(); p=r.json(); expected={"protocol_version":PROTOCOL_VERSION,"backend":sys.argv[3],"launch_id":sys.argv[4],"docker_platform":sys.argv[5] or None,"data_root":sys.argv[6],"image_dir":sys.argv[7]}; raise SystemExit(0 if all(p.get(k)==v for k,v in expected.items()) else 1)' \
@@ -245,17 +234,6 @@ start_bridge() {
     sleep 1
   done
   fail "Runtime bridge did not become healthy"
-}
-
-stop_pid_file() {
-  local pid_file="$1" identity="$2" pid deadline
-  pid_matches "$pid_file" "$identity" || { rm -f "$pid_file"; return; }
-  pid="$(sed -n '1p' "$pid_file")"
-  kill -TERM "$pid" 2>/dev/null || true
-  deadline=$((SECONDS + 15))
-  while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 1; done
-  kill -KILL "$pid" 2>/dev/null || true
-  rm -f "$pid_file"
 }
 
 prepare_tools() {
