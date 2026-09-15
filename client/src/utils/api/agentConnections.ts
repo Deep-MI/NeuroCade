@@ -13,7 +13,8 @@ export interface AgentConnection {
 export interface ConnectionPage { items: AgentConnection[]; next_cursor: string | null }
 
 export function listAgentConnections(after = ''): Promise<ConnectionPage> {
-  return appJson(`/mcp/clients?after=${encodeURIComponent(after)}`, 'Could not load external agents', {
+  const cursor = after ? `?after=${encodeURIComponent(after)}` : '';
+  return appJson(`/mcp/clients${cursor}`, 'Could not load external agents', {
     headers: { 'X-NeuroCade-UI': '1' },
   });
 }
