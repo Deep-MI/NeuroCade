@@ -47,7 +47,7 @@ export function AppSettingsMenu() {
       setError('');
     } catch (err) { setError(String(err)); } finally { setBusy(false); }
   }
-  return <div className="relative" ref={root}>
+  return <div className="nc-settings-anchor relative" ref={root}>
     <button ref={trigger} type="button" className={`nc-btn nc-icon-btn ${open ? 'nc-btn-active' : ''}`} aria-label="Settings" aria-expanded={open} aria-controls="app-settings-panel" onClick={() => setOpen(value => !value)}><Settings size={15} /></button>
     {open && <div id="app-settings-panel" role="dialog" aria-label="Settings" className="nc-settings-panel">
       <p className="nc-eyebrow px-3 pb-2 pt-1">Settings</p>

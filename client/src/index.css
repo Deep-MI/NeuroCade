@@ -922,12 +922,14 @@ input[type="range"]::-moz-focus-outer {
 }
 
 .nc-topbar {
+  --nc-topbar-right-inset: 12px;
   height: 44px;
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 0 12px;
+  padding: 0 52px 0 12px;
   background: var(--nc-bg-panel);
   border-bottom: 1px solid var(--nc-border);
   flex-shrink: 0;
@@ -943,7 +945,15 @@ input[type="range"]::-moz-focus-outer {
 
 .nc-electron-win32 .nc-topbar,
 .nc-electron-linux .nc-topbar {
-  padding-right: 148px;
+  --nc-topbar-right-inset: 148px;
+  padding-right: 188px;
+}
+
+.nc-topbar > .nc-settings-anchor {
+  position: absolute;
+  right: var(--nc-topbar-right-inset);
+  z-index: 101;
+  flex: 0 0 32px;
 }
 
 .nc-electron .nc-topbar button,
@@ -1057,7 +1067,7 @@ input[type="range"]::-moz-focus-outer {
 @media (max-width: 720px) {
   .nc-topbar {
     gap: 6px;
-    padding: 0 8px;
+    padding-left: 8px;
   }
 
   .nc-topbar-search {
