@@ -51,10 +51,10 @@ Apptainer path is supported.
 
 The installer pins `uv`, installs managed Python 3.12, creates
 `.runtime/bridge-venv`, generates `.runtime/bridge-token` with mode `0600`,
-writes a fresh `.env`, prepares the default tool images, and starts the matched
-application and bridge. Rerun the installer to migrate an older installation;
-existing data, SQLite state, outputs, uploads, image caches, and `license.txt`
-are preserved.
+writes a fresh `.env`, prepares the default tool images, records the installed
+release provenance, and starts the matched application and bridge. Rerunning
+the remote installer upgrades an installer-owned archive installation through
+the transactional update path described below.
 
 Docker installs build the application from the current checkout by default, so
 the application and host bridge always share one protocol revision. Pass
@@ -89,6 +89,32 @@ default. The Docker profile maps `host.docker.internal` through Linux's
 host-gateway; the Apptainer profile uses host networking and binds the bridge to
 loopback only.
 
+## Updates
+
+Installer-owned archive installations can check or apply published releases:
+
+```bash
+./scripts/update.sh --check
+./scripts/update.sh --yes
+./scripts/update.sh --channel beta --yes
+./scripts/update.sh --version v2026.9.9 --yes
+```
+
+Each release includes a source archive and checksum in the GitHub release
+manifest. The updater downloads and verifies them before stopping NeuroCade,
+refuses to continue while a workflow is active or managed source files were
+edited, and preserves `.env`, runtime state, cases, outputs, uploads, and
+`license.txt`. It then stops the app, backs up SQLite, switches the managed
+source, installs the matching runtime artifacts, and waits for a healthy start.
+If installation or startup fails, it restores the prior source, database,
+runtime artifact, configuration, and Docker image tag, then restarts the prior
+version.
+
+The same path repairs older archive installations when the remote installer is
+run again. Git checkouts are never overwritten; update them with Git and rerun
+`scripts/install.sh`. Updates remain an explicit command and are not started by
+the web UI or the read-only update checker.
+
 ## Configuration
 
 The runtime contract is explicit:
@@ -103,8 +129,8 @@ NEUROCADE_DATABASE_VOLUME=neurocade-database
 NEUROCADE_GPU_MODE=auto
 ```
 
-Apptainer release selection is installer-managed. Rerun `scripts/install.sh`
-to update its selected channel, or pass `--version stable|beta|TAG`. Tool image
+Apptainer release selection is installer-managed. Use `scripts/update.sh` to
+update its selected channel or exact tag. Tool image
 policies, OCI digests, and SIF checksums/URLs are in `config/tool_images.json`.
 Most tools are immutable. Neurodesk tools may instead use a version-scoped
 repository's `latest` tag, allowing image rebuilds without changing the bundled

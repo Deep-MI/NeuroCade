@@ -65,8 +65,10 @@ Configure these GitHub Actions secrets before running the release workflow:
 - `DOCKERHUB_USERNAME`: the Docker Hub account used to publish images.
 - `DOCKERHUB_TOKEN`: an access token for that account with push access to `deepmi/neurocade`.
 
-GitHub releases continue to host the application SIF, bridge wheel, checksums,
-and release manifest.
+GitHub releases continue to host the application SIF, bridge wheel, verified
+source archive, checksums, and release manifest. Installer-owned archive
+installs can update transactionally with `./scripts/update.sh --yes`; Git
+checkouts remain under Git control.
 
 ### Retrying a partial release
 

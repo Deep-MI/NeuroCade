@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ARCHIVE_URL="${NEUROCADE_ARCHIVE_URL:-https://github.com/Deep-MI/NeuroCade/archive/refs/heads/main.tar.gz}"
+RELEASE_MANIFEST_URL="${NEUROCADE_RELEASE_MANIFEST_URL:-https://github.com/Deep-MI/NeuroCade/releases/latest/download/neurocade-release.json}"
 DEFAULT_INSTALL_DIR="${NEUROCADE_INSTALL_DIR:-$HOME/NeuroCade}"
 DEFAULT_IMAGE="docker.io/deepmi/neurocade:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
@@ -37,6 +38,28 @@ Options:
 EOF
 }
 
+bootstrap_release_source() {
+  local tmp_dir="$1" manifest release_values tag source checksum base digest expected
+  manifest="$tmp_dir/neurocade-release.json"
+  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$manifest" "$RELEASE_MANIFEST_URL"
+  release_values="$(python3 -c 'import json,re,sys; p=json.load(open(sys.argv[1])); a=p.get("source_archive",{}); ok=lambda v: isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",v); assert p.get("schema_version")==2 and re.fullmatch(r"v[0-9][A-Za-z0-9._-]*",p.get("tag","")) and ok(a.get("filename")) and ok(a.get("sha256_filename")) and a["sha256_filename"]==a["filename"]+".sha256"; print(p["tag"],a["filename"],a["sha256_filename"],sep="\n")' "$manifest")" || {
+    echo "The latest NeuroCade release does not support verified source installation." >&2; exit 1;
+  }
+  tag="$(printf '%s\n' "$release_values" | sed -n '1p')"
+  source="$(printf '%s\n' "$release_values" | sed -n '2p')"
+  checksum="$(printf '%s\n' "$release_values" | sed -n '3p')"
+  base="https://github.com/Deep-MI/NeuroCade/releases/download/$tag"
+  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$tmp_dir/$source" "$base/$source"
+  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$tmp_dir/$checksum" "$base/$checksum"
+  expected="$(awk 'NR == 1 {print tolower($1)}' "$tmp_dir/$checksum")"
+  if command -v sha256sum >/dev/null 2>&1; then digest="$(sha256sum "$tmp_dir/$source" | awk '{print $1}')"; else digest="$(shasum -a 256 "$tmp_dir/$source" | awk '{print $1}')"; fi
+  [[ "$expected" =~ ^[0-9a-f]{64}$ && "$digest" == "$expected" ]] || { echo "NeuroCade source checksum verification failed." >&2; exit 1; }
+  python3 -c 'import pathlib,sys,tarfile; a,d=sys.argv[1:]; t=tarfile.open(a,"r:gz"); m=t.getmembers(); roots=set();
+for x in m:
+ p=pathlib.PurePosixPath(x.name); assert p.parts and not p.is_absolute() and ".." not in p.parts and not x.isdev() and not x.isfifo() and not x.islnk() and not x.issym(); roots.add(p.parts[0])
+assert len(roots)==1; t.extractall(d); print(pathlib.Path(d)/roots.pop())' "$tmp_dir/$source" "$tmp_dir"
+}
+
 bootstrap_checkout() {
   for arg in "$@"; do
     case "$arg" in
@@ -49,6 +72,7 @@ bootstrap_checkout() {
   [[ -f "$SCRIPT_DIR/run.sh" ]] && return 0
   command -v curl >/dev/null 2>&1 || { echo "curl is required to download NeuroCade." >&2; exit 1; }
   command -v tar >/dev/null 2>&1 || { echo "tar is required to unpack NeuroCade." >&2; exit 1; }
+  command -v python3 >/dev/null 2>&1 || { echo "Python 3 is required to verify NeuroCade releases." >&2; exit 1; }
   local install_dir="$DEFAULT_INSTALL_DIR"
   if [[ -t 0 && -t 1 ]]; then
     if ! read -r -p "Install directory [$DEFAULT_INSTALL_DIR]: " install_dir; then
@@ -60,8 +84,20 @@ bootstrap_checkout() {
   if [[ -d "$install_dir/.git" ]]; then
     exec bash "$install_dir/scripts/install.sh" "$@"
   fi
-  if [[ -f "$install_dir/scripts/install.sh" ]]; then
-    exec bash "$install_dir/scripts/install.sh" "$@"
+  if [[ -f "$install_dir/scripts/install.sh" && -f "$install_dir/.runtime/runtime-root-owned" ]]; then
+    local update_tmp source_root
+    update_tmp="$(mktemp -d)"
+    source_root="$(bootstrap_release_source "$update_tmp")"
+    set +e
+    env NEUROCADE_INSTALL_DIR="$install_dir" bash "$source_root/scripts/update.sh" \
+      --bootstrap-staged "$update_tmp/$(basename "$(find "$update_tmp" -maxdepth 1 -name 'neurocade-source-*.tar.gz' -print -quit)")" \
+      "$update_tmp/neurocade-release.json" --yes -- "$@"
+    local update_status=$?
+    rm -rf "$update_tmp"
+    exit "$update_status"
+  elif [[ -f "$install_dir/scripts/install.sh" ]]; then
+    echo "Existing NeuroCade directory is not marked as installer-owned: $install_dir" >&2
+    exit 1
   fi
   if [[ -L "$install_dir" || ( -e "$install_dir" && ! -d "$install_dir" ) ]]; then
     echo "Install path exists and is not a directory: $install_dir" >&2
@@ -75,18 +111,29 @@ bootstrap_checkout() {
     fi
     existing_empty_dir=1
   fi
-  local tmp_dir
+  local tmp_dir source_root
   tmp_dir="$(mktemp -d)"
-  curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$tmp_dir"
+  if [[ -n "${NEUROCADE_ARCHIVE_URL+x}" ]]; then
+    curl --fail --location --silent --show-error --retry 4 --retry-all-errors "$ARCHIVE_URL" | tar -xz -C "$tmp_dir"
+    source_root="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  else
+    source_root="$(bootstrap_release_source "$tmp_dir")"
+  fi
   mkdir -p "$(dirname "$install_dir")"
   if [[ "$existing_empty_dir" -eq 1 ]]; then
     rmdir "$install_dir"
   fi
-  mv "$tmp_dir"/* "$install_dir"
-  rmdir "$tmp_dir"
+  mv "$source_root" "$install_dir"
+  local bootstrap_values bootstrap_version bootstrap_revision
+  bootstrap_values="$(python3 "$install_dir/scripts/release/release_manifest.py" read-update "$tmp_dir/neurocade-release.json" 2>/dev/null || true)"
+  bootstrap_version="$(printf '%s\n' "$bootstrap_values" | sed -n '2p')"
+  bootstrap_revision="$(printf '%s\n' "$bootstrap_values" | sed -n '3p')"
+  rm -rf "$tmp_dir"
   mkdir -p "$install_dir/.runtime"
   : >"$install_dir/.runtime/runtime-root-owned"
-  exec bash "$install_dir/scripts/install.sh" "$@"
+  exec env NEUROCADE_INSTALL_VERSION="${bootstrap_version:-development}" \
+    NEUROCADE_INSTALL_REVISION="${bootstrap_revision:-unknown}" NEUROCADE_INSTALL_CHANNEL=stable \
+    bash "$install_dir/scripts/install.sh" "$@"
 }
 
 is_tty() {
@@ -332,6 +379,10 @@ write_env() {
     env_line NEUROCADE_IMAGE "$image"
     env_line NEUROCADE_APP_SIF_MODE "$app_sif_mode"
     env_line NEUROCADE_RELEASE_VERSION "$release_version"
+    env_line NEUROCADE_VERSION "${NEUROCADE_INSTALL_VERSION:-$(configured_or_default "$root" NEUROCADE_VERSION "development")}"
+    env_line NEUROCADE_SOURCE_REVISION "${NEUROCADE_INSTALL_REVISION:-$(configured_or_default "$root" NEUROCADE_SOURCE_REVISION "unknown")}"
+    env_line NEUROCADE_UPDATE_CHANNEL "${NEUROCADE_INSTALL_CHANNEL:-$(configured_or_default "$root" NEUROCADE_UPDATE_CHANNEL "stable")}"
+    env_line NEUROCADE_ARTIFACT_IDENTITY "${NEUROCADE_INSTALL_ARTIFACT:-$(configured_or_default "$root" NEUROCADE_ARTIFACT_IDENTITY "$image")}"
     env_line NEUROCADE_DOCKER_PLATFORM "$docker_platform"
     env_line NEUROCADE_GPU_MODE "$(configured_or_default "$root" NEUROCADE_GPU_MODE "auto")"
     env_line LOCAL_AUTH_ENABLED "$local_auth"
@@ -441,6 +492,7 @@ source "$ROOT_DIR/scripts/lib/runtime_selection.sh"
 source "$ROOT_DIR/scripts/lib/docker_cli.sh"
 source "$ROOT_DIR/scripts/lib/apptainer_artifacts.sh"
 source "$ROOT_DIR/scripts/lib/env.sh"
+source "$ROOT_DIR/scripts/lib/provenance.sh"
 configure_docker_cli_path
 if [[ -z "$RUNTIME" ]]; then
   RUNTIME="$(configured_or_default "$ROOT_DIR" NEUROCADE_RUNTIME "")"
@@ -512,6 +564,15 @@ elif [[ "$APP_SIF_MODE" == "source" ]]; then
   BRIDGE_PACKAGE="$ROOT_DIR/packages/neurocade-runtime-tools"
 fi
 
+if [[ -z "${NEUROCADE_INSTALL_REVISION:-}" ]] && [[ -d "$ROOT_DIR/.git" ]]; then
+  NEUROCADE_INSTALL_REVISION="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  export NEUROCADE_INSTALL_REVISION
+fi
+if [[ -z "${NEUROCADE_INSTALL_VERSION:-}" && -n "$RELEASE_VERSION" ]]; then
+  NEUROCADE_INSTALL_VERSION="$RELEASE_VERSION"
+  export NEUROCADE_INSTALL_VERSION
+fi
+
 write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$RUNTIME" "$IMAGE_OVERRIDE" "$APP_SIF_MODE" "$BRIDGE_PACKAGE" "$RELEASE_VERSION" "$BRIDGE_PORT"
 
 if [[ "$BUILD_DOCKER_IMAGE" -eq 1 ]]; then
@@ -527,6 +588,16 @@ if [[ "$START" -eq 1 ]]; then
 else
   "$ROOT_DIR/scripts/run.sh" prepare-tools
 fi
+
+installed_version="$(env_file_value "$ROOT_DIR" NEUROCADE_VERSION)"
+installed_revision="$(env_file_value "$ROOT_DIR" NEUROCADE_SOURCE_REVISION)"
+installed_channel="$(env_file_value "$ROOT_DIR" NEUROCADE_UPDATE_CHANNEL)"
+installed_artifact="$(env_file_value "$ROOT_DIR" NEUROCADE_ARTIFACT_IDENTITY)"
+if [[ "$installed_revision" == unknown ]] && command -v git >/dev/null 2>&1 && [[ -d "$ROOT_DIR/.git" ]]; then
+  installed_revision="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+fi
+write_provenance "$ROOT_DIR" "$installed_version" "$installed_revision" "$installed_channel" "$installed_artifact"
+"$(managed_python_path)" "$ROOT_DIR/scripts/update_source.py" write-manifest "$ROOT_DIR" "$ROOT_DIR/.runtime/source-manifest.json"
 
 echo
 echo "NeuroCade setup complete."
