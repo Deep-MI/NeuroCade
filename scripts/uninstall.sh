@@ -61,6 +61,7 @@ INSTALL_ID="$(sed -n '1p' "$INSTALL_ID_FILE")"
 
 source "$ROOT_DIR/scripts/lib/env.sh"
 source "$ROOT_DIR/scripts/lib/docker_cli.sh"
+source "$ROOT_DIR/scripts/lib/processes.sh"
 unset NEUROCADE_RUNTIME HOST_DATA_DIR NEUROCADE_CONTAINER_NAME NEUROCADE_DATABASE_VOLUME NEUROCADE_IMAGE
 ENV_FILE="$CONFIG_FILE"
 load_env_file
@@ -97,24 +98,6 @@ if [[ "$RUNTIME" == docker ]]; then
   }
 fi
 
-stop_owned_pid() {
-  local pid_file="$1" identity="$2" pid command_line owner_uid deadline
-  [[ -f "$pid_file" ]] || return 0
-  pid="$(sed -n '1p' "$pid_file")"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  kill -0 "$pid" 2>/dev/null || return 0
-  owner_uid="$(ps -p "$pid" -o uid= 2>/dev/null | tr -d ' ')"
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  if [[ "$owner_uid" == "$(id -u)" && "$command_line" == *"$identity"* ]]; then
-    kill -TERM "$pid" 2>/dev/null || true
-    deadline=$((SECONDS + 15))
-    while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 1; done
-    kill -KILL "$pid" 2>/dev/null || true
-  else
-    echo "Preserving unrecognized process recorded in $pid_file." >&2
-  fi
-}
-
 if [[ "$RUNTIME" == docker ]]; then
   container_owner="$(docker inspect --format '{{index .Config.Labels "org.neurocade.install-id"}}' "$CONTAINER_NAME" 2>/dev/null || true)"
   if [[ "$container_owner" == "$INSTALL_ID" ]]; then
@@ -124,8 +107,10 @@ if [[ "$RUNTIME" == docker ]]; then
     echo "Preserving unowned Docker container: $CONTAINER_NAME" >&2
   fi
 fi
-stop_owned_pid "$RUNTIME_DIR/app.pid" "$RUNTIME_DIR/images/neurocade-app-amd64.sif"
-stop_owned_pid "$RUNTIME_DIR/bridge.pid" "$RUNTIME_DIR/bridge-venv/bin/neurocade-runtime-bridge"
+if [[ "$RUNTIME" == apptainer ]]; then
+  stop_pid_file "$RUNTIME_DIR/app.pid" "neurocade-app-amd64.sif"
+fi
+stop_pid_file "$RUNTIME_DIR/bridge.pid" "$RUNTIME_DIR/bridge-venv/bin/neurocade-runtime-bridge"
 
 if [[ "$RUNTIME" == docker ]]; then
   volume_owner="$(docker volume inspect --format '{{index .Labels "org.neurocade.install-id"}}' "$DATABASE_VOLUME" 2>/dev/null || true)"

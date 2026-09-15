@@ -7,6 +7,7 @@ import { Link, useLocation } from 'react-router';
 import { ChatApprovalContent } from '../components/ChatApprovalContent';
 import type { AssistantApprovalRequest } from '../types';
 import { appFetch, appJson, expectOk, jsonRequest } from '../utils/api';
+import { useFrontendConfig } from '../auth/frontendConfigContext';
 
 import { listAgentConnections, type AgentConnection } from '../utils/api/agentConnections';
 interface Invocation { invocation_id: string; client_id: string; tool: string; case_id: string | null; status: string; arguments: Record<string, unknown>; presentation: AssistantApprovalRequest['presentation']; run_id: string | null }
@@ -15,6 +16,31 @@ interface Workspace { id: string; name: string }
 const headers = { 'X-NeuroCade-UI': '1' };
 
 export function LocalAgentsPage() {
+  const { mcp_enabled: mcpEnabled } = useFrontendConfig();
+  const [isLight] = useAppAppearance();
+  if (!mcpEnabled) {
+    return <div className={`nc-shell ${isLight ? 'nc-light' : ''}`}>
+      <header className="nc-topbar">
+        <Link to="/" className="nc-logo"><img src="/logo-192.png" alt="" className="nc-logo-mark" /><span>NeuroCade</span></Link>
+        <span className="hidden border-l border-[var(--nc-border)] pl-4 text-xs text-[var(--nc-tx-dim)] sm:block">Settings / Connect external agents</span>
+        <div className="flex-1" /><AppSettingsMenu />
+      </header>
+      <main className="flex-1 overflow-y-auto px-5 py-8 sm:px-8">
+        <div className="mx-auto max-w-3xl space-y-6">
+          <Link to="/" className="inline-flex items-center gap-2 text-xs text-[var(--nc-tx-muted)]"><ArrowLeft size={13} />Back to workspace</Link>
+          <section className="nc-card-static space-y-3 p-6 text-sm">
+            <Bot size={24} className="text-[var(--nc-interactive)]" />
+            <h1 className="text-xl font-semibold">Local agent access is disabled</h1>
+            <p className="text-[var(--nc-tx-muted)]">Restart NeuroCade with <code>./scripts/run.sh start -d --mcp</code> to connect and manage external agents.</p>
+          </section>
+        </div>
+      </main>
+    </div>;
+  }
+  return <EnabledLocalAgentsPage isLight={isLight} />;
+}
+
+function EnabledLocalAgentsPage({ isLight }: { isLight: boolean }) {
   const location = useLocation();
   const [clients, setClients] = useState<AgentConnection[]>([]);
   const [activity, setActivity] = useState<Invocation[]>([]);
@@ -37,7 +63,6 @@ export function LocalAgentsPage() {
   const [created, setCreated] = useState(false);
   const [executable, setExecutable] = useState('');
   const [agent, setAgent] = useState('codex-plugin');
-  const [isLight] = useAppAppearance();
   const [copied, setCopied] = useState(false);
   const [setupPrompt, setSetupPrompt] = useState('');
   const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";

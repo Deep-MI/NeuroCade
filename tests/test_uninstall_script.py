@@ -17,6 +17,7 @@ def _make_installation(tmp_path: Path, *, runtime_owned: bool = False) -> Path:
     shutil.copy2(REPO_ROOT / "scripts/uninstall.sh", root / "scripts/uninstall.sh")
     shutil.copy2(REPO_ROOT / "scripts/lib/env.sh", root / "scripts/lib/env.sh")
     shutil.copy2(REPO_ROOT / "scripts/lib/docker_cli.sh", root / "scripts/lib/docker_cli.sh")
+    shutil.copy2(REPO_ROOT / "scripts/lib/processes.sh", root / "scripts/lib/processes.sh")
     (root / "scripts/install.sh").touch()
     (root / "scripts/run.sh").touch()
     runtime = root / ".runtime"

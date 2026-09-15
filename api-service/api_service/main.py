@@ -181,7 +181,16 @@ if settings.mcp_enabled:
 @app.get("/api/app/healthz")
 def healthz() -> dict:
     """Return the API service health status."""
-    return {"status": "ok", "mcp_enabled": settings.mcp_enabled, "mcp_access": settings.mcp_access, "launch_id": os.environ.get("NEUROCADE_LAUNCH_ID", "development")}
+    return {
+        "status": "ok",
+        "mcp_enabled": settings.mcp_enabled,
+        "mcp_access": settings.mcp_access,
+        "launch_id": os.environ.get("NEUROCADE_LAUNCH_ID", "development"),
+        "version": os.environ.get("NEUROCADE_VERSION", "development"),
+        "source_revision": os.environ.get("NEUROCADE_SOURCE_REVISION", "unknown"),
+        "update_channel": os.environ.get("NEUROCADE_UPDATE_CHANNEL", "stable"),
+        "artifact_identity": os.environ.get("NEUROCADE_ARTIFACT_IDENTITY", "development"),
+    }
 
 
 app.include_router(auth.router)

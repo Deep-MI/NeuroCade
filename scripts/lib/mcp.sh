@@ -13,6 +13,10 @@ except Exception:
 PYCODE
 }
 mcp_check_existing() {
+  [[ -s "$APP_URL_FILE" ]] || {
+    echo "The configured NeuroCade port answered, but this install has no recorded app URL. Another instance or service may already be using the port." >&2
+    return 1
+  }
   "$BRIDGE_VENV/bin/python" - "$APP_URL_FILE" "$MCP_ENABLED" "$MCP_ACCESS" <<'PYCODE'
 import json,sys,urllib.request
 url=open(sys.argv[1]).read().strip()

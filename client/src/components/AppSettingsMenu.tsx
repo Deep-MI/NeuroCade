@@ -4,6 +4,7 @@ import { Bot, ChevronRight, Moon, Settings, ShieldCheck, Sun } from 'lucide-reac
 import { Link, useParams } from 'react-router';
 import { useAppAppearance, useAssistantApproval, usePreferenceStatus } from '../hooks/useAppPreferences';
 import { appJson, jsonRequest } from '../utils/api';
+import { useFrontendConfig } from '../auth/frontendConfigContext';
 
 import { listActiveAgentConnections, type AgentConnection } from '../utils/api/agentConnections';
 
@@ -12,6 +13,7 @@ export function AppSettingsMenu() {
   const [open, setOpen] = useState(false);
   const [approvals, setApprovals] = useState(false);
   const [isLight, setIsLight] = useAppAppearance();
+  const { mcp_enabled: mcpEnabled } = useFrontendConfig();
   const [assistantApproval, setAssistantApproval] = useAssistantApproval();
   const preferenceStatus = usePreferenceStatus();
   const [connections, setConnections] = useState<AgentConnection[]>([]);
@@ -28,7 +30,7 @@ export function AppSettingsMenu() {
     return () => { window.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', escape); };
   }, [open]);
   useEffect(() => {
-    if (!open || !approvals) return;
+    if (!open || !approvals || !mcpEnabled) return;
     let cancelled = false;
     void Promise.all([
       listActiveAgentConnections(),
@@ -36,7 +38,7 @@ export function AppSettingsMenu() {
     ]).then(([result, availableWorkspaces]) => { if (!cancelled) { setConnections(result); setWorkspaces(availableWorkspaces); setError(''); } })
       .catch(err => { if (!cancelled) setError(String(err)); });
     return () => { cancelled = true; };
-  }, [open, approvals]);
+  }, [open, approvals, mcpEnabled]);
   async function update(connection: AgentConnection, enabled: boolean) {
     setBusy(true);
     try {
@@ -45,7 +47,7 @@ export function AppSettingsMenu() {
       setError('');
     } catch (err) { setError(String(err)); } finally { setBusy(false); }
   }
-  return <div className="relative" ref={root}>
+  return <div className="nc-settings-anchor relative" ref={root}>
     <button ref={trigger} type="button" className={`nc-btn nc-icon-btn ${open ? 'nc-btn-active' : ''}`} aria-label="Settings" aria-expanded={open} aria-controls="app-settings-panel" onClick={() => setOpen(value => !value)}><Settings size={15} /></button>
     {open && <div id="app-settings-panel" role="dialog" aria-label="Settings" className="nc-settings-panel">
       <p className="nc-eyebrow px-3 pb-2 pt-1">Settings</p>
@@ -58,9 +60,11 @@ export function AppSettingsMenu() {
         <p className="text-[var(--nc-tx-muted)]">Require approval in NeuroCade before the assistant takes action.</p>
         <div className="border-t border-[var(--nc-border)] pt-3">
           <p className="mb-2 font-semibold">Connected external agents</p>
-          <p className="mb-3 text-[var(--nc-tx-muted)]">Turn on to require extra approval in NeuroCade for that agent. Agents still confirm in conversation.</p>
-          <div className="max-h-48 space-y-3 overflow-y-auto">{connections.map(connection => <ApprovalToggle key={connection.id} label={agentConnectionLabel(connection.name, workspaces.find(item => item.id === connection.workspace_id)?.name)} description={workspaces.find(item => item.id === connection.workspace_id)?.name ?? connection.workspace_id} checked={connection.require_approval} disabled={busy} onChange={enabled => { void update(connection, enabled); }} />)}</div>
-          {connections.length === 0 && !error && <p className="text-[var(--nc-tx-dim)]">No external agents connected yet.</p>}
+          {!mcpEnabled ? <p className="text-[var(--nc-tx-dim)]">Local agent access is disabled. Restart NeuroCade with local agents enabled to manage connections.</p> : <>
+            <p className="mb-3 text-[var(--nc-tx-muted)]">Turn on to require extra approval in NeuroCade for that agent. Agents still confirm in conversation.</p>
+            <div className="max-h-48 space-y-3 overflow-y-auto">{connections.map(connection => <ApprovalToggle key={connection.id} label={agentConnectionLabel(connection.name, workspaces.find(item => item.id === connection.workspace_id)?.name)} description={workspaces.find(item => item.id === connection.workspace_id)?.name ?? connection.workspace_id} checked={connection.require_approval} disabled={busy} onChange={enabled => { void update(connection, enabled); }} />)}</div>
+            {connections.length === 0 && !error && <p className="text-[var(--nc-tx-dim)]">No external agents connected yet.</p>}
+          </>}
         </div>
         {error && <p role="alert" className="text-[var(--nc-warning)]">{error}</p>}
       </div>}

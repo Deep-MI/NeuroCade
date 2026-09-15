@@ -17,6 +17,7 @@ class UserSummary(BaseModel):
 
 class FrontendConfig(BaseModel):
     local_auth_enabled: bool
+    mcp_enabled: bool
     clerk_publishable_key: str | None = None
     clerk_jwt_template: str | None = None
 

@@ -14,7 +14,17 @@ runtime_pull_application() {
 }
 
 runtime_prepare_database() {
-  if ! docker volume inspect "$DATABASE_VOLUME" >/dev/null 2>&1; then
+  local volume_owner=""
+  if docker volume inspect "$DATABASE_VOLUME" >/dev/null 2>&1; then
+    volume_owner="$(docker volume inspect --format '{{index .Labels "org.neurocade.install-id"}}' "$DATABASE_VOLUME" 2>/dev/null || true)"
+    [[ "$volume_owner" == "<no value>" ]] && volume_owner=""
+    if [[ -n "$volume_owner" && "$volume_owner" != "$INSTALL_ID" ]]; then
+      fail "Docker database volume $DATABASE_VOLUME belongs to another NeuroCade installation; configure a different NEUROCADE_DATABASE_VOLUME"
+    fi
+    if [[ -z "$volume_owner" ]]; then
+      echo "WARN: Reusing existing unowned Docker database volume $DATABASE_VOLUME; it will be preserved during uninstall." >&2
+    fi
+  else
     [[ -n "$INSTALL_ID" ]] || fail "The NeuroCade installation ID is missing"
     docker volume create \
       --label org.neurocade.managed=true \

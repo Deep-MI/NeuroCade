@@ -34,20 +34,25 @@ build_apptainer_application_command() {
 }
 
 runtime_start_application() {
+  local app_pid
   build_apptainer_application_command
   if [[ "$DETACH" -eq 1 ]]; then
     nohup "${APPTAINER_APP_COMMAND[@]}" >>"$APP_LOG" 2>&1 &
-    echo "$!" >"$APP_PID_FILE"
+    app_pid="$!"
+    write_pid_file "$app_pid" "$APP_PID_FILE" || { kill "$app_pid" 2>/dev/null || true; fail "Could not record the Apptainer process identity"; }
   else
     "${APPTAINER_APP_COMMAND[@]}" &
-    echo "$!" >"$APP_PID_FILE"
+    app_pid="$!"
+    write_pid_file "$app_pid" "$APP_PID_FILE" || { kill "$app_pid" 2>/dev/null || true; fail "Could not record the Apptainer process identity"; }
     trap 'stop_mcp_discovery; stop_application; stop_bridge' EXIT INT TERM
     wait "$(sed -n '1p' "$APP_PID_FILE")"
   fi
 }
 
 runtime_stop_application() {
-  stop_pid_file "$APP_PID_FILE" "apptainer exec"
+  # Apptainer rewrites its starter argv after launch to include the SIF name,
+  # so the original "apptainer exec" command is no longer visible to ps.
+  stop_pid_file "$APP_PID_FILE" "$(basename "$APP_SIF")"
 }
 
 runtime_reset_database() {

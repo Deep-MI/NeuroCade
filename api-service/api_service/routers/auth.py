@@ -23,6 +23,7 @@ def frontend_config(response: Response) -> FrontendConfig:
     response.headers["Cache-Control"] = "no-store"
     return FrontendConfig(
         local_auth_enabled=settings.local_auth_enabled,
+        mcp_enabled=settings.mcp_enabled,
         clerk_publishable_key=settings.clerk_publishable_key,
         clerk_jwt_template=settings.clerk_jwt_template,
     )

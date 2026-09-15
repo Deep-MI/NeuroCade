@@ -18,6 +18,13 @@ def _settings_without_env_file() -> Settings:
     return cast(Any, Settings)(_env_file=None)
 
 
+def test_application_image_uses_installed_runtime_tools_package():
+    dockerfile = (Path(__file__).resolve().parent.parent / "docker/backend.Dockerfile").read_text(encoding="utf-8")
+
+    assert "PYTHONPATH=/app/api-service:/app \\" in dockerfile
+    assert "/app/packages/neurocade-runtime-tools/src" not in dockerfile
+
+
 def test_configured_provider_builds_chat_model(monkeypatch):
     monkeypatch.setattr(provider_module.settings, "llm_provider_default", "openai-compatible")
     monkeypatch.setattr(provider_module.settings, "llm_backend_url", "http://127.0.0.1:11434")

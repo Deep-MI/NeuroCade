@@ -12,6 +12,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _shell_command(*parts: str) -> str:
+    return " ".join(parts)
+
+
 def _run_managed_python_helper(tmp_path: Path, command: str, *, path: str | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     if path is not None:
@@ -63,6 +67,101 @@ def test_managed_uv_ignores_conflicting_path_installation(tmp_path: Path) -> Non
     ]
 
 
+def test_existing_app_check_handles_missing_app_url_cleanly(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _shell_command(
+                'APP_URL_FILE="$1/missing-app-url"; BRIDGE_VENV="$1/missing-venv";',
+                'MCP_ENABLED=false; MCP_ACCESS=standard; source "$2"; mcp_check_existing',
+            ),
+            "mcp-existing-test",
+            str(tmp_path),
+            str(REPO_ROOT / "scripts/lib/mcp.sh"),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "this install has no recorded app URL" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_local_docker_image_is_scoped_to_installation() -> None:
+    install_script = (REPO_ROOT / "scripts/install.sh").read_text(encoding="utf-8")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; local_docker_image 0123456789abcdef0123456789abcdef',
+            "local-image-test",
+            str(REPO_ROOT / "scripts/install.sh"),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "neurocade:local-0123456789ab\n"
+    assert 'IMAGE_OVERRIDE="$(local_docker_image "$INSTALL_ID")"' in install_script
+    assert "configured_image=" not in install_script
+
+
+def test_apptainer_stop_matches_rewritten_runtime_process(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _shell_command(
+                'APP_PID_FILE="$1/app.pid"; APP_SIF="$1/images/neurocade-app-amd64.sif";',
+                'ROOT_DIR="$1"; stop_pid_file() { printf "%s\\n%s\\n" "$1" "$2"; };',
+                'source "$2"; runtime_stop_application',
+            ),
+            "apptainer-stop-test",
+            str(tmp_path),
+            str(REPO_ROOT / "scripts/lib/runtime_apptainer.sh"),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [str(tmp_path / "app.pid"), "neurocade-app-amd64.sif"]
+
+
+def test_process_identity_checks_start_time_and_stops_match(tmp_path: Path) -> None:
+    pid_file = tmp_path / "app.pid"
+    pid_file.write_text("123\n456\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _shell_command(
+                'set -e; REAL_UID="$(id -u)"; CURRENT_START=456; STOPPED=0;',
+                'source "$1";',
+                'id() { echo "$REAL_UID"; };',
+                'ps() { if [[ "$*" == *"uid="* ]]; then echo "$REAL_UID"; else echo "Apptainer runtime parent: neurocade-app-amd64.sif"; fi; };',
+                'pid_start_time() { printf "%s\\n" "$CURRENT_START"; };',
+                'kill() { if [[ "$1" == "-0" ]]; then [[ "$STOPPED" -eq 0 ]]; else STOPPED=1; echo "$1 $2"; fi; };',
+                'pid_matches "$2" neurocade-app-amd64.sif;',
+                'CURRENT_START=999; if pid_matches "$2" neurocade-app-amd64.sif; then exit 9; fi;',
+                'CURRENT_START=456; stop_pid_file "$2" neurocade-app-amd64.sif',
+            ),
+            "process-identity-test",
+            str(REPO_ROOT / "scripts/lib/processes.sh"),
+            str(pid_file),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "-TERM 123" in result.stdout
+    assert not pid_file.exists()
+
+
 def test_host_arch_detects_apple_silicon_through_rosetta(tmp_path: Path) -> None:
     path_bin = tmp_path / "bin"
     path_bin.mkdir()
@@ -112,6 +211,7 @@ def _bootstrap_installer(
     env.update(
         {
             "FAKE_ARCHIVE": str(archive),
+            "NEUROCADE_ARCHIVE_URL": "https://example.invalid/neurocade.tar.gz",
             "HOME": str(tmp_path / "home"),
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
         }
@@ -288,6 +388,50 @@ def test_apptainer_driver_builds_only_rootless_application_command(tmp_path: Pat
     assert str(tmp_path / ".env") in argv
 
 
+def test_docker_database_rejects_volume_owned_by_another_install(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _shell_command(
+                "set -e; DATABASE_VOLUME=neurocade-database; INSTALL_ID=current-install;",
+                'docker() { if [[ "$*" == *--format* ]]; then echo other-install; fi; };',
+                'fail() { echo "ERROR: $*" >&2; return 1; }; source "$1"; runtime_prepare_database',
+            ),
+            "docker-volume-owner-test",
+            str(REPO_ROOT / "scripts/lib/runtime_docker.sh"),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "belongs to another NeuroCade installation" in result.stderr
+
+
+def test_docker_database_warns_when_reusing_unowned_volume(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _shell_command(
+                "set -e; DATABASE_VOLUME=neurocade-database; INSTALL_ID=current-install;",
+                'IMAGE=neurocade:test; DOCKER_PLATFORM="";',
+                'docker() { if [[ "$*" == *--format* ]]; then echo "<no value>"; fi; };',
+                'fail() { echo "ERROR: $*" >&2; return 1; };',
+                'source "$1"; runtime_prepare_database',
+            ),
+            "docker-volume-unowned-test",
+            str(REPO_ROOT / "scripts/lib/runtime_docker.sh"),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Reusing existing unowned Docker database volume" in result.stderr
+
+
 def test_installer_env_serialization_round_trips_shell_characters(tmp_path: Path) -> None:
     value = 'Local User "quoted" $HOME `command` \\ path'
     result = subprocess.run(
@@ -352,11 +496,16 @@ def test_release_manifest_round_trip(tmp_path: Path) -> None:
             "neurocade-app-2026.8.30-amd64.sif",
             "--bridge",
             "neurocade_runtime_tools-0.2.0-py3-none-any.whl",
+            "--source",
+            "neurocade-source-2026.8.30.tar.gz",
+            "--source-revision",
+            "a" * 40,
             "--output",
             str(manifest),
         ],
         check=True,
     )
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 1
     result = subprocess.run([str(script), "read", str(manifest)], check=True, text=True, capture_output=True)
     assert result.stdout.splitlines() == [
         "v2026.8.30",
@@ -365,6 +514,11 @@ def test_release_manifest_round_trip(tmp_path: Path) -> None:
         "neurocade-app-2026.8.30-amd64.sif.sha256",
         "neurocade_runtime_tools-0.2.0-py3-none-any.whl",
         "neurocade_runtime_tools-0.2.0-py3-none-any.whl.sha256",
+    ]
+    update = subprocess.run([str(script), "read-update", str(manifest)], check=True, text=True, capture_output=True)
+    assert update.stdout.splitlines() == [
+        "v2026.8.30", "2026.8.30", "a" * 40, "1",
+        "neurocade-source-2026.8.30.tar.gz", "neurocade-source-2026.8.30.tar.gz.sha256",
     ]
 
 
@@ -452,6 +606,10 @@ def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path
             sif_name,
             "--bridge",
             bridge_name,
+            "--source",
+            "neurocade-source-2026.8.30.tar.gz",
+            "--source-revision",
+            "a" * 40,
             "--output",
             str(assets / "neurocade-release.json"),
         ],

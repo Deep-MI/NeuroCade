@@ -250,11 +250,17 @@ jobs:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
+          source_archive="neurocade-source-${RELEASE_VERSION}.tar.gz"
+          git archive --format=tar.gz --prefix="NeuroCade-${RELEASE_VERSION}/" -o "$source_archive" HEAD
+          sha256sum "$source_archive" > "$source_archive.sha256"
+          echo "SOURCE_ARCHIVE=$source_archive" >> "$GITHUB_ENV"
           ./scripts/release/release_manifest.py create \
             --tag "$RELEASE_TAG" \
             --version "$RELEASE_VERSION" \
             --sif "$APP_SIF" \
             --bridge "$BRIDGE_WHEEL_NAME" \
+            --source "$source_archive" \
+            --source-revision "$(git rev-parse HEAD)" \
             --output neurocade-release.json
           ./scripts/release/release_manifest.py read neurocade-release.json
 

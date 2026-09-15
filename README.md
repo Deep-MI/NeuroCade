@@ -24,12 +24,15 @@ image from the same source revision as the host runtime bridge.
 Install the current beta channel explicitly:
 
 ```bash
-# Docker
-bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --runtime docker --image docker.io/deepmi/neurocade:beta
-
 # Rootless Apptainer on Linux amd64
 bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --runtime apptainer --version beta
 ```
+
+Docker archive installs deliberately build the application and host bridge from
+the same verified source release. Install stable first, then use
+`./scripts/update.sh --channel beta --yes` to move a Docker installation to the
+matched beta source; the remote bootstrap rejects a separately selected rolling
+Docker image because its source revision cannot be proven.
 
 To build a local checkout into an Apptainer SIF (requires Docker):
 
@@ -65,8 +68,10 @@ Configure these GitHub Actions secrets before running the release workflow:
 - `DOCKERHUB_USERNAME`: the Docker Hub account used to publish images.
 - `DOCKERHUB_TOKEN`: an access token for that account with push access to `deepmi/neurocade`.
 
-GitHub releases continue to host the application SIF, bridge wheel, checksums,
-and release manifest.
+GitHub releases continue to host the application SIF, bridge wheel, verified
+source archive, checksums, and release manifest. Installer-owned archive
+installs can update transactionally with `./scripts/update.sh --yes`; Git
+checkouts remain under Git control.
 
 ### Retrying a partial release
 
