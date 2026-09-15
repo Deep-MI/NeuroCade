@@ -479,10 +479,7 @@ elif [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
 fi
 [[ "$RUNTIME" == "docker" ]] || BUILD_DOCKER_IMAGE=0
 if [[ "$BUILD_DOCKER_IMAGE" -eq 1 ]]; then
-  configured_image="$(configured_or_default "$ROOT_DIR" NEUROCADE_IMAGE "")"
-  if [[ -z "$configured_image" || "$configured_image" == "$DEFAULT_IMAGE" ]]; then
-    IMAGE_OVERRIDE="$(local_docker_image "$INSTALL_ID")"
-  fi
+  IMAGE_OVERRIDE="$(local_docker_image "$INSTALL_ID")"
 fi
 [[ "$BRIDGE_PORT" =~ ^[0-9]+$ ]] && (( BRIDGE_PORT > 0 && BRIDGE_PORT < 65536 )) || { echo "Invalid bridge port: $BRIDGE_PORT" >&2; exit 2; }
 MODE="$(normalize_mode "$MODE")"

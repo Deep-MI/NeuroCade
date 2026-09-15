@@ -84,6 +84,7 @@ def test_existing_app_check_handles_missing_app_url_cleanly(tmp_path: Path) -> N
 
 
 def test_local_docker_image_is_scoped_to_installation() -> None:
+    install_script = (REPO_ROOT / "scripts/install.sh").read_text(encoding="utf-8")
     result = subprocess.run(
         [
             "bash",
@@ -98,6 +99,8 @@ def test_local_docker_image_is_scoped_to_installation() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "neurocade:local-0123456789ab\n"
+    assert 'IMAGE_OVERRIDE="$(local_docker_image "$INSTALL_ID")"' in install_script
+    assert "configured_image=" not in install_script
 
 
 def test_apptainer_stop_matches_rewritten_runtime_process(tmp_path: Path) -> None:
