@@ -142,4 +142,7 @@ remove them when their ownership can be proven. Use `--remove-images` to remove
 a locally built application image when it has the matching ownership label.
 The checkout is always preserved because it may contain user changes. Shared or
 unrecognized containers, volumes, images, data directories, and host-installed
-dependencies are also preserved.
+dependencies are also preserved. Apptainer's shared user cache is outside the
+installation and is never removed; inspect it with `apptainer cache list` and,
+when you are certain its shared contents are no longer needed, reclaim it with
+`apptainer cache clean`.

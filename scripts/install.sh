@@ -23,8 +23,9 @@ Options:
                                   Apptainer on Linux when available.
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
-  --image IMAGE                   Published image tag or digest. Default: docker.io/deepmi/neurocade:latest.
-                                  Docker only.
+  --image IMAGE                   Published image tag or digest. Docker only.
+                                  When omitted, Docker builds this checkout under
+                                  an installation-specific local image tag.
   --version stable|beta|TAG       Apptainer release channel or exact v-prefixed tag.
                                   Default: stable, falling back to the newest compatible release.
   --build-from-source             Build Docker from this checkout and convert it
@@ -132,6 +133,11 @@ configured_or_default() {
   else
     printf '%s\n' "$default_value"
   fi
+}
+
+local_docker_image() {
+  local install_id="$1"
+  printf 'neurocade:local-%s\n' "${install_id:0:12}"
 }
 
 detect_configured_provider() {
@@ -369,6 +375,7 @@ APP_SIF_MODE=""
 BRIDGE_PACKAGE=""
 RELEASE_VERSION=""
 BUILD_FROM_SOURCE=0
+BUILD_DOCKER_IMAGE=1
 BRIDGE_PORT="8765"
 START=1
 ASSUME_YES=0
@@ -393,6 +400,7 @@ while [[ $# -gt 0 ]]; do
     --image)
       require_option_value "$1" "${2:-}"
       IMAGE_OVERRIDE="$2"
+      BUILD_DOCKER_IMAGE=0
       shift 2
       ;;
     --version)
@@ -469,6 +477,13 @@ elif [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
   echo "--build-from-source is only valid with the Apptainer runtime." >&2
   exit 2
 fi
+[[ "$RUNTIME" == "docker" ]] || BUILD_DOCKER_IMAGE=0
+if [[ "$BUILD_DOCKER_IMAGE" -eq 1 ]]; then
+  configured_image="$(configured_or_default "$ROOT_DIR" NEUROCADE_IMAGE "")"
+  if [[ -z "$configured_image" || "$configured_image" == "$DEFAULT_IMAGE" ]]; then
+    IMAGE_OVERRIDE="$(local_docker_image "$INSTALL_ID")"
+  fi
+fi
 [[ "$BRIDGE_PORT" =~ ^[0-9]+$ ]] && (( BRIDGE_PORT > 0 && BRIDGE_PORT < 65536 )) || { echo "Invalid bridge port: $BRIDGE_PORT" >&2; exit 2; }
 MODE="$(normalize_mode "$MODE")"
 if [[ -z "$LLM_PROVIDER" ]]; then
@@ -489,7 +504,7 @@ fi
 
 install_managed_uv
 echo "Ensuring managed Python $NEUROCADE_PYTHON_VERSION..."
-managed_uv python install "$NEUROCADE_PYTHON_VERSION"
+managed_uv python install --no-bin "$NEUROCADE_PYTHON_VERSION"
 
 if [[ "$APP_SIF_MODE" == "release" ]]; then
   python_bin="$(managed_python_path)"
@@ -502,7 +517,7 @@ fi
 
 write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$RUNTIME" "$IMAGE_OVERRIDE" "$APP_SIF_MODE" "$BRIDGE_PACKAGE" "$RELEASE_VERSION" "$BRIDGE_PORT"
 
-if [[ "$RUNTIME" == "docker" && -z "$IMAGE_OVERRIDE" ]]; then
+if [[ "$BUILD_DOCKER_IMAGE" -eq 1 ]]; then
   # Build the application from this checkout so the in-image bridge client and
   # the host bridge installed below always use the same protocol revision.
   "$ROOT_DIR/scripts/run.sh" build
