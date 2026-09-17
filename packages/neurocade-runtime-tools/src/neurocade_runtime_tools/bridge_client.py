@@ -124,6 +124,18 @@ class BridgeClient:
             request_timeout=(10, preparation_timeout),
         )
 
+    def active_writers(self) -> tuple[bool, set[str]]:
+        """Return whether the runtime could be asked, and which runs still write.
+
+        A ``False`` determination means the question was unanswerable, not that
+        no writer exists. Callers must not read it as an all-clear.
+        """
+        payload = self._request("GET", "/v1/writers")
+        run_ids = payload.get("run_ids")
+        if not isinstance(run_ids, list):
+            raise BridgeError("Runtime bridge returned an invalid writer listing")
+        return bool(payload.get("determined")), {str(value) for value in run_ids}
+
     def status(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{run_id}")
 

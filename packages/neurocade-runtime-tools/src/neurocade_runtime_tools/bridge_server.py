@@ -79,6 +79,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/health":
             self._json(HTTPStatus.OK, self.server.runtime.health())
             return
+        if self.path == "/v1/writers":
+            self._json(HTTPStatus.OK, self.server.runtime.active_writers())
+            return
         if self.path.startswith("/v1/runs/"):
             run = self.server.runtime.get(self.path.removeprefix("/v1/runs/"))
             if run is None:

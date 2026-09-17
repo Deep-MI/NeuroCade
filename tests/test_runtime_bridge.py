@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service import main as main_module
 from neurocade_runtime_tools import bridge as bridge_module
+from neurocade_runtime_tools import docker_runtime as docker_runtime_module
 from neurocade_runtime_tools import execution as execution_module
 from neurocade_runtime_tools.apptainer_runtime import NvidiaCapability
 from neurocade_runtime_tools.bridge import BridgeRuntime
@@ -954,3 +955,67 @@ def test_application_startup_fails_when_bridge_is_unavailable(monkeypatch: pytes
 
     with pytest.raises(RuntimeError, match="bridge unavailable"):
         asyncio.run(start())
+
+
+def test_active_writers_reports_containers_the_bridge_no_longer_tracks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A restarted bridge still answers for a container it never launched."""
+    runtime = BridgeRuntime(backend="docker", data_root=tmp_path, image_dir=tmp_path / "images")
+    monkeypatch.setattr(bridge_module, "active_writer_run_ids", lambda **_: {"orphaned-run"})
+
+    payload = runtime.active_writers()
+
+    assert payload["determined"] is True
+    assert payload["run_ids"] == ["orphaned-run"]
+
+
+def test_active_writers_never_reports_a_failed_query_as_idle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Absence and disconnection must not look alike to the caller."""
+    runtime = BridgeRuntime(backend="docker", data_root=tmp_path, image_dir=tmp_path / "images")
+
+    def unreachable(**_: object) -> set[str]:
+        raise RuntimeError("Docker did not report the running tool containers")
+
+    monkeypatch.setattr(bridge_module, "active_writer_run_ids", unreachable)
+
+    payload = runtime.active_writers()
+
+    assert payload["determined"] is False
+    assert payload["run_ids"] == []
+
+
+def test_apptainer_writers_are_undetermined_without_a_daemon(tmp_path: Path) -> None:
+    """Apptainer has no daemon to interrogate, so absence is never provable."""
+    runtime = BridgeRuntime(backend="apptainer", data_root=tmp_path, image_dir=tmp_path / "images")
+
+    assert runtime.active_writers()["determined"] is False
+
+
+def test_active_writer_run_ids_reads_the_run_id_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The daemon query filters on the managed label and returns run IDs."""
+    recorded: list[list[str]] = []
+
+    def fake_run(argv, **_: object) -> SimpleNamespace:
+        recorded.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="run-a\n\nrun-b\n", stderr="")
+
+    monkeypatch.setattr(docker_runtime_module, "run_managed_command", fake_run)
+
+    assert docker_runtime_module.active_writer_run_ids() == {"run-a", "run-b"}
+    assert "label=org.neurocade.runtime=true" in recorded[0]
+    assert '{{.Label "org.neurocade.run-id"}}' in recorded[0]
+
+
+def test_active_writer_run_ids_raises_when_the_daemon_query_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero query must raise rather than report an empty set."""
+    monkeypatch.setattr(
+        docker_runtime_module,
+        "run_managed_command",
+        lambda *_, **__: SimpleNamespace(returncode=1, stdout="", stderr="cannot connect"),
+    )
+
+    with pytest.raises(RuntimeError, match="did not report"):
+        docker_runtime_module.active_writer_run_ids()
