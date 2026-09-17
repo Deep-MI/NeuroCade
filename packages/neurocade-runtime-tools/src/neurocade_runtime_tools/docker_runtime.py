@@ -7,12 +7,15 @@ import platform as host_platform
 import re
 from pathlib import Path
 
-from .execution import BridgeBind, RuntimeContainerRunRequest
+from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command
 from .protocol import validate_environment
 
 _DOCKER_PLATFORM = re.compile(
     r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)?$"
 )
+RUNTIME_LABEL = "org.neurocade.runtime"
+RUN_ID_LABEL = "org.neurocade.run-id"
+LAUNCH_ID_LABEL = "org.neurocade.launch-id"
 
 
 def configured_docker_platform() -> str | None:
@@ -57,9 +60,9 @@ def build_docker_argv(
             "--name",
             f"neurocade-tool-{safe_id}",
             "--label",
-            "org.neurocade.runtime=true",
+            f"{RUNTIME_LABEL}=true",
             "--label",
-            f"org.neurocade.run-id={run_id}",
+            f"{RUN_ID_LABEL}={run_id}",
             "--user",
             f"{os.getuid()}:{os.getgid()}",
             "--read-only",
@@ -72,7 +75,7 @@ def build_docker_argv(
         ]
     )
     if launch_id:
-        argv.extend(["--label", f"org.neurocade.launch-id={launch_id}"])
+        argv.extend(["--label", f"{LAUNCH_ID_LABEL}={launch_id}"])
     if request.network_disabled:
         argv.extend(["--network", "none"])
     if request.gpu_enabled:
@@ -105,3 +108,25 @@ def build_docker_argv(
     argv.append(request.image.docker_reference)
     argv.extend(command[1:])
     return argv
+
+
+def active_writer_run_ids(*, timeout: float = 30) -> set[str]:
+    """Return the run IDs whose tool containers the daemon still reports as running.
+
+    The daemon is the authority here, not the bridge's memory: labels survive a
+    bridge restart, so an interrupted launch session can still be asked whether
+    a container is writing. A failed query raises instead of reporting an empty
+    set, because absence and disconnection must never look alike.
+    """
+    listing = run_managed_command(
+        [
+            "docker", "container", "ls", "--no-trunc",
+            "--filter", f"label={RUNTIME_LABEL}=true",
+            "--format", "{{.Label \"" + RUN_ID_LABEL + "\"}}",
+        ],
+        timeout=timeout,
+        capture_output=True,
+    )
+    if listing.returncode != 0:
+        raise RuntimeError("Docker did not report the running tool containers")
+    return {line.strip() for line in listing.stdout.splitlines() if line.strip()}

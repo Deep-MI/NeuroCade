@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .apptainer_runtime import build_container_argv, nvidia_capability
-from .docker_runtime import build_docker_argv, configured_docker_platform
+from .docker_runtime import active_writer_run_ids, build_docker_argv, configured_docker_platform
 from .execution import (
     BridgeBind,
     ProcessObserver,
@@ -247,6 +247,26 @@ class BridgeRuntime:
             "gpu": {"available": self.global_gpu.available, "reason": self.global_gpu.reason},
             "active_runs": active,
         }
+
+    def active_writers(self) -> dict[str, Any]:
+        """Report which runs still have a live writer, and whether that is knowable.
+
+        Docker labels outlive this process, so a run started by an interrupted
+        launch session can still be answered authoritatively. Apptainer runs are
+        direct children with no daemon to interrogate, so only this session's
+        records are observable there; ``determined`` says which case applies so
+        the caller never mistakes an unanswerable question for a negative answer.
+        """
+        with self._lock:
+            self._prune()
+            tracked = {run_id for run_id, run in self._runs.items() if run.state in ACTIVE_RUN_STATES}
+        if self.backend != "docker":
+            return {"protocol_version": PROTOCOL_VERSION, "determined": False, "run_ids": sorted(tracked)}
+        try:
+            observed = active_writer_run_ids()
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return {"protocol_version": PROTOCOL_VERSION, "determined": False, "run_ids": sorted(tracked)}
+        return {"protocol_version": PROTOCOL_VERSION, "determined": True, "run_ids": sorted(tracked | observed)}
 
     def resolve_capability(self, image_value: Any) -> dict[str, Any]:
         spec = RuntimeImageSpec.from_dict(image_value) if isinstance(image_value, dict) else RuntimeImageSpec(str(image_value))

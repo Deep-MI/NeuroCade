@@ -23,18 +23,16 @@ def _update_run(run_id: str, *, status: RunStatus, result: dict[str, Any], error
             if run is None or run.status == RunStatus.canceled:
                 return False
             cancellation = (run.result_json or {}).get("cancellation")
-            if status == RunStatus.running and cancellation in {"requested", "unresolved"}:
+            if status == RunStatus.running and cancellation == "requested":
                 run.status = RunStatus.canceled
-                run.result_json = {**result, "status": "canceled", "cancellation": "stopped", "output_ownership": "released"}
+                run.result_json = {**result, "status": "canceled", "cancellation": "stopped"}
                 db.commit()
                 return False
             terminal = status in {RunStatus.completed, RunStatus.failed, RunStatus.canceled}
-            confirmed = result.get("writer_stopped") is True
-            ownership = "released" if terminal and confirmed else "unresolved" if terminal else "held"
-            run.status = RunStatus.canceled if terminal and confirmed and cancellation in {"requested", "unresolved"} else status
-            run.result_json = {**result, "status": run.status.value, "output_ownership": ownership}
+            run.status = RunStatus.canceled if terminal and cancellation == "requested" else status
+            run.result_json = {**result, "status": run.status.value}
             if cancellation:
-                run.result_json = {**run.result_json, "cancellation": "stopped" if ownership == "released" else "unresolved" if terminal else "requested"}
+                run.result_json = {**run.result_json, "cancellation": "stopped" if terminal else "requested"}
             run.error_message = error
             db.commit()
             return True
@@ -49,7 +47,7 @@ def _store_canceled_result(run_id: str, result: dict[str, Any]) -> None:
             run = db.get(Run, run_id)
             if run is None or run.status != RunStatus.canceled:
                 return
-            run.result_json = {**result, "cancellation": "stopped", "output_ownership": "released"}
+            run.result_json = {**result, "cancellation": "stopped"}
             db.commit()
 
         run_with_sqlite_lock_retry(db, operation)
@@ -123,7 +121,6 @@ def run_neuroimaging_workflow_task(
             "tool_id": tool_id,
             "return_code": None,
             "stderr": str(exc),
-            "writer_stopped": getattr(exc, "writer_stopped", False) is True,
         }
         if code := workflow_error_code(exc):
             result["error_code"] = code

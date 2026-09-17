@@ -22,7 +22,7 @@ from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, res
 from api_service.runtime_tools.workflow_execution import prepare_workflow
 from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope, Run, RunStatus, run_with_sqlite_lock_retry
-from backend_common.run_statuses import TERMINAL_RUN_STATUSES, run_owns_outputs
+from backend_common.run_statuses import TERMINAL_RUN_STATUSES
 
 RUN_STATUS_POLL_INTERVAL_SECONDS = 0.1
 
@@ -299,7 +299,7 @@ class AssistantCatalogExecutor:
         run = db.get(Run, run_id)
         if run is None or run.workspace_id != workspace_id or (case_id is not None and run.case_id != case_id):
             return ToolResult.error(f"Error: workflow run {run_id!r} was not found.")
-        if run.status in TERMINAL_RUN_STATUSES and not run_owns_outputs(run):
+        if run.status in TERMINAL_RUN_STATUSES:
             return ToolResult.structured(workflow_runs.cancellation_result(run))
         workflow_runs.cancel_workflow_run(db, run)
         return ToolResult.structured(workflow_runs.cancellation_result(run))

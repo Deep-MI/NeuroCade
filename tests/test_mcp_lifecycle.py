@@ -125,11 +125,19 @@ def test_admin_case_reset_rollback_restores_original_over_new_seed(database):
 
 
 @pytest.mark.parametrize("operation", ["api_case", "api_workspace", "admin_case", "admin_workspace"])
-def test_unresolved_writer_blocks_deletion_and_reset(database, operation, monkeypatch):
+def test_live_writer_container_blocks_deletion_and_reset(database, operation, monkeypatch):
+    """A container the runtime still reports holds the tree, whatever the row says."""
     from api_service.cases.operations import delete_case_for_user
     from fastapi import HTTPException
+    from neurocade_runtime_tools.bridge_client import BridgeClient
 
     from backend_common.db import Run, RunStatus
+
+    class Bridge:
+        def active_writers(self):
+            return True, {"run"}
+
+    monkeypatch.setattr(BridgeClient, "from_environment", classmethod(lambda _cls: Bridge()))
 
     settings = get_settings()
     with database() as db:
@@ -145,7 +153,6 @@ def test_unresolved_writer_blocks_deletion_and_reset(database, operation, monkey
                 workspace_id="w",
                 status=RunStatus.failed,
                 run_type="fastsurfer_fast",
-                result_json={"output_ownership": "unresolved"},
             )
         )
         db.commit()
