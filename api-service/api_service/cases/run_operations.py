@@ -30,7 +30,7 @@ from api_service.schemas import RunSummary, StartRunRequest
 from backend_common.auth import AuthContext
 from backend_common.db import Run, RunStatus
 from backend_common.run_logs import initialize_run_logs
-from backend_common.run_statuses import TERMINAL_RUN_STATUSES, run_owns_outputs
+from backend_common.run_statuses import TERMINAL_RUN_STATUSES
 from backend_common.storage import resolve_artifact_path
 
 
@@ -161,7 +161,7 @@ def cancel_active_case_run(db: Session, context: AuthContext, *, case_id: str) -
     case, _workspace, role, _case_dir = get_case_for_user(db, case_id, context.user.id)
     require_case_write(role, detail="Case not found")
     latest_run = latest_case_run(db, case_id)
-    if latest_run is None or (latest_run.status in TERMINAL_RUN_STATUSES and not run_owns_outputs(latest_run)):
+    if latest_run is None or latest_run.status in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="Case has no active run")
     workflow_runs.cancel_workflow_run(db, latest_run, cancel_job_first=True)
     log_event(db, context, "run.canceled", case_id=case_id)
