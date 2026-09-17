@@ -174,7 +174,14 @@ class BridgeClient:
             # multi-GB image pull must not consume the tool's execution budget.
             preparation_timeout = max(60, int(os.environ.get("NEUROCADE_BRIDGE_PREPARE_TIMEOUT_SECONDS", "7200")))
             disconnect_grace = max(5, int(os.environ.get("NEUROCADE_BRIDGE_DISCONNECT_GRACE_SECONDS", "30")))
-            deadline = time.monotonic() + preparation_timeout + (request.timeout_s or 0) + 15
+            # A workflow without a declared timeout has no execution budget, and
+            # the bridge runs it without one. Deriving a client deadline from the
+            # image-preparation budget alone would abandon a healthy long run
+            # while its container keeps writing. A silent bridge is still caught
+            # by the disconnect grace below.
+            deadline: float | None = None
+            if request.timeout_s is not None:
+                deadline = time.monotonic() + preparation_timeout + request.timeout_s + 15
             disconnected_at: float | None = None
             last_progress: dict[str, Any] | None = None
             last_progress_publish_at = 0.0
@@ -225,7 +232,7 @@ class BridgeClient:
                     if request.check and result.returncode != 0:
                         raise BridgeError(f"Runtime command failed with exit code {result.returncode}: {result.stderr}")
                     return result
-                if time.monotonic() > deadline:
+                if deadline is not None and time.monotonic() > deadline:
                     raise TimeoutError("Runtime bridge did not report a terminal result")
                 time.sleep(self.poll_interval_s)
         finally:

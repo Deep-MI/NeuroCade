@@ -69,3 +69,51 @@ def test_sqlite_storage_error_classification(message: str) -> None:
 
 def test_sqlite_storage_error_rejects_lock_contention() -> None:
     assert not db_module.is_sqlite_storage_error(_operational_error("database is locked"))
+
+
+def test_workflow_output_indexing_retries_write_lock_contention(monkeypatch) -> None:
+    """A finished workflow must not be reported as failed over a busy database.
+
+    Output indexing runs after the container has already exited. Letting a
+    transient write lock escape turned completed runs into failed ones.
+    """
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api-service"))
+    from api_service.runtime_tools import workflow_execution
+
+    class RecordingSession(FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.commits = 0
+
+        def get(self, _model, _identity):  # noqa: ANN001, ANN202
+            return SimpleNamespace(id="case-1")
+
+        def commit(self) -> None:
+            self.commits += 1
+
+    session = RecordingSession()
+    attempts = 0
+
+    def flaky_index(*_args, **_kwargs) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise _operational_error("database is locked")
+
+    monkeypatch.setattr(workflow_execution, "index_workflow_outputs", flaky_index)
+    monkeypatch.setattr(db_module.time, "sleep", lambda _seconds: None)
+
+    workflow_execution._index_output_records(
+        SimpleNamespace(tool=SimpleNamespace(id="fastsurfer_full"), run_id="run-1"),
+        [{"name": "output", "state": "created"}],
+        "case-1",
+        session,  # type: ignore[arg-type]
+    )
+
+    assert attempts == 2
+    assert session.rollback_count == 1
+    assert session.commits == 1

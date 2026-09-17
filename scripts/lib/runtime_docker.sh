@@ -5,6 +5,18 @@ runtime_application_exists() {
   docker image inspect "$IMAGE" >/dev/null 2>&1
 }
 
+runtime_application_running() {
+  # Liveness must prove that the container this launcher manages is up. A URL
+  # probe cannot: any other process on the published port answers it, and a
+  # foreign responder would otherwise be mistaken for our own application.
+  [[ -n "${LAUNCH_ID:-}" ]] || return 1
+  local identity
+  identity="$(docker container inspect \
+    --format '{{.State.Running}} {{index .Config.Labels "org.neurocade.launch-id"}}' \
+    "$CONTAINER_NAME" 2>/dev/null)" || return 1
+  [[ "$identity" == "true $LAUNCH_ID" ]]
+}
+
 runtime_pull_application() {
   if [[ -n "$DOCKER_PLATFORM" ]]; then
     docker pull --platform "$DOCKER_PLATFORM" "$IMAGE"
@@ -47,14 +59,20 @@ runtime_start_application() {
   if [[ "$DETACH" -eq 1 ]]; then
     "${DOCKER_APP_ARGS[@]}" -d --restart unless-stopped "$IMAGE"
   else
-    trap 'stop_bridge' EXIT INT TERM
+    trap 'stop_bridge || true' EXIT INT TERM
     "${DOCKER_APP_ARGS[@]}" --rm "$IMAGE"
   fi
 }
 
 runtime_stop_application() {
+  # Report success only when the application is provably gone. An unreachable
+  # daemon proves nothing: treating it as a successful stop would discard the
+  # launch session while a restart policy still brings the container back.
+  docker info >/dev/null 2>&1 || return 1
+  docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1 || return 0
   docker stop --time 15 "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  docker rm --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1
 }
 
 runtime_reset_database() {

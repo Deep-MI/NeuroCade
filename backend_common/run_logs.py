@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+# Tool output is terminal output: it carries colour codes, cursor movement, and
+# backspaces that a terminal consumes but a browser renders as stray glyphs.
+_ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_ANSI_SHORT = re.compile(r"\x1b[@-_]")
+_RESIDUAL_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def run_log_paths(case_dir: Path, run_id: str) -> tuple[Path, Path]:
@@ -32,6 +40,29 @@ def _read_log_lines(path: Path) -> list[str]:
     return [line + "\n" for line in raw.split("\n") if line]
 
 
+def _apply_backspaces(value: str) -> str:
+    """Resolve backspaces the way a terminal would, by erasing what precedes."""
+    if "\b" not in value:
+        return value
+    rendered: list[str] = []
+    for character in value:
+        if character == "\b":
+            if rendered and rendered[-1] != "\n":
+                rendered.pop()
+            continue
+        rendered.append(character)
+    return "".join(rendered)
+
+
+def _sanitize(value: str) -> str:
+    """Render one log line as printable text without terminal control codes."""
+    value = _ANSI_OSC.sub("", value)
+    value = _ANSI_CSI.sub("", value)
+    value = _ANSI_SHORT.sub("", value)
+    value = _apply_backspaces(value)
+    return _RESIDUAL_CONTROL.sub("", value)
+
+
 def render_run_logs(case_dir: Path, run_id: str, *, max_lines: int = 1000) -> str:
     """Render one run's stdout and stderr for terminal display."""
     stdout_path, stderr_path = run_log_paths(case_dir, run_id)
@@ -47,10 +78,10 @@ def render_run_logs(case_dir: Path, run_id: str, *, max_lines: int = 1000) -> st
         if "Potentially Overwriting:" in line:
             continue
         if "\r" not in line:
-            processed.append(line)
+            processed.append(_sanitize(line))
             continue
         for segment in reversed(line.split("\r")):
-            stripped = segment.strip()
+            stripped = _sanitize(segment).strip()
             if stripped:
                 processed.append(stripped + "\n")
                 break

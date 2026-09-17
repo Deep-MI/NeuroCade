@@ -788,3 +788,63 @@ def test_application_startup_fails_when_bridge_is_unavailable(monkeypatch: pytes
 
     with pytest.raises(RuntimeError, match="bridge unavailable"):
         asyncio.run(start())
+
+
+def _untimed_client_request() -> RuntimeExecutionRequest:
+    """A workflow the catalog leaves without an execution timeout."""
+    return RuntimeExecutionRequest(
+        timeout_s=None,
+        container_run=RuntimeContainerRunRequest(
+            image=RuntimeImageSpec("example/tool:1.0"),
+            command=["true"],
+            isolated=True,
+            run_id="client-run",
+        ),
+    )
+
+
+def _clock_past_every_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advance the clock past any deadline after the first reading."""
+    readings = {"count": 0}
+
+    def fake_monotonic() -> float:
+        readings["count"] += 1
+        return 0.0 if readings["count"] == 1 else 100_000.0
+
+    monkeypatch.setattr("neurocade_runtime_tools.bridge_client.time.monotonic", fake_monotonic)
+
+
+def test_untimed_workflow_is_not_abandoned_after_the_preparation_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A workflow without a declared timeout has no execution budget to exceed.
+
+    The image-preparation budget is not one. Treating it as a deadline gave
+    every untimed workflow a fixed two-hour cap and abandoned healthy long
+    runs while their container kept writing to the case.
+    """
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
+    _clock_past_every_budget(monkeypatch)
+    responses: list[dict] = [
+        {},
+        {"state": "running"},
+        {"state": "running"},
+        {"state": "completed", "returncode": 0, "stdout": "ok"},
+    ]
+    monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: responses.pop(0))
+
+    result = client.execute(_untimed_client_request())
+
+    assert result.stdout == "ok"
+    assert responses == []
+
+
+def test_declared_timeout_still_bounds_a_bridge_that_never_finishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
+    _clock_past_every_budget(monkeypatch)
+    monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: {"state": "running"})
+
+    with pytest.raises(TimeoutError, match="terminal result"):
+        client.execute(_client_request(tmp_path))

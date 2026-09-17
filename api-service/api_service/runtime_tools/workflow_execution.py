@@ -30,7 +30,7 @@ from api_service.runtime_tools.workflow_outputs import (
     snapshot_workflow_outputs,
     write_output_baseline,
 )
-from backend_common.db import Case
+from backend_common.db import Case, run_with_sqlite_lock_retry
 
 
 def warm_workflow_gpu_capabilities() -> dict[str, bool]:
@@ -263,16 +263,24 @@ def _index_output_records(
         record["name"]: record["state"]
         for record in output_records
     }
-    case = db.get(Case, artifact_case_id)
-    if case is not None:
-        index_workflow_outputs(
-            db,
-            settings,
-            case=case,
-            workflow=prepared.tool,
-            run_id=prepared.run_id,
-            output_states=output_states,
-        )
+
+    def operation() -> None:
+        # Own the commit so write-lock contention is retried here. The container
+        # has already finished at this point; letting a transient lock escape
+        # would report a completed workflow as a failed one.
+        case = db.get(Case, artifact_case_id)
+        if case is not None:
+            index_workflow_outputs(
+                db,
+                settings,
+                case=case,
+                workflow=prepared.tool,
+                run_id=prepared.run_id,
+                output_states=output_states,
+            )
+        db.commit()
+
+    run_with_sqlite_lock_retry(db, operation)
 
 
 def execute_prepared_workflow(

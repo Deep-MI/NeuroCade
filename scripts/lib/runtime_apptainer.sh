@@ -5,6 +5,13 @@ runtime_application_exists() {
   [[ -s "$APP_SIF" && -f "$APP_SIF.mode" && "$(sed -n '1p' "$APP_SIF.mode")" == "$APP_SIF_MODE" ]]
 }
 
+runtime_application_running() {
+  # The launch ID is passed on the application command line, so the recorded
+  # PID proves both liveness and launch-session identity.
+  [[ -n "${LAUNCH_ID:-}" ]] || return 1
+  pid_matches "$APP_PID_FILE" "NEUROCADE_LAUNCH_ID=$LAUNCH_ID"
+}
+
 runtime_pull_application() {
   runtime_application_exists && return
   fail "The application SIF is missing; rerun scripts/install.sh to download the latest release or build from source"
@@ -39,7 +46,7 @@ runtime_start_application() {
   else
     "${APPTAINER_APP_COMMAND[@]}" &
     echo "$!" >"$APP_PID_FILE"
-    trap 'stop_application; stop_bridge' EXIT INT TERM
+    trap 'stop_application || true; stop_bridge || true' EXIT INT TERM
     wait "$(sed -n '1p' "$APP_PID_FILE")"
   fi
 }
