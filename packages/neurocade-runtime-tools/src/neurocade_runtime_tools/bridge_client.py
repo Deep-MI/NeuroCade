@@ -25,7 +25,7 @@ class BridgeError(RuntimeError):
 
 
 class RuntimeStoppedTimeout(TimeoutError):
-    writer_stopped = True
+    """The bridge reported a timeout after confirming the container stopped."""
 
 
 class RuntimeGpuUnavailableError(RuntimeError):
