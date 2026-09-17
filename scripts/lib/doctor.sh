@@ -23,7 +23,7 @@ run_host_doctor() {
   fi
   if [[ -z "${NEUROCADE_MIN_FREE_KB:-}" ]]; then
     docker_image_exists || minimum_free_kb=$((minimum_free_kb + application_image_kb))
-    [[ -f "$HOST_DATA_DIR/sif/deepmi_fastsurfer_cu128-v2.5.4-amd64.sif" ]] || minimum_free_kb=$((minimum_free_kb + 5390740))
+    [[ -f "$IMAGE_DIR/vnmd_fastsurfer_2.5.4_latest.sif" ]] || minimum_free_kb=$((minimum_free_kb + 1833773))
     [[ -f "$HOST_DATA_DIR/sif/vnmd_dcm2niix_v1.0.20240202_20260512-amd64.sif" ]] || minimum_free_kb=$((minimum_free_kb + 40572))
   fi
 

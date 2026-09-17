@@ -45,4 +45,88 @@ applyPinnedPatch(
   `  if (!e.tex2mm) return null;`,
 );
 
+// NiiVue aspect-fits each 2D slice and then also uses that smaller rectangle as
+// its clipping and hit-test viewport. Keep the fitted anatomy undistorted, but
+// pad its world bounds so the complete canvas (or Grid cell) remains usable.
+const verticalLayoutEnd = `  return n.map((c, h) => {
+    const u = { leftTopWidthHeight: [o + (s - c.w) / 2, l, c.w, c.h] };
+    return l += c.h + e, { ...u, ...i[h] ?? {} };
+  });
+};
+`;
+const expandedSliceViewportHelper = `${verticalLayoutEnd}function ncExpandSliceViewport(t, e) {
+  const n = t.screen;
+  if (!n || t.axCorSag === Q.RENDER)
+    return { ...t, leftTopWidthHeight: e };
+  const i = yo(n), r = i.mxMM[0] - i.mnMM[0], s = i.mxMM[1] - i.mnMM[1], o = e[2] / e[3];
+  if (!(r > 0 && s > 0 && Number.isFinite(o) && o > 0))
+    return { ...t, screen: i, leftTopWidthHeight: e };
+  if (r / s < o) {
+    const a = (s * o - r) / 2;
+    i.mnMM[0] -= a, i.mxMM[0] += a, i.fovMM[0] = i.mxMM[0] - i.mnMM[0];
+  } else {
+    const a = (r / o - s) / 2;
+    i.mnMM[1] -= a, i.mxMM[1] += a, i.fovMM[1] = i.mxMM[1] - i.mnMM[1];
+  }
+  return { ...t, screen: i, leftTopWidthHeight: e };
+}
+`;
+applyPinnedPatch(
+  'expanded slice viewport helper',
+  verticalLayoutEnd,
+  expandedSliceViewportHelper,
+);
+
+const fittedSingleSlice = `    return [
+      {
+        ...d[u],
+        leftTopWidthHeight: [
+          (e[0] - x) / 2,
+          (e[1] - p) / 2,
+          x,
+          p
+        ]
+      }
+    ];`;
+const fullViewportSingleSlice = `    const y = [0, 0, e[0], e[1]];
+    return [
+      ncExpandSliceViewport({ ...d[u], leftTopWidthHeight: y }, y)
+    ];`;
+applyPinnedPatch(
+  'single-slice full viewport',
+  fittedSingleSlice,
+  fullViewportSingleSlice,
+);
+
+const fittedGridReturn = `  return E.hasRender && Y.push({
+    ...D,
+    leftTopWidthHeight: [
+      q + A.w + s,
+      j + A.h + s,
+      O,
+      O
+    ]
+  }), Y;`;
+const fullViewportGridReturn = `  E.hasRender && Y.push({
+    ...D,
+    leftTopWidthHeight: [
+      q + A.w + s,
+      j + A.h + s,
+      O,
+      O
+    ]
+  });
+  const K = (e[0] - s) / 2, J = (e[1] - s) / 2, ne = [
+    [0, 0, K, J],
+    [0, J + s, K, J],
+    [K + s, 0, K, J],
+    [K + s, J + s, K, J]
+  ];
+  return Y.map((xe, ie) => ncExpandSliceViewport(xe, ne[ie]));`;
+applyPinnedPatch(
+  'Grid cells use full viewport',
+  fittedGridReturn,
+  fullViewportGridReturn,
+);
+
 await writeFile(bundlePath, source);

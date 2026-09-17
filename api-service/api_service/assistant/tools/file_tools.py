@@ -26,6 +26,8 @@ from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.policies import require_case_write, require_workspace_write
 from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope
+from backend_common.output_activity import OutputBusy, ensure_outputs_idle
+from backend_common.submission_lock import submission_lock
 
 
 class ReadFileArgs(BaseModel):
@@ -179,49 +181,51 @@ class AssistantFileTools:
         self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
         """Write UTF-8 text after resolving an assistant-visible path."""
-        self.require_write_access(state)
         parsed = WriteFileArgs.model_validate(arguments)
         path = await self.resolve_path(state, parsed.path)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(parsed.content, encoding="utf-8")
-        except OSError as exc:
-            return ToolResult.error(f"Error writing {parsed.path}: {exc}")
-        return ToolResult.success(
-            f"Wrote {len(parsed.content.encode('utf-8'))} byte(s) to {path}.",
-            details={"path": str(path), "bytes_written": len(parsed.content.encode("utf-8"))},
-        )
+        with submission_lock:
+            self.require_write_access(state)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(parsed.content, encoding="utf-8")
+            except OSError as exc:
+                return ToolResult.error(f"Error writing {parsed.path}: {exc}")
+            return ToolResult.success(
+                f"Wrote {len(parsed.content.encode('utf-8'))} byte(s) to {path}.",
+                details={"path": str(path), "bytes_written": len(parsed.content.encode("utf-8"))},
+            )
 
     async def edit_tool(
         self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
         """Replace exact UTF-8 text after resolving an assistant-visible path."""
-        self.require_write_access(state)
         parsed = EditFileArgs.model_validate(arguments)
         if not parsed.old_text:
             return ToolResult.error("Error: old_text must not be empty.")
         path = await self.resolve_path(state, parsed.path)
-        try:
-            original = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return ToolResult.error(f"Error reading {parsed.path}: {exc}")
-        count = original.count(parsed.old_text)
-        if count == 0:
-            return ToolResult.error(f"Error: old_text was not found in {path}.")
-        updated = (
-            original.replace(parsed.old_text, parsed.new_text)
-            if parsed.replace_all
-            else original.replace(parsed.old_text, parsed.new_text, 1)
-        )
-        try:
-            path.write_text(updated, encoding="utf-8")
-        except OSError as exc:
-            return ToolResult.error(f"Error writing {parsed.path}: {exc}")
-        changed = count if parsed.replace_all else 1
-        return ToolResult.success(
-            f"Edited {path}; replaced {changed} occurrence(s).",
-            details={"path": str(path), "replacements": changed},
-        )
+        with submission_lock:
+            self.require_write_access(state)
+            try:
+                original = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                return ToolResult.error(f"Error reading {parsed.path}: {exc}")
+            count = original.count(parsed.old_text)
+            if count == 0:
+                return ToolResult.error(f"Error: old_text was not found in {path}.")
+            updated = (
+                original.replace(parsed.old_text, parsed.new_text)
+                if parsed.replace_all
+                else original.replace(parsed.old_text, parsed.new_text, 1)
+            )
+            try:
+                path.write_text(updated, encoding="utf-8")
+            except OSError as exc:
+                return ToolResult.error(f"Error writing {parsed.path}: {exc}")
+            changed = count if parsed.replace_all else 1
+            return ToolResult.success(
+                f"Edited {path}; replaced {changed} occurrence(s).",
+                details={"path": str(path), "replacements": changed},
+            )
 
     @staticmethod
     def require_write_access(state: dict[str, Any]) -> None:
@@ -231,6 +235,10 @@ class AssistantFileTools:
         workspace_id = state.get("workspace_id")
         if db is None or context is None or workspace_id is None:
             raise HTTPException(status_code=403, detail="Assistant file writes require an authenticated workspace")
+        try:
+            ensure_outputs_idle(db, workspace_id, state.get("case_id") if state.get("scope") == AssistantScope.case.value else None)
+        except OutputBusy as exc:
+            raise HTTPException(409, str(exc)) from exc
         if state.get("scope") == AssistantScope.case.value:
             case_id = state.get("case_id")
             if not case_id:
@@ -263,6 +271,9 @@ class AssistantFileTools:
         return schema
 
     async def resolve_path(self, state: dict[str, Any], raw_path: str) -> Path:
+        return self.resolve_path_sync(state, raw_path)
+
+    def resolve_path_sync(self, state: dict[str, Any], raw_path: str) -> Path:
         """Resolve an assistant-visible path to a host path under the data root.
 
         ``/case`` maps to the active case directory. Relative paths resolve

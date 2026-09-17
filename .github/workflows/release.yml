@@ -29,10 +29,10 @@ on:
 
 permissions:
   contents: write
-  packages: write
+  actions: read
 
 concurrency:
-  group: release-${{ github.event_name == 'schedule' && 'beta-main' || format('{0}-{1}', inputs.release_kind, inputs.target_ref) }}
+  group: release-publication
   cancel-in-progress: false
 
 jobs:
@@ -49,12 +49,37 @@ jobs:
         run: git fetch --force --tags origin
 
       - name: Compute release tag
-        id: release
+        if: github.run_attempt == 1
         env:
           RELEASE_KIND: ${{ github.event_name == 'schedule' && 'beta' || inputs.release_kind }}
           RELEASE_DATE: ${{ github.event.inputs.date || '' }}
           RELEASE_CORRECTION: ${{ github.event.inputs.correction || '' }}
-        run: ./scripts/release/compute_tag.sh
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-plan"
+          GITHUB_OUTPUT="$RUNNER_TEMP/release-plan/plan.txt" ./scripts/release/compute_tag.sh
+
+      - name: Save release plan for retries
+        if: github.run_attempt == 1
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-plan/plan.txt
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Restore original release plan
+        if: github.run_attempt > 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name release-plan --dir "$RUNNER_TEMP/release-plan"
+
+      - name: Prepare original release commit
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/publication.py prepare "$RUNNER_TEMP/release-plan/plan.txt"
 
       - name: Skip when there are no new changes
         if: steps.release.outputs.should_release != 'true'
@@ -69,24 +94,24 @@ jobs:
         if: steps.release.outputs.should_release == 'true'
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to GHCR
+      - name: Log in to Docker Hub
         if: steps.release.outputs.should_release == 'true'
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and publish Docker image
+      - name: Build staging Docker image
         id: app_image
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/backend.Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          tags: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: |
             NEUROCADE_VERSION=${{ steps.release.outputs.version }}
           labels: |
@@ -99,26 +124,26 @@ jobs:
           sbom: true
 
       - name: Verify anonymous image access
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           anonymous_config="$RUNNER_TEMP/docker-anonymous"
           mkdir -p "$anonymous_config"
           if ! DOCKER_CONFIG="$anonymous_config" docker pull --platform linux/amd64 "$RELEASE_IMAGE"; then
-            echo "The GHCR package must be public before the GitHub release can be published." >&2
-            echo "Make the neurocade package public in the Deep-MI package settings, then rerun this workflow." >&2
+            echo "The Docker Hub image must be anonymously pullable before the GitHub release can be published." >&2
+            echo "Check that deepmi/neurocade is public on Docker Hub and that Docker Hub pulls are available, then rerun this workflow." >&2
             exit 1
           fi
 
       - name: Install uv and rootless Apptainer
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.8.17"
 
       - name: Install Apptainer
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
           curl -fsSL -o "$RUNNER_TEMP/apptainer.deb" \
             https://github.com/apptainer/apptainer/releases/download/v1.3.6/apptainer_1.3.6_amd64.deb
@@ -127,7 +152,7 @@ jobs:
           sudo apt-get install -y "$RUNNER_TEMP/apptainer.deb"
 
       - name: Build release bridge artifact
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
           bridge_dist="$RUNNER_TEMP/bridge-dist"
           mkdir -p "$bridge_dist"
@@ -140,7 +165,7 @@ jobs:
           echo "BRIDGE_WHEEL_NAME=$bridge_name" >> "$GITHUB_ENV"
 
       - name: Install release bridge
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
           uv venv --python 3.12 "$RUNNER_TEMP/bridge-venv"
           uv pip install --python "$RUNNER_TEMP/bridge-venv/bin/python" "$BRIDGE_WHEEL"
@@ -148,20 +173,23 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bridge-token"
 
       - name: Smoke-test published image
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
+          launch_id="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-docker"
           container=neurocade-release-smoke
           mkdir -p "$RUNNER_TEMP/neurocade-data" "$RUNNER_TEMP/tool-images"
           "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
             --runtime docker --data-root "$RUNNER_TEMP/neurocade-data" --image-dir "$RUNNER_TEMP/tool-images" \
-            --host 0.0.0.0 --port 18765 --token-file "$RUNNER_TEMP/bridge-token" &
+            --host 0.0.0.0 --port 18765 --token-file "$RUNNER_TEMP/bridge-token" \
+            --launch-id "$launch_id" &
           bridge_pid=$!
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true; kill "$bridge_pid" >/dev/null 2>&1 || true' EXIT
           ./scripts/release/wait_for_http.sh http://127.0.0.1:18765/v1/health 30 1 \
-            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")" \
+            "X-NeuroCade-Launch-ID: $launch_id"
           docker run --detach --name "$container" \
             --user "$(id -u):$(id -g)" \
             --add-host host.docker.internal:host-gateway \
@@ -170,6 +198,7 @@ jobs:
             -e DEPLOYMENT_PROFILE=local \
             -e LOCAL_AUTH_ENABLED=true \
             -e HOST_DATA_DIR=/data \
+            -e NEUROCADE_LAUNCH_ID="$launch_id" \
             -e NEUROCADE_RUNTIME=docker \
             -e NEUROCADE_BRIDGE_URL=http://host.docker.internal:18765 \
             -e NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
@@ -203,45 +232,64 @@ jobs:
           test "$(docker exec "$container" printenv NEUROCADE_BUILD_VERSION)" = "$RELEASE_VERSION"
 
       - name: Convert exact release image to application SIF
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE: docker.io/deepmi/neurocade:staging-${{ github.run_id }}-${{ github.run_attempt }}
           RELEASE_DIGEST: ${{ steps.app_image.outputs.digest }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           app_sif="neurocade-app-${RELEASE_VERSION}-amd64.sif"
-          apptainer pull "$app_sif" "docker://${RELEASE_IMAGE}@${RELEASE_DIGEST}"
+          apptainer pull "$app_sif" "docker://${RELEASE_IMAGE%:*}@${RELEASE_DIGEST}"
           sha256sum "$app_sif" > "$app_sif.sha256"
           chmod 0444 "$app_sif"
           echo "APP_SIF=$app_sif" >> "$GITHUB_ENV"
 
       - name: Create and validate Apptainer release manifest
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
+          source_archive="neurocade-source-${RELEASE_VERSION}.tar.gz"
+          git archive --format=tar.gz --prefix="NeuroCade-${RELEASE_VERSION}/" -o "$source_archive" HEAD
+          sha256sum "$source_archive" > "$source_archive.sha256"
+          echo "SOURCE_ARCHIVE=$source_archive" >> "$GITHUB_ENV"
           ./scripts/release/release_manifest.py create \
             --tag "$RELEASE_TAG" \
             --version "$RELEASE_VERSION" \
             --sif "$APP_SIF" \
             --bridge "$BRIDGE_WHEEL_NAME" \
+            --source "$source_archive" \
+            --source-revision "$(git rev-parse HEAD)" \
             --output neurocade-release.json
           ./scripts/release/release_manifest.py read neurocade-release.json
 
       - name: Smoke-test application SIF as non-root
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         run: |
+          launch_id="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-apptainer"
           mkdir -p "$RUNNER_TEMP/sif-data" "$RUNNER_TEMP/sif-images"
+          source ./scripts/lib/env.sh
+          {
+            env_line DEPLOYMENT_PROFILE local
+            env_line LOCAL_AUTH_ENABLED true
+            env_line LOCAL_AUTH_NAME "Local User"
+            env_line LLM_PROVIDER_DEFAULT no-llm
+          } > "$RUNNER_TEMP/apptainer-smoke.env"
+          chmod 600 "$RUNNER_TEMP/apptainer-smoke.env"
           "$RUNNER_TEMP/bridge-venv/bin/neurocade-runtime-bridge" serve \
             --runtime apptainer --data-root "$RUNNER_TEMP/sif-data" --image-dir "$RUNNER_TEMP/sif-images" \
-            --host 127.0.0.1 --port 18766 --token-file "$RUNNER_TEMP/bridge-token" &
+            --host 127.0.0.1 --port 18766 --token-file "$RUNNER_TEMP/bridge-token" \
+            --launch-id "$launch_id" &
           bridge_pid=$!
           ./scripts/release/wait_for_http.sh http://127.0.0.1:18766/v1/health 30 1 \
-            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")"
+            "Authorization: Bearer $(<"$RUNNER_TEMP/bridge-token")" \
+            "X-NeuroCade-Launch-ID: $launch_id"
           apptainer exec --cleanenv --no-home --containall \
+            --env-file "$RUNNER_TEMP/apptainer-smoke.env" \
             --bind "$RUNNER_TEMP/sif-data:/data" \
             --bind "$RUNNER_TEMP/bridge-token:/run/neurocade/bridge-token:ro" \
+            --env NEUROCADE_LAUNCH_ID="$launch_id" \
             --env NEUROCADE_RUNTIME=apptainer \
             --env NEUROCADE_BRIDGE_URL=http://127.0.0.1:18766 \
             --env NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token \
@@ -251,50 +299,12 @@ jobs:
           trap 'kill "$app_pid" "$bridge_pid" >/dev/null 2>&1 || true' EXIT
           ./scripts/release/wait_for_http.sh http://127.0.0.1:18000/api/app/healthz 30 2
 
-      - name: Tag release commit
-        if: steps.release.outputs.should_release == 'true'
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$RELEASE_TAG" -m "NeuroCade $RELEASE_TAG"
-          git push origin "refs/tags/$RELEASE_TAG"
-
-      - name: Publish GitHub release
+      - name: Finish release publication
         if: steps.release.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_KIND: ${{ steps.release.outputs.kind }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_PRERELEASE: ${{ steps.release.outputs.prerelease }}
-        run: |
-          args=(
-            "$RELEASE_TAG"
-            --repo "$GITHUB_REPOSITORY"
-            --generate-notes
-          )
-
-          if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
-            args+=(--title "NeuroCade ${RELEASE_VERSION}" --prerelease --latest=false)
-          else
-            args+=(--title "NeuroCade ${RELEASE_VERSION}" --latest)
-          fi
-
-          gh release create "${args[@]}" \
-            "$APP_SIF" \
-            "$APP_SIF.sha256" \
-            "$BRIDGE_WHEEL" \
-            "$BRIDGE_WHEEL.sha256" \
-            neurocade-release.json
-
-      - name: Publish channel tag
-        if: steps.release.outputs.should_release == 'true'
-        env:
-          RELEASE_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}
-          CHANNEL_IMAGE: ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.prerelease == 'true' && 'beta' || 'latest' }}
-        run: docker buildx imagetools create --tag "$CHANNEL_IMAGE" "$RELEASE_IMAGE"
+          CANDIDATE_DIGEST_IMAGE: docker.io/deepmi/neurocade@${{ steps.app_image.outputs.digest }}
+        run: python3 scripts/release/publication.py publish "$RUNNER_TEMP/release-plan/plan.txt"
 
       - name: Summarize release
         if: steps.release.outputs.should_release == 'true'
@@ -304,7 +314,17 @@ jobs:
             echo
             echo "- Tag: \`${{ steps.release.outputs.tag }}\`"
             echo "- Commit: \`${{ steps.release.outputs.head_sha }}\`"
-            echo "- Docker image: \`ghcr.io/deep-mi/neurocade:${{ steps.release.outputs.tag }}\`"
-            echo "- Application SIF: \`$APP_SIF\`"
+            echo "- Docker image: \`docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}\`"
+            echo "- Application SIF: \`neurocade-app-${{ steps.release.outputs.version }}-amd64.sif\`"
             echo "- Release manifest: \`neurocade-release.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain release recovery
+        if: failure()
+        run: |
+          {
+            echo "## Release interrupted"
+            echo 'Use **Re-run failed jobs** on this run to resume its saved version and source commit.'
+            echo 'If no release-plan artifact was saved, start a new workflow run instead.'
+            echo 'Staging images are not release versions. A partial draft or version tag will be completed on retry.'
           } >> "$GITHUB_STEP_SUMMARY"

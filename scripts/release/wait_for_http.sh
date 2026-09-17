@@ -4,14 +4,13 @@ set -euo pipefail
 URL="${1:?URL is required}"
 ATTEMPTS="${2:-30}"
 DELAY_SECONDS="${3:-1}"
-HEADER="${4:-}"
+HEADERS=()
+for header in "${@:4}"; do
+  [[ -n "$header" ]] && HEADERS+=(-H "$header")
+done
 
 for ((attempt = 1; attempt <= ATTEMPTS; attempt += 1)); do
-  if [[ -n "$HEADER" ]]; then
-    curl -fsS --connect-timeout 2 --max-time 5 -H "$HEADER" "$URL" >/dev/null && exit 0
-  else
-    curl -fsS --connect-timeout 2 --max-time 5 "$URL" >/dev/null && exit 0
-  fi
+  curl -fsS --connect-timeout 2 --max-time 5 "${HEADERS[@]}" "$URL" >/dev/null && exit 0
   sleep "$DELAY_SECONDS"
 done
 

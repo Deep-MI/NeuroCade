@@ -1,3 +1,5 @@
+import { AppPreferencesProvider } from '../components/AppPreferencesProvider';
+import { AgentCaseNavigation } from '../components/AgentCaseNavigation';
 import { ClerkProvider, SignInButton, SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { useEffect, useLayoutEffect, useState, type PropsWithChildren } from 'react';
 import { Navigate, useLocation } from 'react-router';
@@ -31,7 +33,7 @@ function SessionProviderInner({ children, refreshKey = 'dev', enabled = true }: 
 
   return (
     <SessionContext.Provider value={{ session, loading, error, refresh }}>
-      {children}
+      <AppPreferencesProvider key={refreshKey} enabled={enabled}>{children}</AppPreferencesProvider>
     </SessionContext.Provider>
   );
 }
@@ -107,10 +109,10 @@ export function RequireAuth({ children }: PropsWithChildren) {
   const { clerk_publishable_key: publishableKey, local_auth_enabled: localAuthEnabled } = useFrontendConfig();
 
   if (!publishableKey || localAuthEnabled) {
-    return <>{children}</>;
+    return <><AgentCaseNavigation />{children}</>;
   }
 
-  return <ClerkRequireAuth>{children}</ClerkRequireAuth>;
+  return <ClerkRequireAuth><AgentCaseNavigation />{children}</ClerkRequireAuth>;
 }
 
 function ClerkRequireAuth({ children }: PropsWithChildren) {

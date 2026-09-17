@@ -8,6 +8,7 @@ from api_service.deps import get_context, get_db
 from api_service.helpers import log_event
 from api_service.runtime import settings
 from api_service.schemas import FrontendConfig, SessionBootstrap, UserSummary
+from api_service.user_preferences import PreferenceUpdate, UserPreferences, read_preferences, update_preferences
 from backend_common.auth import AuthContext
 from backend_common.case_storage import resolve_workspace_storage
 from backend_common.db import Case, Workspace, WorkspaceMembership
@@ -22,6 +23,7 @@ def frontend_config(response: Response) -> FrontendConfig:
     response.headers["Cache-Control"] = "no-store"
     return FrontendConfig(
         local_auth_enabled=settings.local_auth_enabled,
+        mcp_enabled=settings.mcp_enabled,
         clerk_publishable_key=settings.clerk_publishable_key,
         clerk_jwt_template=settings.clerk_jwt_template,
     )
@@ -82,3 +84,22 @@ def session_bootstrap(
         workspaces=workspaces,
         default_workspace_id=default_workspace_id,
     )
+
+
+@router.get("/preferences", response_model=UserPreferences)
+def user_preferences(
+    response: Response,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> UserPreferences:
+    response.headers["Cache-Control"] = "no-store"
+    return read_preferences(db, context.user.id)
+
+
+@router.patch("/preferences", response_model=UserPreferences)
+def save_user_preferences(
+    payload: PreferenceUpdate,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> UserPreferences:
+    return update_preferences(db, context.user.id, payload)

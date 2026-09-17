@@ -1,4 +1,4 @@
-"""Resolve catalog image strings to shared immutable runtime image specs."""
+"""Resolve catalog image strings to shared policy-managed runtime image specs."""
 
 from __future__ import annotations
 
@@ -17,5 +17,5 @@ def _builtins() -> dict[str, RuntimeImageSpec]:
 
 
 def runtime_image_spec(image: str) -> RuntimeImageSpec:
-    """Return a release-pinned built-in spec or a tagged dynamic OCI spec."""
+    """Return a manifest-managed built-in spec or a tagged dynamic OCI spec."""
     return _builtins().get(image, RuntimeImageSpec(oci_reference=image))

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from neurocade_runtime_tools.container_request import RuntimeBind
 from neurocade_runtime_tools.execution import RuntimeExecutionResult
+from neurocade_runtime_tools.protocol import RuntimeImageSpec
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -20,6 +21,7 @@ from api_service.runtime_tools.workflow_catalog import (  # noqa: E402
     NeuroimagingWorkflow,
     WorkflowExecution,
     WorkflowReturn,
+    _read_workflow_catalog,
     delete_user_workflow,
     inspect_workflow,
     load_workflow_catalog,
@@ -53,14 +55,35 @@ def header_probe_workflow():
             "return_policy": WorkflowReturn(max_stream_chars=4096),
         }
     )
+
+
+def test_builtin_workflow_reports_missing_named_image_pin(tmp_path: Path) -> None:
+    catalog = tmp_path / "workflows.yaml"
+    catalog.write_text(
+        """\
+version: 1
+tools:
+  - id: broken
+    image: "@fastsurfer"
+    description: Broken test workflow.
+    details: Broken test workflow.
+    script: echo test
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Workflow broken references missing image pin: fastsurfer"):
+        _read_workflow_catalog(catalog, image_aliases={})
+
+
 def test_default_catalog_has_fixed_workflows_and_defaults():
     catalog = load_workflow_catalog()
     tools = {tool.id: tool for tool in catalog.tools}
     defaults = WorkflowExecution()
 
     assert set(tools) == {"fastsurfer_full", "fastsurfer_segmentation", "fastsurfer_fast"}
-    assert tools["fastsurfer_full"].neurodesk_image == "vnmd/fastsurfer_2.4.2:20260115"
-    assert tools["fastsurfer_full"].execution.gpu is False
+    assert tools["fastsurfer_full"].neurodesk_image == "vnmd/fastsurfer_2.5.4:latest"
+    assert tools["fastsurfer_full"].execution.gpu is True
     assert tools["fastsurfer_full"].execution.mode == "background"
     for tool_id in ("fastsurfer_full", "fastsurfer_segmentation", "fastsurfer_fast"):
         assert all(output.path != "." for output in tools[tool_id].outputs)
@@ -103,7 +126,7 @@ def test_search_payload_is_compact_and_inspect_is_lazy():
     assert {tool["input_artifact_kind"] for tool in payload} == {"intensity_volume"}
     inspected = inspect_workflow("fastsurfer_full")
     assert "details" in inspected
-    assert inspected["image"] == "vnmd/fastsurfer_2.4.2:20260115"
+    assert inspected["image"] == "vnmd/fastsurfer_2.5.4:latest"
     assert inspected["inputs"][0]["name"] == "t1"
     assert inspected["outputs"][0]["path"] == "fastsurfer_output/mri/aparc.DKTatlas+aseg.deep.mgz"
     assert "script" not in inspected
@@ -203,14 +226,15 @@ def test_background_submission_captures_effective_workflow_definition(monkeypatc
 def test_default_image_manifest_contains_workflows_and_dicom_conversion():
     manifest = load_image_manifest(ROOT / "config" / "tool_images.json")
     assert [spec.image for spec in manifest] == [
-        "vnmd/fastsurfer_2.4.2:20260115",
+        "vnmd/fastsurfer_2.5.4:latest",
         "vnmd/dcm2niix_v1.0.20240202:20260512",
     ]
-    assert all(spec.sif_url and spec.sif_sha256 for spec in manifest)
+    assert manifest[0].oci_digest is None
+    assert manifest[1].oci_digest is not None
 
 
 def test_warm_gpu_capabilities_probes_each_gpu_workflow_image_once(monkeypatch):
-    calls: list[tuple[bool, str | None]] = []
+    calls: list[tuple[bool, object | None]] = []
 
     def fake_resolve(preferred, *, image=None):
         calls.append((preferred, image))
@@ -218,8 +242,15 @@ def test_warm_gpu_capabilities_probes_each_gpu_workflow_image_once(monkeypatch):
 
     monkeypatch.setattr(execution_module, "resolve_gpu_enabled", fake_resolve)
 
-    assert execution_module.warm_workflow_gpu_capabilities() == {}
-    assert calls == []
+    assert execution_module.warm_workflow_gpu_capabilities() == {
+        "vnmd/fastsurfer_2.5.4:latest": True
+    }
+    assert len(calls) == 1
+    assert calls[0][0] is True
+    image = calls[0][1]
+    assert isinstance(image, RuntimeImageSpec)
+    assert image.oci_reference == "vnmd/fastsurfer_2.5.4:latest"
+    assert image.oci_digest is None
 
 
 @pytest.mark.parametrize(

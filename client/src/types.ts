@@ -139,6 +139,8 @@ export interface StatusResponse {
   runId?: string;
   status: string;
   workflowId?: string;
+  errorMessage?: string | null;
+  errorCode?: string | null;
 }
 
 export interface OutputVolume {

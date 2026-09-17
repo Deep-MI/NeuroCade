@@ -125,7 +125,14 @@ class DurableJobStore:
             return run_with_sqlite_lock_retry(db, operation)
 
     def cancel(self, job_id: str) -> bool:
-        return self.mark_terminal(job_id, state="canceled")
+        """Only queued work can be canceled without runtime stop evidence."""
+        with self._session_factory() as db:
+            def operation() -> bool:
+                updated = db.query(BackgroundJob).filter_by(id=job_id, state="queued").update(
+                    {"state": "canceled", "finished_at": datetime.now(UTC), "result_json": {"stopped_before_start": True}}, synchronize_session=False)
+                db.commit()
+                return bool(updated)
+            return run_with_sqlite_lock_retry(db, operation)
 
     def active_jobs(self) -> list[StoredJob]:
         with self._session_factory() as db:
@@ -158,6 +165,7 @@ class DurableJobStore:
                 "ready": ready,
                 "result": row.result_json if ready else None,
                 "error": row.error_message,
+                "stopped_before_start": bool((row.result_json or {}).get("stopped_before_start")) if isinstance(row.result_json, dict) else False,
             }
 
     def queue_status(self, queue_names: set[str] | None = None) -> dict[str, int]:

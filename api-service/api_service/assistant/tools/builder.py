@@ -49,7 +49,10 @@ class AssistantToolBuilder:
         fetches GUI/runtime tools for the active GUI state and adds file and
         catalog tools.
         """
-        catalog_definitions = self.catalog_tools.build_tools(state)
+        from api_service.assistant.tools.inspection_tools import additional_tools
+        from api_service.assistant.tools.navigation_tools import navigation_tools
+        from api_service.documentation.tools import documentation_tools
+        catalog_definitions = [*self.catalog_tools.build_tools(state), *documentation_tools(state), *additional_tools(state), *navigation_tools(state), *self.workspace_tools.build_inspection_tools(state)]
         image_definitions = self.image_tools.build_tools(state)
         probe_definitions = self.probe_tools.build_tools(state)
         file_definitions = self.file_tools.build_tools(state)
@@ -95,15 +98,28 @@ class AssistantToolBuilder:
                     description=str(function.get("description", "")),
                     parameters=dict(function.get("parameters", {})),
                     execute=execute,
-                    risk=ToolRisk.gui,
+                    risk=ToolRisk.read if name in {"case_file_tree", "freesurfer_lut", "read_stats", "gui_list_layers", "gui_command_status"} else ToolRisk.gui,
                 )
             )
         definitions.extend(file_definitions)
-        definitions.extend(self.workspace_tools.build_case_tools(state))
         definitions.extend(image_definitions)
         definitions.extend(probe_definitions)
         definitions.extend(catalog_definitions)
         return definitions, [definition.as_openai_tool() for definition in definitions]
+
+    def discover(self, state: dict[str, Any]) -> list[ToolDefinition]:
+        """Advertise both scopes without selecting or accessing an arbitrary case.
+
+        These definitions are metadata only. Execution always rebuilds the registry
+        against the caller's authorized, explicitly selected scope.
+        """
+        workspace = self.build({**state, "scope": "workspace", "case_id": None})[0]
+        case = self.build({**state, "scope": "case"})[0]
+        result = {tool.name: tool for tool in workspace}
+        for tool in case:
+            if tool.name not in result:
+                result[tool.name] = tool
+        return list(result.values())
 
     def load_gui_state(self, state: dict[str, Any]) -> dict[str, Any]:
         """Return GUI state for case chat, merged with request-time overrides.

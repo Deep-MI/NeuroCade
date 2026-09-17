@@ -1,4 +1,4 @@
-import type { ErrorResponse } from '../../types';
+import { ApiError, decodeApiError } from '../errorMessages';
 
 export const BASE = import.meta.env.VITE_API_URL ?? '/api/app';
 
@@ -58,19 +58,22 @@ export async function appFetch(path: string, init: RequestInit = {}): Promise<Re
   return appFetchUrl(`${BASE}${path}`, init);
 }
 
-export async function parseError(res: Response, fallback: string): Promise<string> {
+async function responseError(res: Response, fallback: string): Promise<ApiError> {
   try {
-    const body = (await res.json()) as ErrorResponse;
-    return body.detail ?? body.error ?? body.message ?? fallback;
+    return decodeApiError(await res.clone().json(), fallback);
   } catch {
     const text = await res.text().catch(() => '');
-    return text || fallback;
+    return new ApiError(text || fallback);
   }
+}
+
+export async function parseError(res: Response, fallback: string): Promise<string> {
+  return (await responseError(res, fallback)).message;
 }
 
 export async function expectOk(res: Response, fallback: string): Promise<void> {
   if (!res.ok) {
-    throw new Error(await parseError(res, fallback));
+    throw await responseError(res, fallback);
   }
 }
 

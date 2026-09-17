@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -423,7 +424,8 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
         db.close()
 
 
-def test_runtime_approval_continues_without_replanning(monkeypatch, tmp_path):
+@pytest.mark.parametrize("require_tool_approval", [True, False])
+def test_runtime_approval_continues_without_replanning(monkeypatch, tmp_path, require_tool_approval):
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(bind=engine)
     db = sessionmaker(bind=engine, expire_on_commit=False)()
@@ -481,6 +483,7 @@ def test_runtime_approval_continues_without_replanning(monkeypatch, tmp_path):
             db=db,
             context=context,
             messages=[{"role": "user", "content": "Write note.txt"}],
+            require_tool_approval=require_tool_approval,
             workspace_id=workspace.id,
             case_id=None,
             scope="workspace",
@@ -488,6 +491,12 @@ def test_runtime_approval_continues_without_replanning(monkeypatch, tmp_path):
             model=None,
             gui_session_id="gui",
         ))
+        if not require_tool_approval:
+            assert "approval_request" not in waiting
+            assert db.query(AssistantTurn).one().status == "completed"
+            assert executions == [{"path": "note.txt"}]
+            assert db.query(AssistantToolExecution).one().status == "succeeded"
+            return
         approval = waiting["approval_request"]
         turn_id = waiting["turn_id"]
         assert executions == []

@@ -15,6 +15,7 @@ import { isCaseTransitionPending } from '../utils/caseLoading';
 import { caseViewerPath } from '../utils/caseRoutes';
 import { createGuiSessionId } from '../utils/guiSession';
 import { workflowStatusNotificationId } from '../utils/runNotifications';
+import type { IsCurrentRequest } from '../utils/casePolling';
 
 
 interface UseCaseWorkspaceControllerArgs {
@@ -46,6 +47,7 @@ export function useCaseWorkspaceController({
   const suppressedRouteCaseRef = useRef<string | null>(null);
   const caseTitlesRef = useRef<Record<string, string>>({});
   const workspaceActionRef = useRef(0);
+  const caseListRequestRef = useRef(0);
 
   const startWorkspaceAction = useCallback(() => {
     workspaceActionRef.current += 1;
@@ -61,10 +63,11 @@ export function useCaseWorkspaceController({
     caseId: currentCaseId,
   };
 
-  const fetchCaseOutputs = useCallback(async (caseId: string, actionId?: number) => {
+  const fetchCaseOutputs = useCallback(async (caseId: string, actionId?: number, isCurrent?: IsCurrentRequest) => {
+    const generation = actionId ?? workspaceActionRef.current;
     try {
       const data = await api.fetchOutputsList(caseId);
-      if (actionId !== undefined && isStaleWorkspaceAction(actionId)) return;
+      if (isStaleWorkspaceAction(generation) || (isCurrent && !isCurrent())) return;
       const dedupedVolumes = dedupeOutputVolumes(data.volumes);
       const inputOptions = dedupedVolumes.filter((volume) => volume.kind === 'volume' && volume.type === 'intensity');
       setRunInputOptions(inputOptions);
@@ -84,8 +87,10 @@ export function useCaseWorkspaceController({
   }, [isStaleWorkspaceAction, setVolumes]);
 
   const fetchAvailableCases = useCallback(async () => {
+    const requestId = ++caseListRequestRef.current;
     try {
       const data = await api.fetchCases(initialWorkspaceId);
+      if (caseListRequestRef.current !== requestId) return;
       setAvailableCases(data.cases);
       const activeCase = currentCaseId ? data.cases.find((caseItem) => caseItem.id === currentCaseId) : null;
       if (activeCase?.title) {
@@ -96,10 +101,11 @@ export function useCaseWorkspaceController({
     }
   }, [currentCaseId, initialWorkspaceId]);
 
-  const fetchLogs = useCallback(async (caseId: string, actionId?: number) => {
+  const fetchLogs = useCallback(async (caseId: string, actionId?: number, isCurrent?: IsCurrentRequest) => {
+    const generation = actionId ?? workspaceActionRef.current;
     try {
       const text = await api.fetchLogs(caseId);
-      if (actionId !== undefined && isStaleWorkspaceAction(actionId)) return;
+      if (isStaleWorkspaceAction(generation) || (isCurrent && !isCurrent())) return;
       setLogs(text);
     } catch (error) {
       console.error('Error fetching logs:', error);
@@ -125,18 +131,22 @@ export function useCaseWorkspaceController({
     setLogs,
     setChatNotifications,
   });
-  const { runId, runStatus, setRunId, setRunStatus } = runController;
+  const { runId, runStatus, setRunId, setRunStatus, setRunError, setRunErrorCode } = runController;
 
-  const setCurrentRun = useCallback((status: string, nextRunId?: string) => {
+  const setCurrentRun = useCallback((status: string, nextRunId?: string, errorMessage?: string | null, errorCode?: string | null) => {
     setRunStatus(status);
     setRunId(nextRunId ?? null);
-  }, [setRunId, setRunStatus]);
+    setRunError(errorMessage ?? null);
+    setRunErrorCode(errorCode ?? null);
+  }, [setRunId, setRunStatus, setRunError, setRunErrorCode]);
 
   const loadCase = useCallback(async (caseId: string) => {
     const actionId = startWorkspaceAction();
     setLoadingCaseId(caseId);
     setRunInputOptions([]);
     setVolumes([]);
+    setLogs('');
+    setCurrentRun('idle');
 
     try {
       await fetchCaseOutputs(caseId, actionId);
@@ -149,7 +159,7 @@ export function useCaseWorkspaceController({
       try {
         const data = await api.fetchStatus(caseId);
         if (isStaleWorkspaceAction(actionId)) return;
-        setCurrentRun(data.status ?? 'unknown', data.runId);
+        setCurrentRun(data.status ?? 'unknown', data.runId, data.errorMessage, data.errorCode);
       } catch {
         if (isStaleWorkspaceAction(actionId)) return;
         setCurrentRun('unknown');
@@ -242,7 +252,7 @@ export function useCaseWorkspaceController({
         await fetchLogs(data.case_id);
         try {
           const status = await api.fetchStatus(data.case_id);
-          setCurrentRun(status.status ?? 'uploaded', status.runId);
+          setCurrentRun(status.status ?? 'uploaded', status.runId, status.errorMessage, status.errorCode);
         } catch {
           setCurrentRun('uploaded');
         }
@@ -269,7 +279,10 @@ export function useCaseWorkspaceController({
     const interval = window.setInterval(() => {
       void fetchAvailableCases();
     }, 300000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      caseListRequestRef.current += 1;
+    };
   }, [fetchAvailableCases]);
 
   useEffect(() => {
@@ -277,10 +290,10 @@ export function useCaseWorkspaceController({
   }, [fetchAnalysisTools]);
 
   useEffect(() => {
-    if (!currentCaseId) return;
+    if (!currentCaseId || isCaseLoading) return;
     const timerId = setTimeout(() => savePersistedCaseLayers(currentCaseId, volumes), 500);
     return () => clearTimeout(timerId);
-  }, [currentCaseId, volumes]);
+  }, [currentCaseId, isCaseLoading, volumes]);
 
   useEffect(() => {
     if (!initialCaseId) {
@@ -292,45 +305,45 @@ export function useCaseWorkspaceController({
     const timerId = window.setTimeout(() => {
       void loadCase(initialCaseId);
     }, 0);
-    return () => window.clearTimeout(timerId);
-  }, [initialCaseId, loadCase]);
+    return () => {
+      window.clearTimeout(timerId);
+      startWorkspaceAction();
+    };
+  }, [initialCaseId, initialWorkspaceId, loadCase, startWorkspaceAction]);
+
+  const pollLogs = useCallback((caseId: string, isCurrent: IsCurrentRequest) => fetchLogs(caseId, undefined, isCurrent), [fetchLogs]);
+  const pollOutputs = useCallback((caseId: string, isCurrent: IsCurrentRequest) => fetchCaseOutputs(caseId, undefined, isCurrent), [fetchCaseOutputs]);
+  const onPollingError = useCallback((error: unknown) => console.error('Polling error:', error), []);
+  const onTerminalStatus = useCallback((status: string, terminalRunId: string, workflowId?: string) => {
+    const workflowName = analysisTools.find((tool) => tool.id === workflowId)?.label ?? workflowId ?? 'Workflow';
+    setChatNotifications((previous) => [...previous, {
+      notificationId: workflowStatusNotificationId(terminalRunId, status),
+      role: 'info', content: `${workflowName} ${status}.`,
+    }]);
+  }, [analysisTools]);
 
   useCasePolling({
-    activeCaseId: currentCaseId,
+    activeCaseId: isCaseLoading ? null : currentCaseId,
     runId,
     runStatus,
     isRunActive,
     fetchStatus: api.fetchStatus,
-    fetchLogs,
-    fetchOutputs: fetchCaseOutputs,
+    fetchLogs: pollLogs,
+    fetchOutputs: pollOutputs,
     onRunChange: setCurrentRun,
-    onTerminalStatus: (status, terminalRunId, workflowId) => {
-      const workflowName = analysisTools.find((tool) => tool.id === workflowId)?.label
-        ?? workflowId
-        ?? 'Workflow';
-      setChatNotifications((previous) => [
-        ...previous,
-        {
-          notificationId: workflowStatusNotificationId(terminalRunId, status),
-          role: 'info',
-          content: `${workflowName} ${status}.`,
-        },
-      ]);
-    },
-    onError: (error) => {
-      console.error('Polling error:', error);
-    },
+    onTerminalStatus,
+    onError: onPollingError,
   });
 
   useEffect(() => {
-    if (!currentCaseId || !isRunTerminal(runStatus)) {
+    if (!currentCaseId || isCaseLoading || !isRunTerminal(runStatus)) {
       return;
     }
     const timerId = window.setTimeout(() => {
       void fetchLogs(currentCaseId);
     }, 0);
     return () => window.clearTimeout(timerId);
-  }, [currentCaseId, fetchLogs, runStatus]);
+  }, [currentCaseId, fetchLogs, isCaseLoading, runStatus]);
 
   const hasUploadedCase = currentCaseId !== null;
   const suggestedCaseName = currentCaseTitle
@@ -349,6 +362,8 @@ export function useCaseWorkspaceController({
     activeCaseId: currentCaseId,
     runStatus,
     isSubmittingRun: runController.isSubmittingRun,
+    runError: runController.runError,
+    runErrorCode: runController.runErrorCode,
     logs,
     chatNotifications,
     availableCases,

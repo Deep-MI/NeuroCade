@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from api_service.artifacts.service import serialize_artifact
+from api_service.runtime_tools.errors import workflow_error_code
 from api_service.schemas import CaseDetail, CaseSummary, RunSummary
 from backend_common.db import Artifact, AssistantThread, Case, RoleEnum, Run
 
@@ -23,6 +24,7 @@ def serialize_run_summary(run: Run) -> RunSummary:
         created_at=run.created_at,
         updated_at=run.updated_at,
         error_message=run.error_message,
+        error_code=(run.result_json or {}).get("error_code") or workflow_error_code(run.error_message),
     )
 
 

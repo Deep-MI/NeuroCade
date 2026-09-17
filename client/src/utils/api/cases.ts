@@ -1,3 +1,4 @@
+import type { RunCancellation } from '../runCancellation';
 import type {
   AnalysisToolSummary,
   ArtifactListItem,
@@ -16,6 +17,8 @@ interface CaseRunItem {
   id: string;
   status: string;
   run_type: string;
+  error_message?: string | null;
+  error_code?: string | null;
 }
 
 interface ApiArtifactListItem {
@@ -63,6 +66,8 @@ export async function fetchStatus(caseId: string): Promise<StatusResponse> {
     runId: latestRun?.id,
     status: latestRun?.status ?? 'uploaded',
     workflowId: latestRun?.run_type,
+    errorMessage: latestRun?.error_message,
+    errorCode: latestRun?.error_code,
   };
 }
 
@@ -319,8 +324,8 @@ export async function addUploadToCase(
   );
 }
 
-export async function cancelCaseRun(caseId: string): Promise<void> {
-  await appOk(`/cases/${encodeURIComponent(caseId)}/cancel`, 'Cancel failed', { method: 'POST' });
+export async function cancelCaseRun(caseId: string): Promise<RunCancellation> {
+  return appJson<RunCancellation>(`/cases/${encodeURIComponent(caseId)}/cancel`, 'Cancel failed', { method: 'POST' });
 }
 
 export async function updateCase(

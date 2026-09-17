@@ -8,6 +8,8 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/lib/env.sh"
 source "$ROOT_DIR/scripts/lib/managed_python.sh"
 source "$ROOT_DIR/scripts/lib/docker_cli.sh"
+source "$ROOT_DIR/scripts/lib/processes.sh"
+source "$ROOT_DIR/scripts/lib/provenance.sh"
 load_env_file
 configure_docker_cli_path
 
@@ -15,6 +17,9 @@ RUNTIME="${NEUROCADE_RUNTIME:-}"
 HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
 [[ "$HOST_DATA_DIR" == /* ]] || HOST_DATA_DIR="$ROOT_DIR/$HOST_DATA_DIR"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
+INSTALL_ID_FILE="$RUNTIME_DIR/install-id"
+INSTALL_ID=""
+[[ -s "$INSTALL_ID_FILE" ]] && INSTALL_ID="$(sed -n '1p' "$INSTALL_ID_FILE")"
 APPTAINER_DATABASE_DIR="$RUNTIME_DIR/database"
 IMAGE_DIR="$RUNTIME_DIR/images"
 BRIDGE_VENV="$RUNTIME_DIR/bridge-venv"
@@ -29,9 +34,12 @@ APP_LOG="$RUNTIME_DIR/app.log"
 APP_URL_FILE="$RUNTIME_DIR/app-url"
 BRIDGE_PORT="${NEUROCADE_BRIDGE_PORT:-8765}"
 HTTP_BIND="${APP_HTTP_BIND:-127.0.0.1}"
+MCP_ENABLED="${NEUROCADE_MCP_ENABLED:-false}"
+MCP_ACCESS="${NEUROCADE_MCP_ACCESS:-standard}"
+MCP_EXPLICIT=0
 HTTP_PORT="${APP_HTTP_PORT:-8000}"
 STARTUP_TIMEOUT_SECONDS="${NEUROCADE_STARTUP_TIMEOUT_SECONDS:-120}"
-IMAGE="${NEUROCADE_IMAGE:-ghcr.io/deep-mi/neurocade:latest}"
+IMAGE="${NEUROCADE_IMAGE:-docker.io/deepmi/neurocade:latest}"
 CONTAINER_NAME="${NEUROCADE_CONTAINER_NAME:-neurocade}"
 DATABASE_VOLUME="${NEUROCADE_DATABASE_VOLUME:-neurocade-database}"
 DOCKER_PLATFORM="${NEUROCADE_DOCKER_PLATFORM:-}"
@@ -39,6 +47,7 @@ APP_SIF_MODE="${NEUROCADE_APP_SIF_MODE:-}"
 APP_SIF="$IMAGE_DIR/neurocade-app-amd64.sif"
 BRIDGE_PACKAGE="${NEUROCADE_BRIDGE_PACKAGE:-$ROOT_DIR/packages/neurocade-runtime-tools}"
 TOOL_MANIFEST="$ROOT_DIR/config/tool_images.json"
+DOCKER_ENV_FILE="$RUNTIME_DIR/docker.env"
 SAMPLE_CASE_DIR="$ROOT_DIR/sample_case"
 SAMPLE_CASE_NAME="${NEUROCADE_SAMPLE_CASE_NAME:-FastSurfer_Rhineland_0000}"
 SAMPLE_CASE_URL="${NEUROCADE_SAMPLE_CASE_URL:-https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.7/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz}"
@@ -49,7 +58,7 @@ usage() {
 Usage: ./scripts/run.sh [start|stop|status|logs|pull|build|prepare-tools|doctor] [options]
 
 NEUROCADE_RUNTIME=docker|apptainer is required and selects both the application
-artifact and the host tool runtime. Start options: -d, --detach, --build, --port PORT.
+artifact and the host tool runtime. Start options: -d, --detach, --build, --port PORT, --mcp, --mcp-access read|standard.
 EOF
 }
 
@@ -100,6 +109,10 @@ ensure_bridge_environment() {
   [[ -e "$BRIDGE_PACKAGE" ]] || fail "The matched runtime bridge package is missing; rerun scripts/install.sh"
   managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$BRIDGE_PACKAGE"
   [[ -x "$BRIDGE_BIN" ]] || fail "Managed runtime bridge installation failed"
+  if [[ "$MCP_ENABLED" == true ]]; then
+    managed_uv pip install --python "$BRIDGE_VENV/bin/python" "$ROOT_DIR/packages/neurocade-mcp"
+    echo "Local agent connector: $BRIDGE_VENV/bin/neurocade-mcp"
+  fi
 }
 
 python_runtime_identity() {
@@ -175,18 +188,6 @@ select_http_port() {
   [[ "$HTTP_PORT" == "$requested" ]] || echo "Port $requested is occupied; using $HTTP_PORT."
 }
 
-pid_matches() {
-  local pid_file="$1" identity="$2" pid command_line owner_uid
-  [[ -f "$pid_file" ]] || return 1
-  pid="$(sed -n '1p' "$pid_file")"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  owner_uid="$(ps -p "$pid" -o uid= 2>/dev/null | tr -d ' ')"
-  [[ "$owner_uid" == "$(id -u)" ]] || return 1
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  [[ "$command_line" == *"$identity"* ]]
-}
-
 bridge_health() {
   [[ -n "${LAUNCH_ID:-}" ]] || return 1
   "$BRIDGE_VENV/bin/python" -c 'import sys,requests; from neurocade_runtime_tools.protocol import PROTOCOL_VERSION; h={"Authorization":"Bearer "+open(sys.argv[2]).read().strip(),"X-NeuroCade-Launch-ID":sys.argv[4]}; r=requests.get(sys.argv[1]+"/v1/health",headers=h,timeout=5); r.raise_for_status(); p=r.json(); expected={"protocol_version":PROTOCOL_VERSION,"backend":sys.argv[3],"launch_id":sys.argv[4],"docker_platform":sys.argv[5] or None,"data_root":sys.argv[6],"image_dir":sys.argv[7]}; raise SystemExit(0 if all(p.get(k)==v for k,v in expected.items()) else 1)' \
@@ -248,24 +249,6 @@ start_bridge() {
   fail "Runtime bridge did not become healthy"
 }
 
-stop_pid_file() {
-  local pid_file="$1" identity="$2" pid deadline
-  pid_matches "$pid_file" "$identity" || { rm -f "$pid_file"; return; }
-  pid="$(sed -n '1p' "$pid_file")"
-  kill -TERM "$pid" 2>/dev/null || true
-  deadline=$((SECONDS + 15))
-  while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 1; done
-  kill -KILL "$pid" 2>/dev/null || true
-  deadline=$((SECONDS + 5))
-  while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 1; done
-  # Keep the PID file while the process survives: it is the only record that
-  # lets a later stop find it again.
-  if kill -0 "$pid" 2>/dev/null; then
-    return 1
-  fi
-  rm -f "$pid_file"
-}
-
 prepare_tools() {
   "$BRIDGE_BIN" prepare-images --runtime "$RUNTIME" --data-root "$HOST_DATA_DIR" --image-dir "$IMAGE_DIR" --manifest "$TOOL_MANIFEST"
 }
@@ -275,7 +258,11 @@ ensure_sample_case() {
   [[ -d "$SAMPLE_CASE_DIR/$SAMPLE_CASE_NAME" ]] && return
   local archive="$RUNTIME_DIR/sample-case.tar.gz"
   "$BRIDGE_BIN" download-verified --url "$SAMPLE_CASE_URL" --sha256 "$SAMPLE_CASE_SHA256" --target "$archive"
-  tar -xzf "$archive" -C "$SAMPLE_CASE_DIR"
+  if tar --help 2>&1 | grep -q -- '--warning'; then
+    tar --warning=no-unknown-keyword -xzf "$archive" -C "$SAMPLE_CASE_DIR"
+  else
+    tar -xzf "$archive" -C "$SAMPLE_CASE_DIR"
+  fi
 }
 
 ensure_application() {
@@ -346,6 +333,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -d|--detach) DETACH=1; shift ;;
     --build) BUILD=1; shift ;;
+    --mcp) MCP_ENABLED=true; MCP_EXPLICIT=1; shift ;;
+    --mcp-access) [[ $# -ge 2 ]] || fail "--mcp-access requires read or standard"; MCP_ACCESS="$2"; MCP_EXPLICIT=1; shift 2 ;;
     --port) [[ $# -ge 2 ]] || fail "--port requires a value"; HTTP_PORT="$2"; shift 2 ;;
     --port=*) HTTP_PORT="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -353,9 +342,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+case "$MCP_ENABLED" in true|1) MCP_ENABLED=true ;; false|0) MCP_ENABLED=false ;; *) fail "NEUROCADE_MCP_ENABLED must be true or false" ;; esac
+case "$MCP_ACCESS" in read|standard) ;; *) fail "MCP access must be read or standard" ;; esac
+if [[ "$MCP_ENABLED" == true ]]; then
+  [[ "${DEPLOYMENT_PROFILE:-local}" == local ]] || fail "MCP is available only in local deployments"
+  [[ "$HTTP_BIND" == 127.0.0.1 || "$HTTP_BIND" == localhost || "$HTTP_BIND" == ::1 ]] || fail "MCP requires loopback host publication"
+elif [[ "$MCP_EXPLICIT" == 1 ]]; then
+  fail "--mcp-access requires --mcp or NEUROCADE_MCP_ENABLED=true"
+fi
 validate_configuration
 ensure_directories
 source "$ROOT_DIR/scripts/lib/runtime_${RUNTIME}.sh"
+source "$ROOT_DIR/scripts/lib/mcp.sh"
 case "$COMMAND" in start|stop|doctor|prepare-tools|pull) acquire_launcher_lock ;; esac
 
 case "$COMMAND" in
@@ -370,6 +368,7 @@ case "$COMMAND" in
     ensure_token
     load_launch_id
     [[ -n "$LAUNCH_ID" ]] || new_launch_id
+    mcp_status
     report_managed_toolchain
     "$BRIDGE_BIN" doctor --runtime "$RUNTIME" --data-root "$HOST_DATA_DIR" --image-dir "$IMAGE_DIR"
     BRIDGE_WAS_RUNNING=0
@@ -390,9 +389,13 @@ case "$COMMAND" in
     # leaves a state no later command can repair.
     stop_application || fail "NeuroCade could not be stopped; the launch session was kept so it can be stopped again"
     stop_bridge || fail "The runtime bridge could not be stopped; the launch session was kept so it can be stopped again"
-    rm -f "$LAUNCH_ID_FILE"
+    rm -f "$LAUNCH_ID_FILE" "$RUNTIME_DIR/mcp.json"
     ;;
   status)
+    installed_version="$(provenance_value "$ROOT_DIR" version)"
+    installed_revision="$(provenance_value "$ROOT_DIR" source_revision)"
+    [[ -z "$installed_version" ]] || echo "Installed release: $installed_version (${installed_revision:0:12})"
+    mcp_status
     load_launch_id
     if bridge_health; then echo "Runtime bridge: running"; else echo "Runtime bridge: stopped"; fi
     if runtime_application_running && application_health; then
@@ -415,6 +418,7 @@ case "$COMMAND" in
     ensure_sample_case
     load_launch_id
     if runtime_application_running && application_health; then
+      mcp_check_existing || exit 1
       start_bridge
       print_browser_url "$(application_url)"
       exit 0
@@ -425,7 +429,7 @@ case "$COMMAND" in
     stop_application || fail "A previous NeuroCade application could not be stopped; resolve it before restarting"
     prepare_tools
     start_bridge
-    rm -f "$APP_URL_FILE"
+    rm -f "$APP_URL_FILE" "$RUNTIME_DIR/mcp.json"
     select_http_port
     write_application_url
     if [[ "$DETACH" -eq 0 ]]; then
@@ -434,7 +438,25 @@ case "$COMMAND" in
       release_launcher_lock
       trap - EXIT
     fi
+    MCP_LAUNCHER_PID=$$
+    if [[ "$DETACH" -eq 0 && "$MCP_ENABLED" == true ]]; then
+      trap 'stop_application; stop_bridge; rm -f "$RUNTIME_DIR/mcp.json"; exit 1' USR1
+    fi
+    (
+      if ! publish_mcp_descriptor; then
+        if [[ "$DETACH" -eq 0 ]]; then kill -USR1 "$MCP_LAUNCHER_PID"; fi
+        exit 1
+      fi
+    ) &
+    MCP_DISCOVERY_PID=$!
     runtime_start_application
-    if [[ "$DETACH" -eq 1 ]]; then wait_for_application; print_browser_url "$(sed -n '1p' "$APP_URL_FILE")"; fi
+    if [[ "$DETACH" -eq 1 ]]; then
+      wait_for_application
+      wait "$MCP_DISCOVERY_PID"
+      print_browser_url "$(sed -n '1p' "$APP_URL_FILE")"
+    else
+      kill "$MCP_DISCOVERY_PID" >/dev/null 2>&1 || true
+      rm -f "$RUNTIME_DIR/mcp.json"
+    fi
     ;;
 esac

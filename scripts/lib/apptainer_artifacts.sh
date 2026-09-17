@@ -2,6 +2,7 @@
 # shellcheck shell=bash
 
 NEUROCADE_RELEASE_MANIFEST_URL="${NEUROCADE_RELEASE_MANIFEST_URL:-https://github.com/Deep-MI/NeuroCade/releases/latest/download/neurocade-release.json}"
+NEUROCADE_RELEASES_API_URL="${NEUROCADE_RELEASES_API_URL:-https://api.github.com/repos/Deep-MI/NeuroCade/releases?per_page=100}"
 
 download_release_file() {
   local url="$1" target="$2" temporary
@@ -30,19 +31,49 @@ verify_release_file() {
 }
 
 install_latest_apptainer_release() {
-  local root="$1" python_bin="$2" release_dir manifest
+  local root="$1" python_bin="$2" selector="${3:-stable}" release_dir manifest releases
   release_dir="$root/.runtime/release"
   manifest="$release_dir/neurocade-release.json"
+  releases="$release_dir/github-releases.json"
   local -a values=()
   local tag version sif_name sif_checksum_name bridge_name bridge_checksum_name release_base
-  local sif_checksum bridge_checksum
+  local sif_checksum bridge_checksum resolved_tag prerelease
 
   command -v curl >/dev/null 2>&1 || { echo "curl is required to download the NeuroCade release." >&2; return 1; }
   command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required to verify the NeuroCade release." >&2; return 1; }
   mkdir -p "$release_dir" "$root/.runtime/images"
-  if ! download_release_file "$NEUROCADE_RELEASE_MANIFEST_URL" "$manifest"; then
-    echo "No stable NeuroCade release with Apptainer artifacts was found." >&2
-    echo "Publish a release or rerun with --build-from-source (requires Docker)." >&2
+  if [[ "$selector" == "stable" ]] && download_release_file "$NEUROCADE_RELEASE_MANIFEST_URL" "$manifest" 2>/dev/null; then
+    :
+  elif [[ "$selector" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]; then
+    download_release_file \
+      "https://github.com/Deep-MI/NeuroCade/releases/download/$selector/neurocade-release.json" "$manifest" || {
+      echo "NeuroCade release $selector has no compatible Apptainer artifacts." >&2
+      return 1
+    }
+  elif [[ "$selector" == "stable" || "$selector" == "beta" ]]; then
+    if ! download_release_file "$NEUROCADE_RELEASES_API_URL" "$releases"; then
+      echo "Could not query NeuroCade releases for Apptainer artifacts." >&2
+      echo "Retry later or add --runtime docker to use Docker instead." >&2
+      return 1
+    fi
+    local -a resolved=()
+    while IFS= read -r value; do resolved+=("$value"); done < <(
+      "$python_bin" "$root/scripts/release/release_manifest.py" resolve "$releases" --channel "$selector"
+    )
+    [[ "${#resolved[@]}" -eq 2 ]] || {
+      echo "No compatible NeuroCade $selector release with Apptainer artifacts was found." >&2
+      echo "Use --runtime docker, or rerun with --build-from-source (requires Docker)." >&2
+      return 1
+    }
+    resolved_tag="${resolved[0]}"
+    prerelease="${resolved[1]}"
+    if [[ "$selector" == "stable" && "$prerelease" == "true" ]]; then
+      echo "No compatible stable Apptainer release was found; using $resolved_tag instead." >&2
+    fi
+    download_release_file \
+      "https://github.com/Deep-MI/NeuroCade/releases/download/$resolved_tag/neurocade-release.json" "$manifest" || return 1
+  else
+    echo "Invalid Apptainer release selector: $selector" >&2
     return 1
   fi
   while IFS= read -r value; do values+=("$value"); done < <("$python_bin" "$root/scripts/release/release_manifest.py" read "$manifest")

@@ -1,0 +1,19 @@
+{
+  "name": "neurocade",
+  "version": "1.0.0",
+  "description": "Upload scans, prepare confirmed analyses and download results from your local NeuroCade workspace.",
+  "author": {
+    "name": "NeuroCade"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "NeuroCade",
+    "shortDescription": "Connect to your local neuroimaging workspace.",
+    "longDescription": "Uses your paired NeuroCade workspace and its existing local connector. Includes shared assistant tools, scan upload and result download. Keep NeuroCade running on this computer. Requested information may be sent to your assistant provider.",
+    "developerName": "NeuroCade",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Check my NeuroCade connection and available cases. Confirm the case, input scan and analysis with me before running."
+  },
+  "mcpServers": "./.mcp.json"
+}

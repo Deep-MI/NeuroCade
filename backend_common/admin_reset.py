@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import shutil
+from contextlib import suppress
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from backend_common.case_storage import delete_case_storage, workspace_storage_dir
+from backend_common.case_storage import case_storage_dir, workspace_storage_dir
 from backend_common.db import (
     Artifact,
     AssistantMessage,
@@ -21,7 +21,11 @@ from backend_common.db import (
     Workspace,
     WorkspaceMembership,
 )
+from backend_common.mcp_lifecycle import purge_workspace_clients, reserve_scope_deletion, tombstone_case_invocations
+from backend_common.output_activity import ensure_outputs_idle
 from backend_common.sample_seed import ensure_sample_case, sample_case_id_for_workspace
+from backend_common.storage_transactions import stage_deletion_for_transaction
+from backend_common.submission_lock import serialize_submission
 from backend_common.workspace_bootstrap import ensure_personal_workspace
 
 
@@ -31,34 +35,22 @@ class ResetCounts:
     cases_deleted: int = 0
 
 
-def _remove_workspace_storage_root(settings, workspace: Workspace) -> None:
-    """Delete the on-disk storage tree for a workspace if it exists."""
-    workspace_root = workspace_storage_dir(settings, workspace.id)
-    if workspace_root.exists():
-        shutil.rmtree(workspace_root)
-
-
 def _assistant_thread_ids_for_case(db: Session, case_id: str) -> list[str]:
     """Return assistant thread IDs associated with a case."""
-    return [
-        thread_id
-        for (thread_id,) in db.query(AssistantThread.id)
-        .filter(AssistantThread.case_id == case_id)
-        .all()
-    ]
+    return [thread_id for (thread_id,) in db.query(AssistantThread.id).filter(AssistantThread.case_id == case_id).all()]
 
 
+@serialize_submission
 def purge_case(db: Session, settings, case: Case, workspace: Workspace | None) -> None:
     """Delete a case and its storage, artifacts, runs, and assistant data."""
+    reserve_scope_deletion(db)
+    ensure_outputs_idle(db, case.workspace_id, case.id)
     if workspace is not None:
-        delete_case_storage(settings, case, workspace)
+        with suppress(FileNotFoundError):
+            stage_deletion_for_transaction(db, case_storage_dir(settings, workspace.id, case.id), settings.outputs_dir / ".trash" / "admin")
+    tombstone_case_invocations(db, case.id)
 
-    artifact_ids = [
-        artifact_id
-        for (artifact_id,) in db.query(Artifact.id)
-        .filter(Artifact.case_id == case.id)
-        .all()
-    ]
+    artifact_ids = [artifact_id for (artifact_id,) in db.query(Artifact.id).filter(Artifact.case_id == case.id).all()]
     assistant_thread_ids = _assistant_thread_ids_for_case(db, case.id)
     if assistant_thread_ids:
         db.query(AssistantMessage).filter(AssistantMessage.thread_id.in_(assistant_thread_ids)).delete(synchronize_session=False)
@@ -79,25 +71,18 @@ def purge_case(db: Session, settings, case: Case, workspace: Workspace | None) -
     db.flush()
 
 
+@serialize_submission
 def purge_workspace(db: Session, settings, workspace: Workspace) -> ResetCounts:
     """Delete a workspace and all database and storage records owned by it."""
+    reserve_scope_deletion(db)
+    ensure_outputs_idle(db, workspace.id)
     counts = ResetCounts()
-    cases = (
-        db.query(Case)
-        .filter(Case.workspace_id == workspace.id)
-        .order_by(Case.created_at.asc(), Case.id.asc())
-        .all()
-    )
+    cases = db.query(Case).filter(Case.workspace_id == workspace.id).order_by(Case.created_at.asc(), Case.id.asc()).all()
     for case in cases:
         purge_case(db, settings, case, workspace)
         counts.cases_deleted += 1
 
-    workspace_artifact_ids = [
-        artifact_id
-        for (artifact_id,) in db.query(Artifact.id)
-        .filter(Artifact.workspace_id == workspace.id)
-        .all()
-    ]
+    workspace_artifact_ids = [artifact_id for (artifact_id,) in db.query(Artifact.id).filter(Artifact.workspace_id == workspace.id).all()]
     if workspace_artifact_ids:
         db.query(AuditEvent).filter(AuditEvent.artifact_id.in_(workspace_artifact_ids)).delete(synchronize_session=False)
         db.query(CaseEvent).filter(CaseEvent.artifact_id.in_(workspace_artifact_ids)).delete(synchronize_session=False)
@@ -108,7 +93,9 @@ def purge_workspace(db: Session, settings, workspace: Workspace) -> ResetCounts:
     db.query(Run).filter(Run.workspace_id == workspace.id).delete(synchronize_session=False)
     db.query(AssistantThread).filter(AssistantThread.workspace_id == workspace.id).delete(synchronize_session=False)
     db.query(WorkspaceMembership).filter(WorkspaceMembership.workspace_id == workspace.id).delete(synchronize_session=False)
-    _remove_workspace_storage_root(settings, workspace)
+    purge_workspace_clients(db, workspace.id)
+    with suppress(FileNotFoundError):
+        stage_deletion_for_transaction(db, workspace_storage_dir(settings, workspace.id), settings.outputs_dir / ".trash" / "admin")
     db.delete(workspace)
     db.flush()
 

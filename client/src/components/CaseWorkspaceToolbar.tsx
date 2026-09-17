@@ -1,4 +1,5 @@
-import { ArrowLeft, Download, FileUp, Folder, Layers, LoaderCircle, MessageSquare, Moon, Play, Square, Sun, TerminalSquare } from 'lucide-react';
+import { AppSettingsMenu } from './AppSettingsMenu';
+import { ArrowLeft, Download, FileUp, Folder, Layers, LoaderCircle, MessageSquare, Play, Square, TerminalSquare } from 'lucide-react';
 
 import { isRunActive } from '../constants';
 import type { AnalysisToolSummary } from '../types';
@@ -11,7 +12,6 @@ interface CaseWorkspaceToolbarProps {
   hasCase: boolean;
   layerPanelOpen: boolean;
   rightPanel: WorkspaceRightPanel;
-  isLight: boolean;
   runStatus: string;
   isSubmittingRun: boolean;
   analysisTools: AnalysisToolSummary[];
@@ -25,7 +25,6 @@ interface CaseWorkspaceToolbarProps {
   onAnalyze: () => void;
   onCancel: () => void;
   onToggleRightPanel: (panel: Exclude<WorkspaceRightPanel, null>) => void;
-  onToggleTheme: () => void;
 }
 
 export function CaseWorkspaceToolbar(props: CaseWorkspaceToolbarProps) {
@@ -66,7 +65,7 @@ export function CaseWorkspaceToolbar(props: CaseWorkspaceToolbarProps) {
       </div>
       <button type="button" onClick={() => props.onToggleRightPanel('chat')} className={`nc-btn ${props.rightPanel === 'chat' ? 'nc-btn-active' : ''}`}><MessageSquare size={13} /><span className="hidden lg:inline">Chat</span></button>
       <button type="button" onClick={() => props.onToggleRightPanel('results')} className={`nc-btn ${props.rightPanel === 'results' ? 'nc-btn-active' : ''}`}><TerminalSquare size={13} /><span className="hidden lg:inline">Terminal</span></button>
-      <button type="button" onClick={props.onToggleTheme} className="nc-btn nc-icon-btn" title={props.isLight ? 'Switch to dark mode' : 'Switch to light mode'}>{props.isLight ? <Moon size={14} /> : <Sun size={14} />}</button>
+      <AppSettingsMenu />
     </div>
   );
 }

@@ -6,7 +6,10 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow
 
 from api_service.assistant.approval_contracts import AssistantApprovalPresentation
 
@@ -105,6 +108,7 @@ class ToolDefinition:
     parameters: dict[str, Any]
     execute: Callable[[ToolExecutionContext, dict[str, Any]], Awaitable[ToolResult]]
     risk: ToolRisk = ToolRisk.read
+    creates_run: bool = False
     parallel_safe: bool = False
     approval_presentation: ApprovalPresenter | None = None
 
@@ -131,3 +135,5 @@ class ToolExecutionContext:
     turn_id: str | None = None
     execution_id: str | None = None
     external_run_id: str | None = None
+    workflow_snapshot: str | None = None
+    validate_submission: Callable[[NeuroimagingWorkflow], None] | None = None

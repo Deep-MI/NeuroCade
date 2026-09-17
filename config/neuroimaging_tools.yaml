@@ -2,7 +2,7 @@ version: 1
 
 tools:
   - id: fastsurfer_full
-    image: vnmd/fastsurfer_2.4.2:20260115
+    image: "@fastsurfer"
     case_output_folder: fastsurfer_output
     description: Run complete FastSurfer segmentation and surface reconstruction.
     details: |
@@ -14,6 +14,9 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        modalities: [MR]
+        dimensions: [3]
+        sequences: [T1]
     outputs:
       - name: whole_brain_segmentation
         type: segmentation_volume
@@ -144,7 +147,7 @@ tools:
         metadata: {layer_role: surface-annotation, surface_format: freesurfer-annot, hemisphere: rh}
     execution:
       mode: background
-      gpu: false
+      gpu: true
       queue: fastsurfer
     ui:
       label: FastSurfer — Full
@@ -158,7 +161,7 @@ tools:
         --viewagg_device "${DEVICE}"
 
   - id: fastsurfer_segmentation
-    image: vnmd/fastsurfer_2.4.2:20260115
+    image: "@fastsurfer"
     case_output_folder: fastsurfer_output
     description: Run FastSurfer segmentation without cortical surface reconstruction.
     details: |
@@ -169,6 +172,9 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        modalities: [MR]
+        dimensions: [3]
+        sequences: [T1]
     outputs:
       - name: whole_brain_segmentation
         type: segmentation_volume
@@ -223,7 +229,7 @@ tools:
         metadata: {lut: binary, visible: false}
     execution:
       mode: background
-      gpu: false
+      gpu: true
       queue: fastsurfer
     ui:
       label: FastSurfer — Segmentation
@@ -238,7 +244,7 @@ tools:
         --viewagg_device "${DEVICE}"
 
   - id: fastsurfer_fast
-    image: vnmd/fastsurfer_2.4.2:20260115
+    image: "@fastsurfer"
     case_output_folder: fastsurfer_output
     description: Run the minimal FastSurfer whole-brain segmentation workflow.
     details: |
@@ -250,6 +256,9 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        modalities: [MR]
+        dimensions: [3]
+        sequences: [T1]
     outputs:
       - name: whole_brain_segmentation
         type: segmentation_volume
@@ -276,7 +285,7 @@ tools:
         metadata: {lut: freesurfer, visible: false}
     execution:
       mode: background
-      gpu: false
+      gpu: true
       queue: fastsurfer
     ui:
       label: FastSurfer — Fast

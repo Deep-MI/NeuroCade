@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from neurocade_runtime_tools.images import is_version_scoped_neurodesk_image
 from pydantic import BaseModel, Field
 
 from backend_common.settings import ROOT_DIR, get_settings
@@ -224,7 +225,15 @@ def validate_catalog_image(image: str, *, settings: Any | None = None) -> str:
     """Validate a dynamic catalog image before the host bridge prepares it."""
     if image.startswith("vnmd/"):
         loaded = load_image_catalog(settings=settings)
-        if find_image_by_reference(loaded.catalog, image) is None:
+        known = find_image_by_reference(loaded.catalog, image) is not None
+        if not known and is_version_scoped_neurodesk_image(image):
+            repository = image.removeprefix("vnmd/").removesuffix(":latest")
+            family, version = repository.rsplit("_", 1)
+            known = any(
+                item.family == family and item.version == version
+                for item in loaded.catalog.images
+            )
+        if not known:
             raise ValueError(f"Unknown NeuroDesk image: {image}")
     return image
 

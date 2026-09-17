@@ -3,8 +3,9 @@
 set -euo pipefail
 
 ARCHIVE_URL="${NEUROCADE_ARCHIVE_URL:-https://github.com/Deep-MI/NeuroCade/archive/refs/heads/main.tar.gz}"
+RELEASE_MANIFEST_URL="${NEUROCADE_RELEASE_MANIFEST_URL:-https://github.com/Deep-MI/NeuroCade/releases/latest/download/neurocade-release.json}"
 DEFAULT_INSTALL_DIR="${NEUROCADE_INSTALL_DIR:-$HOME/NeuroCade}"
-DEFAULT_IMAGE="ghcr.io/deep-mi/neurocade:latest"
+DEFAULT_IMAGE="docker.io/deepmi/neurocade:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
 
 usage() {
@@ -23,7 +24,11 @@ Options:
                                   Apptainer on Linux when available.
   --mode local|internal|demo      Deployment profile. Default: local.
   --llm-provider NAME             openai-compatible, anthropic, google, ollama, or no-llm.
-  --image IMAGE                   Published image tag or digest. Default: ghcr.io/deep-mi/neurocade:latest.
+  --image IMAGE                   Published image tag or digest. Docker only.
+                                  When omitted, Docker builds this checkout under
+                                  an installation-specific local image tag.
+  --version stable|beta|TAG       Apptainer release channel or exact v-prefixed tag.
+                                  Default: stable, falling back to the newest compatible release.
   --build-from-source             Build Docker from this checkout and convert it
                                   to an Apptainer SIF. Requires Docker.
   --bridge-port PORT              Host bridge port. Default: 8765.
@@ -31,6 +36,44 @@ Options:
   --yes                           Noninteractive: preserve configured values and accept defaults.
   --help                          Show this help.
 EOF
+}
+
+bootstrap_release_source() {
+  local tmp_dir="$1" selector="${2:-stable}" manifest manifest_url releases release_values tag source checksum base digest expected
+  manifest="$tmp_dir/neurocade-release.json"
+  case "$selector" in
+    stable) manifest_url="$RELEASE_MANIFEST_URL" ;;
+    beta)
+      releases="$tmp_dir/releases.json"
+      curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$releases" \
+        "${NEUROCADE_RELEASES_API_URL:-https://api.github.com/repos/Deep-MI/NeuroCade/releases?per_page=100}"
+      tag="$(python3 -c 'import json,re,sys; releases=json.load(open(sys.argv[1]));
+for item in releases:
+ assets=item.get("assets",[]) if isinstance(item,dict) else []
+ if item.get("draft") is False and item.get("prerelease") is True and re.fullmatch(r"v[0-9][A-Za-z0-9._-]*",item.get("tag_name","")) and any(a.get("name")=="neurocade-release.json" for a in assets if isinstance(a,dict)): print(item["tag_name"]); break
+else: raise SystemExit(1)' "$releases")" || { echo "No compatible NeuroCade beta release was found." >&2; exit 1; }
+      manifest_url="https://github.com/Deep-MI/NeuroCade/releases/download/$tag/neurocade-release.json"
+      ;;
+    v*) manifest_url="https://github.com/Deep-MI/NeuroCade/releases/download/$selector/neurocade-release.json" ;;
+    *) echo "Invalid bootstrap release selector: $selector" >&2; exit 2 ;;
+  esac
+  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$manifest" "$manifest_url"
+  release_values="$(python3 -c 'import json,re,sys; p=json.load(open(sys.argv[1])); a=p.get("source_archive",{}); ok=lambda v: isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",v); assert p.get("schema_version")==1 and re.fullmatch(r"v[0-9][A-Za-z0-9._-]*",p.get("tag","")) and ok(a.get("filename")) and ok(a.get("sha256_filename")) and a["sha256_filename"]==a["filename"]+".sha256"; print(p["tag"],a["filename"],a["sha256_filename"],sep="\n")' "$manifest")" || {
+    echo "The latest NeuroCade release does not support verified source installation." >&2; exit 1;
+  }
+  tag="$(printf '%s\n' "$release_values" | sed -n '1p')"
+  source="$(printf '%s\n' "$release_values" | sed -n '2p')"
+  checksum="$(printf '%s\n' "$release_values" | sed -n '3p')"
+  base="https://github.com/Deep-MI/NeuroCade/releases/download/$tag"
+  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$tmp_dir/$source" "$base/$source"
+  curl --fail --location --silent --show-error --retry 4 --retry-all-errors -o "$tmp_dir/$checksum" "$base/$checksum"
+  expected="$(awk 'NR == 1 {print tolower($1)}' "$tmp_dir/$checksum")"
+  if command -v sha256sum >/dev/null 2>&1; then digest="$(sha256sum "$tmp_dir/$source" | awk '{print $1}')"; else digest="$(shasum -a 256 "$tmp_dir/$source" | awk '{print $1}')"; fi
+  [[ "$expected" =~ ^[0-9a-f]{64}$ && "$digest" == "$expected" ]] || { echo "NeuroCade source checksum verification failed." >&2; exit 1; }
+  python3 -c 'import pathlib,sys,tarfile; a,d=sys.argv[1:]; t=tarfile.open(a,"r:gz"); m=t.getmembers(); roots=set();
+for x in m:
+ p=pathlib.PurePosixPath(x.name); assert p.parts and not p.is_absolute() and ".." not in p.parts and not x.isdev() and not x.isfifo() and not x.islnk() and not x.issym(); roots.add(p.parts[0])
+assert len(roots)==1; t.extractall(d); print(pathlib.Path(d)/roots.pop())' "$tmp_dir/$source" "$tmp_dir"
 }
 
 bootstrap_checkout() {
@@ -45,25 +88,103 @@ bootstrap_checkout() {
   [[ -f "$SCRIPT_DIR/run.sh" ]] && return 0
   command -v curl >/dev/null 2>&1 || { echo "curl is required to download NeuroCade." >&2; exit 1; }
   command -v tar >/dev/null 2>&1 || { echo "tar is required to unpack NeuroCade." >&2; exit 1; }
+  command -v python3 >/dev/null 2>&1 || { echo "Python 3 is required to verify NeuroCade releases." >&2; exit 1; }
   local install_dir="$DEFAULT_INSTALL_DIR"
+  local bootstrap_selector="stable" arg previous_arg=""
+  for arg in "$@"; do
+    if [[ "$previous_arg" == --version ]]; then
+      bootstrap_selector="$arg"
+      previous_arg=""
+      continue
+    fi
+    case "$arg" in
+      --version) previous_arg=--version ;;
+      --version=*) bootstrap_selector="${arg#*=}" ;;
+    esac
+  done
+  [[ -z "$previous_arg" ]] || { echo "--version requires a value." >&2; exit 2; }
+  [[ "$bootstrap_selector" == stable || "$bootstrap_selector" == beta || "$bootstrap_selector" =~ ^v[0-9][A-Za-z0-9._-]*$ ]] || {
+    echo "Invalid release selector: $bootstrap_selector" >&2; exit 2;
+  }
   if [[ -t 0 && -t 1 ]]; then
-    read -r -p "Install directory [$DEFAULT_INSTALL_DIR]: " install_dir
+    if ! read -r -p "Install directory [$DEFAULT_INSTALL_DIR]: " install_dir; then
+      install_dir=""
+    fi
     install_dir="${install_dir:-$DEFAULT_INSTALL_DIR}"
   fi
+  echo "Installing NeuroCade to $install_dir"
   if [[ -d "$install_dir/.git" ]]; then
     exec bash "$install_dir/scripts/install.sh" "$@"
   fi
-  if [[ -f "$install_dir/scripts/install.sh" ]]; then
-    exec bash "$install_dir/scripts/install.sh" "$@"
+  if [[ -f "$install_dir/scripts/install.sh" && -f "$install_dir/.runtime/runtime-root-owned" ]]; then
+    local update_tmp source_root update_option=()
+    local -a allowed_update_args=("$@")
+    local index=0
+    while (( index < ${#allowed_update_args[@]} )); do
+      case "${allowed_update_args[index]}" in
+        --yes|-y) index=$((index + 1)) ;;
+        --version) index=$((index + 2)) ;;
+        --version=*) index=$((index + 1)) ;;
+        *) echo "Archive updates do not accept installer option ${allowed_update_args[index]}; use scripts/update.sh without changing runtime or startup behavior." >&2; exit 2 ;;
+      esac
+    done
+    update_tmp="$(mktemp -d)"
+    source_root="$(bootstrap_release_source "$update_tmp" "$bootstrap_selector")"
+    if [[ "$bootstrap_selector" == beta ]]; then update_option=(--channel beta); elif [[ "$bootstrap_selector" == v* ]]; then update_option=(--version "$bootstrap_selector"); fi
+    set +e
+    env NEUROCADE_INSTALL_DIR="$install_dir" bash "$source_root/scripts/update.sh" \
+      --bootstrap-staged "$update_tmp/$(basename "$(find "$update_tmp" -maxdepth 1 -name 'neurocade-source-*.tar.gz' -print -quit)")" \
+      "$update_tmp/neurocade-release.json" "${update_option[@]+"${update_option[@]}"}" --yes
+    local update_status=$?
+    rm -rf "$update_tmp"
+    exit "$update_status"
+  elif [[ -f "$install_dir/scripts/install.sh" ]]; then
+    echo "Existing NeuroCade directory is not marked as installer-owned: $install_dir" >&2
+    exit 1
   fi
-  [[ ! -e "$install_dir" ]] || { echo "Install path exists and is not a NeuroCade checkout: $install_dir" >&2; exit 1; }
-  local tmp_dir
+  if [[ -L "$install_dir" || ( -e "$install_dir" && ! -d "$install_dir" ) ]]; then
+    echo "Install path exists and is not a directory: $install_dir" >&2
+    exit 1
+  fi
+  local existing_empty_dir=0
+  if [[ -d "$install_dir" ]]; then
+    if [[ -n "$(find "$install_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      echo "Install path exists and is not an empty directory or NeuroCade checkout: $install_dir" >&2
+      exit 1
+    fi
+    existing_empty_dir=1
+  fi
+  local tmp_dir source_root
   tmp_dir="$(mktemp -d)"
-  curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$tmp_dir"
+  for arg in "$@"; do
+    [[ "$arg" != --image && "$arg" != --image=* ]] || {
+      echo "Remote archive installs cannot verify a separately selected Docker image. Install the matched source build, then use scripts/update.sh --channel stable|beta." >&2
+      exit 2
+    }
+  done
+  if [[ -n "${NEUROCADE_ARCHIVE_URL+x}" ]]; then
+    curl --fail --location --silent --show-error --retry 4 --retry-all-errors "$ARCHIVE_URL" | tar -xz -C "$tmp_dir"
+    source_root="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  else
+    source_root="$(bootstrap_release_source "$tmp_dir" "$bootstrap_selector")"
+  fi
   mkdir -p "$(dirname "$install_dir")"
-  mv "$tmp_dir"/* "$install_dir"
-  rmdir "$tmp_dir"
-  exec bash "$install_dir/scripts/install.sh" "$@"
+  if [[ "$existing_empty_dir" -eq 1 ]]; then
+    rmdir "$install_dir"
+  fi
+  mv "$source_root" "$install_dir"
+  local bootstrap_values bootstrap_version bootstrap_revision
+  bootstrap_values="$(python3 "$install_dir/scripts/release/release_manifest.py" read-update "$tmp_dir/neurocade-release.json" 2>/dev/null || true)"
+  bootstrap_version="$(printf '%s\n' "$bootstrap_values" | sed -n '2p')"
+  bootstrap_revision="$(printf '%s\n' "$bootstrap_values" | sed -n '3p')"
+  rm -rf "$tmp_dir"
+  mkdir -p "$install_dir/.runtime"
+  : >"$install_dir/.runtime/runtime-root-owned"
+  bootstrap_channel=stable
+  [[ "$bootstrap_selector" != beta && "$bootstrap_selector" != *-beta.* ]] || bootstrap_channel=beta
+  exec env NEUROCADE_INSTALL_VERSION="${bootstrap_version:-development}" \
+    NEUROCADE_INSTALL_REVISION="${bootstrap_revision:-unknown}" NEUROCADE_INSTALL_CHANNEL="$bootstrap_channel" \
+    bash "$install_dir/scripts/install.sh" "$@"
 }
 
 is_tty() {
@@ -74,33 +195,30 @@ is_tty() {
 
 prompt() {
   local label="$1" default_value="${2:-}" secret="${3:-false}" value default_hint=""
-  if [[ "${ASSUME_YES:-0}" -eq 1 || ! is_tty ]]; then
+  if [[ "${ASSUME_YES:-0}" -eq 1 ]] || ! is_tty; then
     printf '%s\n' "$default_value"
     return
   fi
   if [[ "$secret" == "true" ]]; then
     [[ -n "$default_value" ]] && default_hint=" [**existing key**]"
-    read -r -s -p "$label${default_hint}: " value
+    if ! read -r -s -p "$label${default_hint}: " value; then
+      value=""
+    fi
     printf '\n' >&2
   else
-    read -r -p "$label${default_value:+ [$default_value]}: " value
+    if ! read -r -p "$label${default_value:+ [$default_value]}: " value; then
+      value=""
+    fi
   fi
   printf '%s\n' "${value:-$default_value}"
-}
-
-env_line() {
-  local value="${2:-}"
-  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
-    echo "Environment values must fit on one line: $1" >&2
-    return 1
-  fi
-  printf '%s=%s\n' "$1" "$value"
 }
 
 env_file_value() {
   local root="$1" key="$2"
   [[ -f "$root/.env" ]] || return 0
-  sed -n "s/^${key}=//p" "$root/.env" | tail -n 1 | sed 's/^"//; s/"$//'
+  local value
+  value="$(sed -n "s/^${key}=//p" "$root/.env" | tail -n 1)"
+  decode_env_value "$value"
 }
 
 configured_or_default() {
@@ -113,6 +231,11 @@ configured_or_default() {
   else
     printf '%s\n' "$default_value"
   fi
+}
+
+local_docker_image() {
+  local install_id="$1"
+  printf 'neurocade:local-%s\n' "${install_id:0:12}"
 }
 
 detect_configured_provider() {
@@ -278,8 +401,17 @@ write_env() {
   if [[ -n "$app_host" && "$app_host" != "localhost" && "$app_host" != "127.0.0.1" ]]; then
     allowed_hosts="$app_host,$allowed_hosts"
   fi
+  local data_dir_was_present=0
+  [[ -e "$host_data_dir" ]] && data_dir_was_present=1
   mkdir -p "$host_data_dir/output"
-  [[ -f "$env_path" ]] && cp "$env_path" "$env_path.backup.$(date +%Y%m%d%H%M%S)"
+  if [[ "$data_dir_was_present" -eq 0 ]]; then
+    printf '%s\n' "$INSTALL_ID" >"$host_data_dir/.neurocade-install-id"
+  fi
+  if [[ -f "$env_path" ]]; then
+    if [[ ! -f "$root/.runtime/preinstall-env" ]]; then
+      cp "$env_path" "$root/.runtime/preinstall-env"
+    fi
+  fi
 
   {
     echo "# Generated by scripts/install.sh"
@@ -298,6 +430,10 @@ write_env() {
     env_line NEUROCADE_IMAGE "$image"
     env_line NEUROCADE_APP_SIF_MODE "$app_sif_mode"
     env_line NEUROCADE_RELEASE_VERSION "$release_version"
+    env_line NEUROCADE_VERSION "${NEUROCADE_INSTALL_VERSION:-$(configured_or_default "$root" NEUROCADE_VERSION "development")}"
+    env_line NEUROCADE_SOURCE_REVISION "${NEUROCADE_INSTALL_REVISION:-$(configured_or_default "$root" NEUROCADE_SOURCE_REVISION "unknown")}"
+    env_line NEUROCADE_UPDATE_CHANNEL "${NEUROCADE_INSTALL_CHANNEL:-$(configured_or_default "$root" NEUROCADE_UPDATE_CHANNEL "stable")}"
+    env_line NEUROCADE_ARTIFACT_IDENTITY "${NEUROCADE_INSTALL_ARTIFACT:-$(configured_or_default "$root" NEUROCADE_ARTIFACT_IDENTITY "$image")}"
     env_line NEUROCADE_DOCKER_PLATFORM "$docker_platform"
     env_line NEUROCADE_GPU_MODE "$(configured_or_default "$root" NEUROCADE_GPU_MODE "auto")"
     env_line LOCAL_AUTH_ENABLED "$local_auth"
@@ -322,7 +458,13 @@ write_env() {
     env_line GOOGLE_MODEL "$google_model"
   } >"$env_path"
   chmod 600 "$env_path"
+  cp "$env_path" "$root/.runtime/installed-env"
+  chmod 600 "$root/.runtime/installed-env"
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 bootstrap_checkout "$@"
 
@@ -330,10 +472,12 @@ MODE="local"
 RUNTIME=""
 LLM_PROVIDER=""
 IMAGE_OVERRIDE=""
+RELEASE_SELECTOR=""
 APP_SIF_MODE=""
 BRIDGE_PACKAGE=""
 RELEASE_VERSION=""
 BUILD_FROM_SOURCE=0
+BUILD_DOCKER_IMAGE=1
 BRIDGE_PORT="8765"
 START=1
 ASSUME_YES=0
@@ -358,6 +502,12 @@ while [[ $# -gt 0 ]]; do
     --image)
       require_option_value "$1" "${2:-}"
       IMAGE_OVERRIDE="$2"
+      BUILD_DOCKER_IMAGE=0
+      shift 2
+      ;;
+    --version)
+      require_option_value "$1" "${2:-}"
+      RELEASE_SELECTOR="$2"
       shift 2
       ;;
     --build-from-source) BUILD_FROM_SOURCE=1; shift ;;
@@ -375,10 +525,25 @@ done
 
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
+if [[ ! -e "$ROOT_DIR/.runtime" ]]; then
+  mkdir -p "$ROOT_DIR/.runtime"
+  : >"$ROOT_DIR/.runtime/runtime-root-owned"
+else
+  mkdir -p "$ROOT_DIR/.runtime"
+fi
+INSTALL_ID_FILE="$ROOT_DIR/.runtime/install-id"
+if [[ ! -s "$INSTALL_ID_FILE" ]]; then
+  umask 077
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$INSTALL_ID_FILE"
+  printf '\n' >>"$INSTALL_ID_FILE"
+fi
+INSTALL_ID="$(sed -n '1p' "$INSTALL_ID_FILE")"
 source "$ROOT_DIR/scripts/lib/managed_python.sh"
 source "$ROOT_DIR/scripts/lib/runtime_selection.sh"
 source "$ROOT_DIR/scripts/lib/docker_cli.sh"
 source "$ROOT_DIR/scripts/lib/apptainer_artifacts.sh"
+source "$ROOT_DIR/scripts/lib/env.sh"
+source "$ROOT_DIR/scripts/lib/provenance.sh"
 configure_docker_cli_path
 if [[ -z "$RUNTIME" ]]; then
   RUNTIME="$(configured_or_default "$ROOT_DIR" NEUROCADE_RUNTIME "")"
@@ -391,7 +556,15 @@ if [[ -z "$RUNTIME" ]]; then
 fi
 validate_runtime "$RUNTIME" || exit 1
 if [[ "$RUNTIME" == "apptainer" ]]; then
+  if [[ -n "$IMAGE_OVERRIDE" ]]; then
+    echo "--image only applies to --runtime docker; use --version for Apptainer releases." >&2
+    exit 2
+  fi
   if [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
+    if [[ -n "$RELEASE_SELECTOR" ]]; then
+      echo "--version cannot be combined with --build-from-source." >&2
+      exit 2
+    fi
     command -v docker >/dev/null 2>&1 || {
       echo "Docker is required for --build-from-source. Remove the flag to install the latest release." >&2
       exit 1
@@ -400,9 +573,16 @@ if [[ "$RUNTIME" == "apptainer" ]]; then
   else
     APP_SIF_MODE="release"
   fi
+elif [[ -n "$RELEASE_SELECTOR" ]]; then
+  echo "--version only applies to --runtime apptainer; use --image for Docker images." >&2
+  exit 2
 elif [[ "$BUILD_FROM_SOURCE" -eq 1 ]]; then
   echo "--build-from-source is only valid with the Apptainer runtime." >&2
   exit 2
+fi
+[[ "$RUNTIME" == "docker" ]] || BUILD_DOCKER_IMAGE=0
+if [[ "$BUILD_DOCKER_IMAGE" -eq 1 ]]; then
+  IMAGE_OVERRIDE="$(local_docker_image "$INSTALL_ID")"
 fi
 [[ "$BRIDGE_PORT" =~ ^[0-9]+$ ]] && (( BRIDGE_PORT > 0 && BRIDGE_PORT < 65536 )) || { echo "Invalid bridge port: $BRIDGE_PORT" >&2; exit 2; }
 MODE="$(normalize_mode "$MODE")"
@@ -424,20 +604,29 @@ fi
 
 install_managed_uv
 echo "Ensuring managed Python $NEUROCADE_PYTHON_VERSION..."
-managed_uv python install "$NEUROCADE_PYTHON_VERSION"
+managed_uv python install --no-bin "$NEUROCADE_PYTHON_VERSION"
 
 if [[ "$APP_SIF_MODE" == "release" ]]; then
   python_bin="$(managed_python_path)"
-  install_latest_apptainer_release "$ROOT_DIR" "$python_bin"
+  install_latest_apptainer_release "$ROOT_DIR" "$python_bin" "${RELEASE_SELECTOR:-stable}"
   BRIDGE_PACKAGE="$NEUROCADE_RESOLVED_BRIDGE_PACKAGE"
   RELEASE_VERSION="$NEUROCADE_RESOLVED_RELEASE_VERSION"
 elif [[ "$APP_SIF_MODE" == "source" ]]; then
   BRIDGE_PACKAGE="$ROOT_DIR/packages/neurocade-runtime-tools"
 fi
 
+if [[ -z "${NEUROCADE_INSTALL_REVISION:-}" ]] && [[ -d "$ROOT_DIR/.git" ]]; then
+  NEUROCADE_INSTALL_REVISION="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  export NEUROCADE_INSTALL_REVISION
+fi
+if [[ -z "${NEUROCADE_INSTALL_VERSION:-}" && -n "$RELEASE_VERSION" ]]; then
+  NEUROCADE_INSTALL_VERSION="$RELEASE_VERSION"
+  export NEUROCADE_INSTALL_VERSION
+fi
+
 write_env "$ROOT_DIR" "$MODE" "$LLM_PROVIDER" "$RUNTIME" "$IMAGE_OVERRIDE" "$APP_SIF_MODE" "$BRIDGE_PACKAGE" "$RELEASE_VERSION" "$BRIDGE_PORT"
 
-if [[ "$RUNTIME" == "docker" && -z "$IMAGE_OVERRIDE" ]]; then
+if [[ "$BUILD_DOCKER_IMAGE" -eq 1 ]]; then
   # Build the application from this checkout so the in-image bridge client and
   # the host bridge installed below always use the same protocol revision.
   "$ROOT_DIR/scripts/run.sh" build
@@ -450,6 +639,16 @@ if [[ "$START" -eq 1 ]]; then
 else
   "$ROOT_DIR/scripts/run.sh" prepare-tools
 fi
+
+installed_version="$(env_file_value "$ROOT_DIR" NEUROCADE_VERSION)"
+installed_revision="$(env_file_value "$ROOT_DIR" NEUROCADE_SOURCE_REVISION)"
+installed_channel="$(env_file_value "$ROOT_DIR" NEUROCADE_UPDATE_CHANNEL)"
+installed_artifact="$(env_file_value "$ROOT_DIR" NEUROCADE_ARTIFACT_IDENTITY)"
+if [[ "$installed_revision" == unknown ]] && command -v git >/dev/null 2>&1 && [[ -d "$ROOT_DIR/.git" ]]; then
+  installed_revision="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+fi
+write_provenance "$ROOT_DIR" "$installed_version" "$installed_revision" "$installed_channel" "$installed_artifact"
+"$(managed_python_path)" "$ROOT_DIR/scripts/update_source.py" write-manifest "$ROOT_DIR" "$ROOT_DIR/.runtime/source-manifest.json"
 
 echo
 echo "NeuroCade setup complete."

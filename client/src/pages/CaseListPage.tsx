@@ -1,3 +1,5 @@
+import { AppSettingsMenu } from '../components/AppSettingsMenu';
+import { useAppAppearance } from '../hooks/useAppPreferences';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import {
@@ -6,16 +8,15 @@ import {
   List,
   LoaderCircle,
   MessageSquare,
-  Moon,
   Pencil,
   Search,
-  Sun,
   Upload,
 } from 'lucide-react';
 
 import { SessionActions } from '../auth/AppSession';
 import { useAppSession } from '../auth/sessionContext';
 import { CaseCard } from '../components/CaseCard';
+import { PacsImport } from '../components/PacsImport';
 import { Chat } from '../components/Chat';
 import { UploadCaseModal } from '../components/UploadCaseModal';
 import { WorkspaceDialogs } from '../components/WorkspaceDialogs';
@@ -52,7 +53,7 @@ export function CaseListPage() {
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
   const [chatOpen, setChatOpen] = useState(true);
-  const [isLight, setIsLight] = useState(false);
+  const [isLight] = useAppAppearance();
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
   const [workspaceDescription, setWorkspaceDescription] = useState('');
@@ -331,10 +332,9 @@ export function CaseListPage() {
           <MessageSquare size={13} />
           <span className="nc-topbar-button-text">Assistant</span>
         </button>
-        <button type="button" onClick={() => setIsLight((value) => !value)} className="nc-btn nc-icon-btn" title={isLight ? 'Switch to dark mode' : 'Switch to light mode'}>
-          {isLight ? <Moon size={14} /> : <Sun size={14} />}
-        </button>
+        {workspaceId && <PacsImport key={workspaceId} workspaceId={workspaceId} />}
         <SessionActions />
+        <AppSettingsMenu />
       </div>
 
       <div className="flex min-h-0 flex-1 overflow-hidden">

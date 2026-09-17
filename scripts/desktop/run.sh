@@ -25,6 +25,7 @@ fi
 if [[ ! -x "$CLIENT_DIR/node_modules/.bin/electron" ]]; then
   echo "Installing desktop launcher dependencies..."
   (cd "$CLIENT_DIR" && npm ci)
+  : >"$ROOT_DIR/.runtime/electron-dependencies-owned"
 fi
 
 electron_args=()

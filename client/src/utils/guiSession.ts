@@ -1,15 +1,17 @@
-import { createUuid } from './randomUuid';
+import { createUuid } from './randomUuid.js';
+
+// One identity per live document. sessionStorage is copied when a tab is
+// duplicated, so it cannot identify the target of an agent navigation command.
+const sessions = new WeakMap<Window, string>();
 
 export function createGuiSessionId(): string {
-  const storageKey = 'neurocade.gui-session-id';
-  if (typeof window !== 'undefined') {
-    const existing = window.sessionStorage.getItem(storageKey);
-    if (existing) return existing;
-    const created = `gui-${createUuid()}`;
-    window.sessionStorage.setItem(storageKey, created);
-    return created;
+  if (typeof window === 'undefined') return `gui-${createUuid()}`;
+  let session = sessions.get(window);
+  if (!session) {
+    session = `gui-${createUuid()}`;
+    sessions.set(window, session);
   }
-  return `gui-${createUuid()}`;
+  return session;
 }
 
 export function defaultPaneWidth(compactWidth: number, largeWidth: number): number {

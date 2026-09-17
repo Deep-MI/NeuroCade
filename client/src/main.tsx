@@ -14,6 +14,7 @@ const CaseListPage = lazy(() => import('./pages/CaseListPage.tsx').then(module =
 const CaseDetailPage = lazy(() => import('./pages/CaseDetailPage.tsx').then(module => ({ default: module.CaseDetailPage })))
 const SignInPage = lazy(() => import('./pages/SignInPage.tsx').then(module => ({ default: module.SignInPage })))
 const SignUpPage = lazy(() => import('./pages/SignUpPage.tsx').then(module => ({ default: module.SignUpPage })))
+const LocalAgentsPage = lazy(() => import('./pages/LocalAgentsPage.tsx').then(module => ({ default: module.LocalAgentsPage })))
 const MonitoringPage = lazy(() => import('./pages/MonitoringPage.tsx').then(module => ({ default: module.MonitoringPage })))
 
 installGlobalErrorReporting()
@@ -37,6 +38,10 @@ const router = createBrowserRouter([
       {
         path: '/sign-up/*',
         element: <SignUpPage />,
+      },
+      {
+        path: '/local-agents',
+        element: <RequireAuth><LocalAgentsPage /></RequireAuth>,
       },
       {
         path: '/monitoring',

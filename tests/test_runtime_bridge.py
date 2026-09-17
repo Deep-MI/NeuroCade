@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "api-service"))
@@ -40,6 +41,7 @@ from neurocade_runtime_tools.images import (
     _pull_docker_image,
     _storage_preflight,
     download_verified_file,
+    load_named_image_manifest,
     prepare_image,
     resolve_docker_image_platform,
 )
@@ -75,6 +77,98 @@ def test_runtime_image_spec_rejects_unpinned_tag_and_bad_checksums() -> None:
         RuntimeImageSpec("example/tool:1", oci_digest="latest")
     with pytest.raises(ValueError, match="together"):
         RuntimeImageSpec("example/tool:1", sif_url="https://example.test/tool.sif")
+
+
+def test_tool_image_manifest_requires_named_immutable_pins(tmp_path: Path) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps({"images": [{"id": "fastsurfer", "image": "deepmi/fastsurfer:cu128-v2.5.4"}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fastsurfer is missing its immutable OCI image pin"):
+        load_named_image_manifest(manifest)
+
+
+def test_tool_image_manifest_allows_version_scoped_neurodesk_latest(tmp_path: Path) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {
+                        "id": "fastsurfer",
+                        "image": "vnmd/fastsurfer_2.5.4:latest",
+                        "update_policy": "version_latest",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_named_image_manifest(manifest)["fastsurfer"]
+
+    assert spec.oci_reference == "vnmd/fastsurfer_2.5.4:latest"
+    assert spec.oci_digest is None
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["vnmd/fastsurfer:latest", "deepmi/fastsurfer_2.5.4:latest", "vnmd/fastsurfer_2.5.4:20260910"],
+)
+def test_version_latest_policy_rejects_unscoped_or_non_neurodesk_images(tmp_path: Path, image: str) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {"images": [{"id": "fastsurfer", "image": image, "update_policy": "version_latest"}]}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="version-scoped Neurodesk latest image"):
+        load_named_image_manifest(manifest)
+
+
+def test_version_latest_policy_rejects_immutable_pins(tmp_path: Path) -> None:
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {
+                        "id": "fastsurfer",
+                        "image": "vnmd/fastsurfer_2.5.4:latest",
+                        "update_policy": "version_latest",
+                        "oci_digest": f"sha256:{'a' * 64}",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="cannot combine version_latest with immutable pins"):
+        load_named_image_manifest(manifest)
+
+
+def test_tool_image_manifest_rejects_duplicate_ids(tmp_path: Path) -> None:
+    digest = f"sha256:{'a' * 64}"
+    manifest = tmp_path / "tool-images.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"id": "fastsurfer", "image": "example/fastsurfer:1", "oci_digest": digest},
+                    {"id": "fastsurfer", "image": "example/fastsurfer:2", "oci_digest": digest},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate id: fastsurfer"):
+        load_named_image_manifest(manifest)
 
 
 def test_runtime_image_spec_uses_backend_compatible_digest_references() -> None:
@@ -151,6 +245,77 @@ def test_verified_download_uses_valid_cache(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", lambda *_args, **_kwargs: pytest.fail("downloaded"))
 
     assert download_verified_file("https://example.test/tool.sif", target, expected_sha256=checksum) == target
+
+
+def test_verified_download_retries_transient_http_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "tool.sif"
+    payload = b"verified"
+    checksum = hashlib.sha256(payload).hexdigest()
+    responses: list[requests.Response] = []
+    for status, content in ((502, b""), (200, payload)):
+        response = requests.Response()
+        response.status_code = status
+        response._content = content
+        response._content_consumed = True
+        response.url = "https://example.test/tool.sif"
+        response.headers["Content-Length"] = str(len(content))
+        responses.append(response)
+    sleeps: list[int] = []
+    progress: list[dict[str, object]] = []
+    monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", lambda *_args, **_kwargs: responses.pop(0))
+    monkeypatch.setattr("neurocade_runtime_tools.images.time.sleep", sleeps.append)
+
+    assert download_verified_file(
+        "https://example.test/tool.sif",
+        target,
+        expected_sha256=checksum,
+        progress_observer=progress.append,
+    ) == target
+    assert target.read_bytes() == payload
+    assert sleeps == [2]
+    assert any(update.get("phase") == "retrying" and update.get("attempt") == 2 for update in progress)
+
+
+def test_verified_download_does_not_retry_permanent_http_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "tool.sif"
+    response = requests.Response()
+    response.status_code = 404
+    response._content_consumed = True
+    response.url = "https://example.test/tool.sif"
+    calls = 0
+
+    def fail(*_args, **_kwargs):  # noqa: ANN202
+        nonlocal calls
+        calls += 1
+        return response
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", fail)
+    monkeypatch.setattr(
+        "neurocade_runtime_tools.images.time.sleep", lambda *_args: pytest.fail("retried permanent failure")
+    )
+
+    with pytest.raises(requests.HTTPError):
+        download_verified_file("https://example.test/tool.sif", target)
+    assert calls == 1
+
+
+def test_verified_download_does_not_retry_tls_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "tool.sif"
+    calls = 0
+
+    def fail(*_args, **_kwargs):  # noqa: ANN202
+        nonlocal calls
+        calls += 1
+        raise requests.exceptions.SSLError("certificate verification failed")
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.requests.get", fail)
+    monkeypatch.setattr("neurocade_runtime_tools.images.time.sleep", lambda *_args: pytest.fail("retried TLS failure"))
+
+    with pytest.raises(requests.exceptions.SSLError):
+        download_verified_file("https://example.test/tool.sif", target)
+    assert calls == 1
 
 
 def test_capture_buffer_never_exceeds_protocol_limit() -> None:
@@ -486,6 +651,7 @@ def test_bridge_duplicate_run_ids_and_lifecycle(monkeypatch: pytest.MonkeyPatch,
         "build_docker_argv",
         lambda *_args, **_kwargs: [sys.executable, "-c", "print('bridge-ok')"],
     )
+    monkeypatch.setattr(runtime, "_confirm_container_stopped", lambda _record: None)
     payload = _payload(data_root)
     run, created = runtime.start(payload)
     assert created is True
@@ -563,7 +729,7 @@ def test_bridge_client_recovers_from_transient_poll_failure(monkeypatch: pytest.
         {},
         BridgeError("temporary disconnect"),
         {"state": "accepted"},
-        {"state": "completed", "returncode": 0, "stdout": "ok"},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "stdout": "ok"},
     ]
 
     def request(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -587,7 +753,7 @@ def test_bridge_client_publishes_changed_progress(monkeypatch: pytest.MonkeyPatc
         {},
         {"state": "accepted", "progress": progress},
         {"state": "accepted", "progress": progress},
-        {"state": "completed", "returncode": 0, "progress": {**progress, "progress": 1.0}},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "progress": {**progress, "progress": 1.0}},
     ]
     observed: list[dict] = []
     monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: responses.pop(0))
@@ -614,7 +780,7 @@ def test_bridge_client_republishes_unchanged_progress_as_heartbeat(
         {},
         {"state": "accepted", "progress": progress},
         {"state": "accepted", "progress": progress},
-        {"state": "completed", "returncode": 0, "progress": {**progress, "progress": 1.0}},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "progress": {**progress, "progress": 1.0}},
     ]
     clock = iter((100.0, 106.0, 107.0))
     observed: list[dict] = []
@@ -829,7 +995,7 @@ def test_untimed_workflow_is_not_abandoned_after_the_preparation_budget(
         {},
         {"state": "running"},
         {"state": "running"},
-        {"state": "completed", "returncode": 0, "stdout": "ok"},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "stdout": "ok"},
     ]
     monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: responses.pop(0))
 

@@ -18,6 +18,7 @@ from api_service.cases.service import (
     raise_case_conflict,
     require_mutations_enabled,
     require_uploads_enabled,
+    reserve_case_file_update,
     validate_case_name_or_400,
 )
 from api_service.cases.uploads import (
@@ -39,7 +40,6 @@ from backend_common.case_events import record_case_event
 from backend_common.case_storage import (
     case_storage_dir,
     case_title_from_filename,
-    delete_case_storage,
     ensure_case_storage_layout,
     rename_case_storage,
     upload_extension,
@@ -55,8 +55,15 @@ from backend_common.db import (
     CaseEvent,
     Run,
 )
+from backend_common.mcp_lifecycle import ScopeDeletionConflict, reserve_scope_deletion, tombstone_case_invocations
 from backend_common.storage import resolve_artifact_path
-from backend_common.storage_transactions import finalize_staged_path, restore_staged_path, stage_path_for_deletion
+from backend_common.storage_transactions import (
+    finalize_staged_path,
+    restore_staged_path,
+    stage_deletion_for_transaction,
+    stage_path_for_deletion,
+)
+from backend_common.submission_lock import serialize_submission
 
 
 async def create_case_from_upload(
@@ -91,42 +98,34 @@ async def create_case_from_upload(
         tags_json=normalize_metadata_list(tags),
         notes=normalize_optional_text(notes),
     )
-    db.add(case)
-    try:
-        db.flush()
-        ensure_case_storage_layout(settings, case, workspace)
-        artifacts = await _store_uploaded_inputs(db, case, workspace, upload_files, name_after_case=True)
-        record_case_event(
-            db,
-            case,
-            "case.uploaded",
-            user_id=context.user.id,
-            artifact_id=artifacts[0].id if len(artifacts) == 1 else None,
-            details={
-                "filenames": [artifact.name for artifact in artifacts],
-                "source_filename": original_filename,
-                "upload_count": len(upload_files),
-            },
-        )
-        db.commit()
-    except FileExistsError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except IntegrityError as exc:
-        db.rollback()
-        delete_case_storage(settings, case, workspace)
-        raise_case_conflict(exc, f"Case '{case_title}' already exists in this workspace")
-    except Exception:
-        db.rollback()
-        delete_case_storage(settings, case, workspace)
-        raise
-    log_event(db, context, "artifact.uploaded", case_id=case.id, details={"filename": original_filename})
-    return UploadResponse(
-        case_id=case.id,
-        workspace_id=workspace.id,
-        filenames=[artifact.name for artifact in artifacts],
-        title=case.title,
-    )
+    # Reserve the prospective case before publishing it. A workspace-wide run
+    # conflicts with this reservation even though the case does not exist yet.
+    with reserve_case_file_update(db, case):
+        storage_created = False
+        try:
+            db.add(case)
+            db.commit()
+            ensure_case_storage_layout(settings, case, workspace)
+            storage_created = True
+            artifacts = await _store_uploaded_inputs(db, case, workspace, upload_files, name_after_case=True)
+            record_case_event(
+                db, case, "case.uploaded", user_id=context.user.id,
+                artifact_id=artifacts[0].id if len(artifacts) == 1 else None,
+                details={"filenames": [artifact.name for artifact in artifacts],
+                         "source_filename": original_filename, "upload_count": len(upload_files)},
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            _discard_failed_upload(db, case.id, storage_created=storage_created)
+            if isinstance(exc, FileExistsError):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if isinstance(exc, IntegrityError):
+                raise_case_conflict(exc, f"Case '{case_title}' already exists in this workspace")
+            raise
+        log_event(db, context, "artifact.uploaded", case_id=case.id, details={"filename": original_filename})
+        return UploadResponse(case_id=case.id, workspace_id=workspace.id,
+                              filenames=[artifact.name for artifact in artifacts], title=case.title)
 
 
 async def add_upload_to_case(
@@ -143,36 +142,37 @@ async def add_upload_to_case(
     require_case_write(role, detail="Case not found")
     ensure_case_not_active(db, case)
 
-    upload_files = _collect_upload_files(file, files)
-    original_filename = _upload_filename(upload_files[0])
-    try:
-        artifacts = await _store_uploaded_inputs(db, case, workspace, upload_files, name_after_case=False)
-        record_case_event(
-            db,
-            case,
-            "case.uploaded",
-            user_id=context.user.id,
-            artifact_id=artifacts[0].id if len(artifacts) == 1 else None,
-            details={
-                "filenames": [artifact.name for artifact in artifacts],
-                "source_filename": original_filename,
-                "upload_count": len(upload_files),
-                "added_to_case": True,
-            },
+    with reserve_case_file_update(db, case):
+        upload_files = _collect_upload_files(file, files)
+        original_filename = _upload_filename(upload_files[0])
+        try:
+            artifacts = await _store_uploaded_inputs(db, case, workspace, upload_files, name_after_case=False)
+            record_case_event(
+                db,
+                case,
+                "case.uploaded",
+                user_id=context.user.id,
+                artifact_id=artifacts[0].id if len(artifacts) == 1 else None,
+                details={
+                    "filenames": [artifact.name for artifact in artifacts],
+                    "source_filename": original_filename,
+                    "upload_count": len(upload_files),
+                    "added_to_case": True,
+                },
+            )
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            for artifact in locals().get("artifacts", []):
+                resolve_artifact_path(artifact).unlink(missing_ok=True)
+            raise_case_conflict(exc, "Case upload conflicts with another update. Please retry.")
+        log_event(db, context, "artifact.uploaded", case_id=case.id, details={"filename": original_filename})
+        return UploadResponse(
+            case_id=case.id,
+            workspace_id=workspace.id,
+            filenames=[artifact.name for artifact in artifacts],
+            title=case.title,
         )
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        for artifact in locals().get("artifacts", []):
-            resolve_artifact_path(artifact).unlink(missing_ok=True)
-        raise_case_conflict(exc, "Case upload conflicts with another update. Please retry.")
-    log_event(db, context, "artifact.uploaded", case_id=case.id, details={"filename": original_filename})
-    return UploadResponse(
-        case_id=case.id,
-        workspace_id=workspace.id,
-        filenames=[artifact.name for artifact in artifacts],
-        title=case.title,
-    )
 
 
 def _safe_generated_volume_name(filename: str) -> str:
@@ -189,7 +189,7 @@ def _safe_generated_volume_name(filename: str) -> str:
 
 def _unique_generated_volume_name(case_dir: Path, filename: str) -> str:
     extension = upload_extension(filename)
-    stem = filename[:-len(extension)] if extension and filename.lower().endswith(extension.lower()) else Path(filename).stem
+    stem = filename[: -len(extension)] if extension and filename.lower().endswith(extension.lower()) else Path(filename).stem
     candidate = f"{stem}{extension}"
     index = 2
     while (case_dir / candidate).exists():
@@ -211,61 +211,63 @@ async def save_generated_case_volume(
     require_mutations_enabled()
     case, workspace, role, case_dir = get_case_for_user(db, case_id, context.user.id)
     require_case_write(role, detail="Case not found")
-    requested_name = _safe_generated_volume_name(filename)
-    artifact_name = _unique_generated_volume_name(case_dir, requested_name)
-    target_path = case_dir / artifact_name
-    try:
-        metadata_json = json.loads(metadata or "{}")
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Generated volume metadata must be valid JSON") from exc
-    if not isinstance(metadata_json, dict):
-        raise HTTPException(status_code=400, detail="Generated volume metadata must be an object")
-    lut = metadata_json.get("lut")
-    if lut not in {"binary", "freesurfer"}:
-        lut = "freesurfer"
-    metadata_json["volume_role"] = "segmentation"
-    metadata_json["lut"] = lut
-    metadata_json.setdefault("layer_role", "drawing")
+    with reserve_case_file_update(db, case):
+        requested_name = _safe_generated_volume_name(filename)
+        artifact_name = _unique_generated_volume_name(case_dir, requested_name)
+        target_path = case_dir / artifact_name
+        try:
+            metadata_json = json.loads(metadata or "{}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Generated volume metadata must be valid JSON") from exc
+        if not isinstance(metadata_json, dict):
+            raise HTTPException(status_code=400, detail="Generated volume metadata must be an object")
+        lut = metadata_json.get("lut")
+        if lut not in {"binary", "freesurfer"}:
+            lut = "freesurfer"
+        metadata_json["volume_role"] = "segmentation"
+        metadata_json["lut"] = lut
+        metadata_json.setdefault("layer_role", "drawing")
 
-    size_bytes, mime_type = await _write_upload_file(file, target_path)
-    if size_bytes == 0:
-        target_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Generated volume file is empty")
-    artifact = Artifact(
-        case_id=case.id,
-        workspace_id=workspace.id,
-        kind=ArtifactKind.volume,
-        name=artifact_name,
-        relative_path=artifact_name,
-        mime_type=mime_type,
-        size_bytes=size_bytes,
-        metadata_json=metadata_json,
-    )
-    db.add(artifact)
-    try:
-        db.flush()
-        record_case_event(
-            db,
-            case,
-            "artifact.generated_volume_saved",
-            user_id=context.user.id,
-            artifact_id=artifact.id,
-            details={"filename": artifact_name, "source": metadata_json.get("source_layer_id")},
+        size_bytes, mime_type = await _write_upload_file(file, target_path)
+        if size_bytes == 0:
+            target_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="Generated volume file is empty")
+        artifact = Artifact(
+            case_id=case.id,
+            workspace_id=workspace.id,
+            kind=ArtifactKind.volume,
+            name=artifact_name,
+            relative_path=artifact_name,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            metadata_json=metadata_json,
         )
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        target_path.unlink(missing_ok=True)
-        raise_case_conflict(exc, "Generated volume conflicts with another saved artifact. Please retry.")
-    except Exception:
-        db.rollback()
-        target_path.unlink(missing_ok=True)
-        raise
-    db.refresh(artifact)
-    log_event(db, context, "artifact.generated_volume_saved", case_id=case.id, artifact_id=artifact.id, details={"filename": artifact_name})
-    return serialize_artifact(artifact)
+        db.add(artifact)
+        try:
+            db.flush()
+            record_case_event(
+                db,
+                case,
+                "artifact.generated_volume_saved",
+                user_id=context.user.id,
+                artifact_id=artifact.id,
+                details={"filename": artifact_name, "source": metadata_json.get("source_layer_id")},
+            )
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            target_path.unlink(missing_ok=True)
+            raise_case_conflict(exc, "Generated volume conflicts with another saved artifact. Please retry.")
+        except Exception:
+            db.rollback()
+            target_path.unlink(missing_ok=True)
+            raise
+        db.refresh(artifact)
+        log_event(db, context, "artifact.generated_volume_saved", case_id=case.id, artifact_id=artifact.id, details={"filename": artifact_name})
+        return serialize_artifact(artifact)
 
 
+@serialize_submission
 def update_case_metadata(
     db: Session,
     context: AuthContext,
@@ -315,11 +317,36 @@ def update_case_metadata(
 
 def purge_case_rows(db: Session, case: Case) -> str:
     """Delete a case and its dependent rows inside the current transaction."""
+    ensure_case_not_active(db, case)
+    return _purge_case_rows(db, case)
+
+
+@serialize_submission
+def _discard_failed_upload(db: Session, case_id: str, *, storage_created: bool) -> None:
+    """Discard a provisional case while the caller still holds its file reservation."""
+    try:
+        reserve_scope_deletion(db)
+        case = db.get(Case, case_id)
+        if case is not None:
+            if storage_created:
+                stage_deletion_for_transaction(
+                    db, case_storage_dir(settings, case.workspace_id, case.id),
+                    settings.outputs_dir / ".trash" / "cases",
+                )
+            _purge_case_rows(db, case)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _purge_case_rows(db: Session, case: Case) -> str:
+    """Remove dependent rows after the caller has secured exclusive mutation access."""
     deleted_case_id = case.id
     artifact_ids = [artifact_id for (artifact_id,) in db.query(Artifact.id).filter(Artifact.case_id == deleted_case_id).all()]
     thread_ids = [thread_id for (thread_id,) in db.query(AssistantThread.id).filter(AssistantThread.case_id == deleted_case_id).all()]
 
-    ensure_case_not_active(db, case)
+    tombstone_case_invocations(db, deleted_case_id)
     db.flush()
 
     if artifact_ids:
@@ -340,11 +367,17 @@ def purge_case_rows(db: Session, case: Case) -> str:
     return deleted_case_id
 
 
+@serialize_submission
 def delete_case_for_user(db: Session, context: AuthContext, *, case_id: str) -> dict:
     """Delete a case and all of its stored data."""
     require_mutations_enabled()
+    try:
+        reserve_scope_deletion(db)
+    except ScopeDeletionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     case, workspace, role, _case_dir = get_case_for_user(db, case_id, context.user.id)
     require_case_manage(role, detail="Only owners/admins can delete cases")
+    ensure_case_not_active(db, case)
     staged_storage = stage_path_for_deletion(
         case_storage_dir(settings, workspace.id, case.id),
         settings.outputs_dir / ".trash" / "cases",

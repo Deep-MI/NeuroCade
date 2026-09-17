@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 
 export interface FrontendConfig {
   local_auth_enabled: boolean;
+  mcp_enabled: boolean;
   clerk_publishable_key: string | null;
   clerk_jwt_template: string | null;
 }

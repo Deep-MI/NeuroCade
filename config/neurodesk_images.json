@@ -1,8 +1,26 @@
 {
   "version": 1,
   "source_url": "https://raw.githubusercontent.com/NeuroDesk/neurocommand/main/cvmfs/log.txt",
-  "generated_at": "2026-08-14T09:01:18.708880Z",
+  "generated_at": "2026-09-14T18:28:46.981831Z",
   "images": [
+    {
+      "neurodesk_id": "afib1_1.6.0.post1_20260910",
+      "family": "afib1",
+      "version": "1.6.0.post1",
+      "build_date": "20260910",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
+    {
+      "neurodesk_id": "afib1_arm64_1.6.0.post1_20260910",
+      "family": "afib1_arm64",
+      "version": "1.6.0.post1",
+      "build_date": "20260910",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
     {
       "neurodesk_id": "afni_21.2.00_20210714",
       "family": "afni",
@@ -100,10 +118,40 @@
       ]
     },
     {
+      "neurodesk_id": "aidamri_3.0_20260910",
+      "family": "aidamri",
+      "version": "3.0",
+      "build_date": "20260910",
+      "categories": [
+        "diffusion imaging",
+        "functional imaging",
+        "rodent imaging",
+        "structural imaging"
+      ]
+    },
+    {
       "neurodesk_id": "amico_2.1.0_20250628",
       "family": "amico",
       "version": "2.1.0",
       "build_date": "20250628",
+      "categories": [
+        "diffusion imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "amico_2.1.1_20260910",
+      "family": "amico",
+      "version": "2.1.1",
+      "build_date": "20260910",
+      "categories": [
+        "diffusion imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "amico_arm64_2.1.1_20260910",
+      "family": "amico_arm64",
+      "version": "2.1.1",
+      "build_date": "20260910",
       "categories": [
         "diffusion imaging"
       ]
@@ -195,12 +243,48 @@
       ]
     },
     {
+      "neurodesk_id": "apptainer_1.5.3_20260910",
+      "family": "apptainer",
+      "version": "1.5.3",
+      "build_date": "20260910",
+      "categories": [
+        "programming"
+      ]
+    },
+    {
+      "neurodesk_id": "apptainer_arm64_1.5.3_20260910",
+      "family": "apptainer_arm64",
+      "version": "1.5.3",
+      "build_date": "20260910",
+      "categories": [
+        "programming"
+      ]
+    },
+    {
+      "neurodesk_id": "arfiproc_1.0.0.post1_20260910",
+      "family": "arfiproc",
+      "version": "1.0.0.post1",
+      "build_date": "20260910",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
+    {
+      "neurodesk_id": "arfiproc_arm64_1.0.0.post1_20260910",
+      "family": "arfiproc_arm64",
+      "version": "1.0.0.post1",
+      "build_date": "20260910",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
+    {
       "neurodesk_id": "ashs_2.0.0_20210105",
       "family": "ashs",
       "version": "2.0.0",
       "build_date": "20210105",
       "categories": [
-        "hippocampus"
+        "image segmentation"
       ]
     },
     {
@@ -284,6 +368,34 @@
       ]
     },
     {
+      "neurodesk_id": "aslprep_26.0.3_20260911",
+      "family": "aslprep",
+      "version": "26.0.3",
+      "build_date": "20260911",
+      "categories": [
+        "quantitative imaging",
+        "workflows"
+      ]
+    },
+    {
+      "neurodesk_id": "b0map_1.0.0.post1_20260911",
+      "family": "b0map",
+      "version": "1.0.0.post1",
+      "build_date": "20260911",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
+    {
+      "neurodesk_id": "b0map_arm64_1.0.0.post1_20260911",
+      "family": "b0map_arm64",
+      "version": "1.0.0.post1",
+      "build_date": "20260911",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
+    {
       "neurodesk_id": "bart_0.7.00_20210302",
       "family": "bart",
       "version": "0.7.00",
@@ -297,6 +409,15 @@
       "family": "bart",
       "version": "0.9.00",
       "build_date": "20240723",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
+    {
+      "neurodesk_id": "bart_1.0.00_20260911",
+      "family": "bart",
+      "version": "1.0.00",
+      "build_date": "20260911",
       "categories": [
         "image reconstruction"
       ]
@@ -348,6 +469,15 @@
       ]
     },
     {
+      "neurodesk_id": "bidsappbrainsuite_23a_20260911",
+      "family": "bidsappbrainsuite",
+      "version": "23a",
+      "build_date": "20260911",
+      "categories": [
+        "bids apps"
+      ]
+    },
+    {
       "neurodesk_id": "bidsapphcppipelines_4.3.0_20260703",
       "family": "bidsapphcppipelines",
       "version": "4.3.0",
@@ -361,6 +491,15 @@
       "family": "bidsappmrtrix3connectome",
       "version": "0.5.3",
       "build_date": "20260629",
+      "categories": [
+        "bids apps"
+      ]
+    },
+    {
+      "neurodesk_id": "bidsappmrtrix3connectome_0.6.0_20260911",
+      "family": "bidsappmrtrix3connectome",
+      "version": "0.6.0",
+      "build_date": "20260911",
       "categories": [
         "bids apps"
       ]
@@ -586,20 +725,31 @@
       ]
     },
     {
-      "neurodesk_id": "brainles-preprocessing_0.6.10_20260727",
+      "neurodesk_id": "brainles-aurora_0.2.7_20260825",
+      "family": "brainles-aurora",
+      "version": "0.2.7",
+      "build_date": "20260825",
+      "categories": [
+        "image segmentation",
+        "machine learning",
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "brainles-preprocessing_0.6.10_20260825",
       "family": "brainles-preprocessing",
       "version": "0.6.10",
-      "build_date": "20260727",
+      "build_date": "20260825",
       "categories": [
         "image registration",
         "structural imaging"
       ]
     },
     {
-      "neurodesk_id": "brainlesion_1.0.0_20260727",
+      "neurodesk_id": "brainlesion_1.0.0_20260825",
       "family": "brainlesion",
       "version": "1.0.0",
-      "build_date": "20260727",
+      "build_date": "20260825",
       "categories": [
         "data organisation",
         "image segmentation",
@@ -637,10 +787,10 @@
       ]
     },
     {
-      "neurodesk_id": "brainsuite_23a_20260611",
+      "neurodesk_id": "brainsuite_23a_20260910",
       "family": "brainsuite",
       "version": "23a",
-      "build_date": "20260611",
+      "build_date": "20260910",
       "categories": [
         "bids apps",
         "diffusion imaging",
@@ -672,6 +822,17 @@
         "image segmentation",
         "structural imaging",
         "visualization",
+        "workflows"
+      ]
+    },
+    {
+      "neurodesk_id": "brats_0.1.8_20260822",
+      "family": "brats",
+      "version": "0.1.8",
+      "build_date": "20260822",
+      "categories": [
+        "image segmentation",
+        "structural imaging",
         "workflows"
       ]
     },
@@ -921,10 +1082,46 @@
       ]
     },
     {
+      "neurodesk_id": "datalad_1.1.5_20260911",
+      "family": "datalad",
+      "version": "1.1.5",
+      "build_date": "20260911",
+      "categories": [
+        "data organisation"
+      ]
+    },
+    {
       "neurodesk_id": "datalad_1.3.1_20260512",
       "family": "datalad",
       "version": "1.3.1",
       "build_date": "20260512",
+      "categories": [
+        "data organisation"
+      ]
+    },
+    {
+      "neurodesk_id": "datalad_1.6.2_20260911",
+      "family": "datalad",
+      "version": "1.6.2",
+      "build_date": "20260911",
+      "categories": [
+        "data organisation"
+      ]
+    },
+    {
+      "neurodesk_id": "datalad_arm64_1.1.5_20260911",
+      "family": "datalad_arm64",
+      "version": "1.1.5",
+      "build_date": "20260911",
+      "categories": [
+        "data organisation"
+      ]
+    },
+    {
+      "neurodesk_id": "datalad_arm64_1.6.2_20260911",
+      "family": "datalad_arm64",
+      "version": "1.6.2",
+      "build_date": "20260911",
       "categories": [
         "data organisation"
       ]
@@ -945,6 +1142,17 @@
       "build_date": "20260512",
       "categories": [
         "data organisation"
+      ]
+    },
+    {
+      "neurodesk_id": "deep-quality-estimation_0.0.3_20260822",
+      "family": "deep-quality-estimation",
+      "version": "0.0.3",
+      "build_date": "20260822",
+      "categories": [
+        "image segmentation",
+        "machine learning",
+        "quality control"
       ]
     },
     {
@@ -1013,6 +1221,17 @@
       "build_date": "20260629",
       "categories": [
         "electrophysiology"
+      ]
+    },
+    {
+      "neurodesk_id": "deepwmh_1.0.1_20260826",
+      "family": "deepwmh",
+      "version": "1.0.1",
+      "build_date": "20260826",
+      "categories": [
+        "image segmentation",
+        "machine learning",
+        "structural imaging"
       ]
     },
     {
@@ -1157,6 +1376,25 @@
       ]
     },
     {
+      "neurodesk_id": "enigma-pd-wml_1.1.1_20260901",
+      "family": "enigma-pd-wml",
+      "version": "1.1.1",
+      "build_date": "20260901",
+      "categories": [
+        "image segmentation",
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "epirecon_0.0.4_20260908",
+      "family": "epirecon",
+      "version": "0.0.4",
+      "build_date": "20260908",
+      "categories": [
+        "image reconstruction"
+      ]
+    },
+    {
       "neurodesk_id": "esilpd_0.0.1_20260629",
       "family": "esilpd",
       "version": "0.0.1",
@@ -1190,14 +1428,24 @@
       "version": "1.0",
       "build_date": "20231213",
       "categories": [
-        "image segmentation"
+        "image segmentation",
+        "machine learning"
       ]
     },
     {
-      "neurodesk_id": "fastsurfer_2.4.2_20260115",
+      "neurodesk_id": "fastsurfer_2.4.2_20260909",
       "family": "fastsurfer",
       "version": "2.4.2",
-      "build_date": "20260115",
+      "build_date": "20260909",
+      "categories": [
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "fastsurfer_2.5.4_20260910",
+      "family": "fastsurfer",
+      "version": "2.5.4",
+      "build_date": "20260910",
       "categories": [
         "structural imaging"
       ]
@@ -1208,7 +1456,8 @@
       "version": "1.0.gpu",
       "build_date": "20201212",
       "categories": [
-        "body"
+        "image segmentation",
+        "machine learning"
       ]
     },
     {
@@ -1372,6 +1621,16 @@
       ]
     },
     {
+      "neurodesk_id": "freesurfer_5.3.0_20260818",
+      "family": "freesurfer",
+      "version": "5.3.0",
+      "build_date": "20260818",
+      "categories": [
+        "image segmentation",
+        "structural imaging"
+      ]
+    },
+    {
       "neurodesk_id": "freesurfer_7.1.1_20211216",
       "family": "freesurfer",
       "version": "7.1.1",
@@ -1432,10 +1691,10 @@
       ]
     },
     {
-      "neurodesk_id": "freesurfer_8.2.0_20260601",
+      "neurodesk_id": "freesurfer_8.2.0_20260818",
       "family": "freesurfer",
       "version": "8.2.0",
-      "build_date": "20260601",
+      "build_date": "20260818",
       "categories": [
         "image segmentation",
         "structural imaging"
@@ -1636,12 +1895,41 @@
       ]
     },
     {
+      "neurodesk_id": "gimp_2.10.36_20260911",
+      "family": "gimp",
+      "version": "2.10.36",
+      "build_date": "20260911",
+      "categories": [
+        "visualization"
+      ]
+    },
+    {
+      "neurodesk_id": "gimp_arm64_2.10.36_20260911",
+      "family": "gimp_arm64",
+      "version": "2.10.36",
+      "build_date": "20260911",
+      "categories": [
+        "visualization"
+      ]
+    },
+    {
       "neurodesk_id": "gingerale_3.0.2_20250804",
       "family": "gingerale",
       "version": "3.0.2",
       "build_date": "20250804",
       "categories": [
         "statistics"
+      ]
+    },
+    {
+      "neurodesk_id": "gliomoda_0.0.4_20260824",
+      "family": "gliomoda",
+      "version": "0.0.4",
+      "build_date": "20260824",
+      "categories": [
+        "image segmentation",
+        "machine learning",
+        "structural imaging"
       ]
     },
     {
@@ -1748,12 +2036,33 @@
       ]
     },
     {
+      "neurodesk_id": "hmri_1.0.0_20260902",
+      "family": "hmri",
+      "version": "1.0.0",
+      "build_date": "20260902",
+      "categories": [
+        "quantitative imaging",
+        "structural imaging"
+      ]
+    },
+    {
       "neurodesk_id": "hnncore_0.3_20231112",
       "family": "hnncore",
       "version": "0.3",
       "build_date": "20231112",
       "categories": [
         "electrophysiology"
+      ]
+    },
+    {
+      "neurodesk_id": "hypermapp3r_0.1.0_20260821",
+      "family": "hypermapp3r",
+      "version": "0.1.0",
+      "build_date": "20260821",
+      "categories": [
+        "image segmentation",
+        "machine learning",
+        "structural imaging"
       ]
     },
     {
@@ -1771,7 +2080,6 @@
       "version": "3.8.0",
       "build_date": "20201208",
       "categories": [
-        "image segmentation",
         "visualization"
       ]
     },
@@ -1781,7 +2089,6 @@
       "version": "4.0.1",
       "build_date": "20230609",
       "categories": [
-        "image segmentation",
         "visualization"
       ]
     },
@@ -1791,7 +2098,6 @@
       "version": "4.0.2",
       "build_date": "20240117",
       "categories": [
-        "image segmentation",
         "visualization"
       ]
     },
@@ -1801,7 +2107,6 @@
       "version": "4.2.2",
       "build_date": "20250805",
       "categories": [
-        "image segmentation",
         "visualization"
       ]
     },
@@ -1811,7 +2116,6 @@
       "version": "4.4.0",
       "build_date": "20260117",
       "categories": [
-        "image segmentation",
         "visualization"
       ]
     },
@@ -1969,6 +2273,16 @@
       ]
     },
     {
+      "neurodesk_id": "lstai_1.1.0_20260911",
+      "family": "lstai",
+      "version": "1.1.0",
+      "build_date": "20260911",
+      "categories": [
+        "image segmentation",
+        "machine learning"
+      ]
+    },
+    {
       "neurodesk_id": "lstai_1.2.0_20260522",
       "family": "lstai",
       "version": "1.2.0",
@@ -1985,8 +2299,7 @@
       "build_date": "20231207",
       "categories": [
         "machine learning",
-        "programming",
-        "visualization"
+        "programming"
       ]
     },
     {
@@ -1996,8 +2309,7 @@
       "build_date": "20250124",
       "categories": [
         "machine learning",
-        "programming",
-        "visualization"
+        "programming"
       ]
     },
     {
@@ -2007,8 +2319,7 @@
       "build_date": "20250121",
       "categories": [
         "machine learning",
-        "programming",
-        "visualization"
+        "programming"
       ]
     },
     {
@@ -2018,8 +2329,7 @@
       "build_date": "20250117",
       "categories": [
         "machine learning",
-        "programming",
-        "visualization"
+        "programming"
       ]
     },
     {
@@ -2029,8 +2339,7 @@
       "build_date": "20260406",
       "categories": [
         "machine learning",
-        "programming",
-        "visualization"
+        "programming"
       ]
     },
     {
@@ -2070,6 +2379,17 @@
       ]
     },
     {
+      "neurodesk_id": "meganorm_0.2.0_20260824",
+      "family": "meganorm",
+      "version": "0.2.0",
+      "build_date": "20260824",
+      "categories": [
+        "electrophysiology",
+        "machine learning",
+        "statistics"
+      ]
+    },
+    {
       "neurodesk_id": "megnet_1.0.1_20260608",
       "family": "megnet",
       "version": "1.0.1",
@@ -2091,12 +2411,40 @@
       ]
     },
     {
+      "neurodesk_id": "metabody_1.0.3_20260902",
+      "family": "metabody",
+      "version": "1.0.3",
+      "build_date": "20260902",
+      "categories": [
+        "functional imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "metabody_1.0.4_20260902",
+      "family": "metabody",
+      "version": "1.0.4",
+      "build_date": "20260902",
+      "categories": [
+        "functional imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "metabody_1.0.5_20260910",
+      "family": "metabody",
+      "version": "1.0.5",
+      "build_date": "20260910",
+      "categories": [
+        "functional imaging"
+      ]
+    },
+    {
       "neurodesk_id": "mfcsc_1.0_20230306",
       "family": "mfcsc",
       "version": "1.0",
       "build_date": "20230306",
       "categories": [
         "diffusion imaging",
+        "electrophysiology",
         "functional imaging"
       ]
     },
@@ -2107,6 +2455,7 @@
       "build_date": "20230321",
       "categories": [
         "diffusion imaging",
+        "electrophysiology",
         "functional imaging"
       ]
     },
@@ -2127,8 +2476,7 @@
       "categories": [
         "diffusion imaging",
         "functional imaging",
-        "structural imaging",
-        "workflows"
+        "structural imaging"
       ]
     },
     {
@@ -2254,6 +2602,15 @@
       ]
     },
     {
+      "neurodesk_id": "modsort_0.0.2_20260822",
+      "family": "modsort",
+      "version": "0.0.2",
+      "build_date": "20260822",
+      "categories": [
+        "data organisation"
+      ]
+    },
+    {
       "neurodesk_id": "mricrogl_1.2.20211006_20220111",
       "family": "mricrogl",
       "version": "1.2.20211006",
@@ -2268,6 +2625,8 @@
       "version": "1.0.20190902",
       "build_date": "20220311",
       "categories": [
+        "data organisation",
+        "structural imaging",
         "visualization"
       ]
     },
@@ -2446,10 +2805,19 @@
       ]
     },
     {
-      "neurodesk_id": "napari_0.8.0_20260813",
+      "neurodesk_id": "musclemap_1.4.0_20260827",
+      "family": "musclemap",
+      "version": "1.4.0",
+      "build_date": "20260827",
+      "categories": [
+        "body"
+      ]
+    },
+    {
+      "neurodesk_id": "napari_0.8.0_20260814",
       "family": "napari",
       "version": "0.8.0",
-      "build_date": "20260813",
+      "build_date": "20260814",
       "categories": [
         "image segmentation",
         "machine learning",
@@ -2473,7 +2841,8 @@
       "version": "0.3.3",
       "build_date": "20250826",
       "categories": [
-        "functional imaging"
+        "data organisation",
+        "image registration"
       ]
     },
     {
@@ -2653,6 +3022,26 @@
       ]
     },
     {
+      "neurodesk_id": "openmsk_0.1.11_20260902",
+      "family": "openmsk",
+      "version": "0.1.11",
+      "build_date": "20260902",
+      "categories": [
+        "image segmentation",
+        "quantitative imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "openmsk_0.2.0_20260908",
+      "family": "openmsk",
+      "version": "0.2.0",
+      "build_date": "20260908",
+      "categories": [
+        "image segmentation",
+        "quantitative imaging"
+      ]
+    },
+    {
       "neurodesk_id": "openrefine_3.10.1_20260601",
       "family": "openrefine",
       "version": "3.10.1",
@@ -2708,6 +3097,15 @@
       ]
     },
     {
+      "neurodesk_id": "palmettobug_0.2.11_20260911",
+      "family": "palmettobug",
+      "version": "0.2.11",
+      "build_date": "20260911",
+      "categories": [
+        "molecular biology"
+      ]
+    },
+    {
       "neurodesk_id": "pals_2.0.1_20260518",
       "family": "pals",
       "version": "2.0.1",
@@ -2717,10 +3115,20 @@
       ]
     },
     {
-      "neurodesk_id": "panoptica_2.1.3_20260728",
+      "neurodesk_id": "panoptica_2.1.6_20260819",
       "family": "panoptica",
-      "version": "2.1.3",
-      "build_date": "20260728",
+      "version": "2.1.6",
+      "build_date": "20260819",
+      "categories": [
+        "image segmentation",
+        "quality control"
+      ]
+    },
+    {
+      "neurodesk_id": "panoptica_2.1.7_20260822",
+      "family": "panoptica",
+      "version": "2.1.7",
+      "build_date": "20260822",
       "categories": [
         "image segmentation",
         "quality control"
@@ -2751,6 +3159,17 @@
       "build_date": "20260519",
       "categories": [
         "quantitative imaging",
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "petu_0.0.7_20260822",
+      "family": "petu",
+      "version": "0.0.7",
+      "build_date": "20260822",
+      "categories": [
+        "image segmentation",
+        "machine learning",
         "structural imaging"
       ]
     },
@@ -2788,6 +3207,7 @@
       "version": "2.4.2",
       "build_date": "20240828",
       "categories": [
+        "image reconstruction",
         "quantitative imaging"
       ]
     },
@@ -3037,6 +3457,58 @@
       ]
     },
     {
+      "neurodesk_id": "qsmxt_9.14.0_20260827",
+      "family": "qsmxt",
+      "version": "9.14.0",
+      "build_date": "20260827",
+      "categories": [
+        "image reconstruction",
+        "phase processing",
+        "quantitative imaging",
+        "structural imaging",
+        "workflows"
+      ]
+    },
+    {
+      "neurodesk_id": "qsmxt_9.15.0_20260902",
+      "family": "qsmxt",
+      "version": "9.15.0",
+      "build_date": "20260902",
+      "categories": [
+        "image reconstruction",
+        "phase processing",
+        "quantitative imaging",
+        "structural imaging",
+        "workflows"
+      ]
+    },
+    {
+      "neurodesk_id": "qsmxt_9.16.0_20260907",
+      "family": "qsmxt",
+      "version": "9.16.0",
+      "build_date": "20260907",
+      "categories": [
+        "image reconstruction",
+        "phase processing",
+        "quantitative imaging",
+        "structural imaging",
+        "workflows"
+      ]
+    },
+    {
+      "neurodesk_id": "qsmxt_9.17.0_20260910",
+      "family": "qsmxt",
+      "version": "9.17.0",
+      "build_date": "20260910",
+      "categories": [
+        "image reconstruction",
+        "phase processing",
+        "quantitative imaging",
+        "structural imaging",
+        "workflows"
+      ]
+    },
+    {
       "neurodesk_id": "qsmxt_9.8.0_20260721",
       "family": "qsmxt",
       "version": "9.8.0",
@@ -3261,9 +3733,7 @@
       "version": "4.11.20200930",
       "build_date": "20201108",
       "categories": [
-        "image registration",
         "image segmentation",
-        "structural imaging",
         "visualization"
       ]
     },
@@ -3273,9 +3743,7 @@
       "version": "5.0.3",
       "build_date": "20221025",
       "categories": [
-        "image registration",
         "image segmentation",
-        "structural imaging",
         "visualization"
       ]
     },
@@ -3285,9 +3753,7 @@
       "version": "5.10.0",
       "build_date": "20260226",
       "categories": [
-        "image registration",
         "image segmentation",
-        "structural imaging",
         "visualization"
       ]
     },
@@ -3297,7 +3763,8 @@
       "version": "3.0.0",
       "build_date": "20210301",
       "categories": [
-        "shape analysis"
+        "quantitative imaging",
+        "structural imaging"
       ]
     },
     {
@@ -3324,7 +3791,8 @@
       "version": "0.3.1a0",
       "build_date": "20221202",
       "categories": [
-        "data organisation"
+        "bids apps",
+        "electrophysiology"
       ]
     },
     {
@@ -3404,6 +3872,24 @@
       "family": "spinalcordtoolbox",
       "version": "7.3.0",
       "build_date": "20260605",
+      "categories": [
+        "spine"
+      ]
+    },
+    {
+      "neurodesk_id": "spinalcordtoolbox_7.3.3_20260904",
+      "family": "spinalcordtoolbox",
+      "version": "7.3.3",
+      "build_date": "20260904",
+      "categories": [
+        "spine"
+      ]
+    },
+    {
+      "neurodesk_id": "spinalcordtoolbox_gpu_7.3.3_20260904",
+      "family": "spinalcordtoolbox_gpu",
+      "version": "7.3.3",
+      "build_date": "20260904",
       "categories": [
         "spine"
       ]
@@ -3491,10 +3977,10 @@
       ]
     },
     {
-      "neurodesk_id": "synthseg_8.2.0_20260730",
+      "neurodesk_id": "synthseg_8.2.0_20260902",
       "family": "synthseg",
       "version": "8.2.0",
-      "build_date": "20260730",
+      "build_date": "20260902",
       "categories": [
         "image segmentation",
         "machine learning",
@@ -3545,7 +4031,63 @@
       "version": "0.2.5",
       "build_date": "20240313",
       "categories": [
-        "cryo EM"
+        "cryo EM",
+        "machine learning"
+      ]
+    },
+    {
+      "neurodesk_id": "topofit_0.2_20260902",
+      "family": "topofit",
+      "version": "0.2",
+      "build_date": "20260902",
+      "categories": [
+        "machine learning",
+        "shape analysis",
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "topofit_0.2.1_20260902",
+      "family": "topofit",
+      "version": "0.2.1",
+      "build_date": "20260902",
+      "categories": [
+        "machine learning",
+        "shape analysis",
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "topofit_0.3.0_20260904",
+      "family": "topofit",
+      "version": "0.3.0",
+      "build_date": "20260904",
+      "categories": [
+        "machine learning",
+        "shape analysis",
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "topofit_0.4.0_20260904",
+      "family": "topofit",
+      "version": "0.4.0",
+      "build_date": "20260904",
+      "categories": [
+        "machine learning",
+        "shape analysis",
+        "structural imaging"
+      ]
+    },
+    {
+      "neurodesk_id": "topofit_0.5.1_20260905",
+      "family": "topofit",
+      "version": "0.5.1",
+      "build_date": "20260905",
+      "categories": [
+        "machine learning",
+        "shape analysis",
+        "structural imaging"
       ]
     },
     {
@@ -3558,10 +4100,10 @@
       ]
     },
     {
-      "neurodesk_id": "trackvis_0.6.1_20220303",
+      "neurodesk_id": "trackvis_0.6.1_20260821",
       "family": "trackvis",
       "version": "0.6.1",
-      "build_date": "20220303",
+      "build_date": "20260821",
       "categories": [
         "diffusion imaging"
       ]
@@ -3636,6 +4178,7 @@
       "version": "1.1.2",
       "build_date": "20230428",
       "categories": [
+        "quantitative imaging",
         "visualization"
       ]
     },
@@ -3644,6 +4187,24 @@
       "family": "vina",
       "version": "1.2.3",
       "build_date": "20230221",
+      "categories": [
+        "molecular biology"
+      ]
+    },
+    {
+      "neurodesk_id": "vina_1.2.5_20260911",
+      "family": "vina",
+      "version": "1.2.5",
+      "build_date": "20260911",
+      "categories": [
+        "molecular biology"
+      ]
+    },
+    {
+      "neurodesk_id": "vina_arm64_1.2.5_20260911",
+      "family": "vina_arm64",
+      "version": "1.2.5",
+      "build_date": "20260911",
       "categories": [
         "molecular biology"
       ]

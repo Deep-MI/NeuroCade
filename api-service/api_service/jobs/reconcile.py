@@ -28,6 +28,8 @@ def reconcile_interrupted_runs(
         ]
         for run in stuck:
             run.status = RunStatus.failed
+            run.result_json = {**(run.result_json or {}), "output_ownership": "unresolved",
+                               "cancellation": "unresolved" if (run.result_json or {}).get("cancellation") else None}
             if not run.error_message:
                 run.error_message = "Interrupted by an application restart."
         if stuck:

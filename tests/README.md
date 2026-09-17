@@ -127,3 +127,64 @@ GUI tests save screenshots to `tests/screenshots/`. These are useful for debuggi
 3. **LLM gives text explanation instead of calling a tool:**
    - Check API and runtime logs: `./scripts/run.sh logs`
    - Restart after code changes: `./scripts/run.sh stop && ./scripts/run.sh start -d`
+# PACS integration
+
+`pytest tests/test_pacs.py` exercises bounded parsing, workspace authorization,
+import guards and restart recovery without a hospital PACS. See
+`docs/pacs-integration.md` for deployment and staging validation.
+
+## Local PACS fixture
+
+See [PACS QA setup](../docs/pacs-qa.md) for a separate Orthanc server seeded with
+six public ReMIND MRI cases. `pytest tests/test_pacs_qa.py` tests its authentication
+gateway without Docker or downloads; `scripts/pacs_qa.py verify` tests the real
+application PACS client against the running fixture.
+
+## PACS follow-up regression checks
+
+Run `pytest tests/test_pacs_acceptance.py tests/test_workflow_error_codes.py` for
+offline QA-runner safety and durable workflow error-code coverage. Frontend
+`npm run test:node` includes delayed polling-response and error-formatting tests.
+`pytest tests/evaluations/eval_gui_pacs_browser.py` needs a freshly built client
+and Chromium and is intentionally part of the opt-in GUI evaluation tier.
+For opt-in live conversion/outage/cleanup checks (creates six QA copies), see
+`docs/pacs-qa.md`; the acceptance runner defaults to read-only preflight.
+
+## Release retry checks
+
+`pytest tests/test_release_publication.py tests/test_release_http_wait.py -q`
+checks interrupted publication and authenticated health polling. Publication
+checks simulate GitHub/Docker commands; they do not publish releases or require
+registry credentials. The HTTP helper test starts a local loopback server.
+
+### External agent transfers
+
+`pytest tests/test_mcp_transfers.py` uses temporary SQLite databases and synthetic
+NIfTI headers. It checks authenticated binary upload, replay protection, workspace
+isolation, revocation, Range downloads, archives, configuration preservation and
+agent-managed confirmation. No running application or Docker workflow is required.
+Live connector checks require NeuroCade started with `--mcp`; use a disposable test
+workspace and private connection directory, and revoke test connections afterward.
+# Claude Desktop extension
+
+`pytest tests/test_mcp_desktop_extension.py tests/test_mcp_pairing.py` checks the
+bundle without permanent credentials, management authorization, single-use grants,
+expiry, concurrent redemption, private host caching, and safe launcher failures.
+Pairing tests use isolated SQLite databases and mocked HTTP; no running app is needed.
+Node on PATH is needed for launcher tests (otherwise those tests skip). Validate
+the manifest with `npx --yes @anthropic-ai/mcpb validate
+api-service/api_service/mcp_adapter/desktop_extension/manifest.json`.
+The extension uses Claude Desktop's Node runtime and the existing installed
+NeuroCade host connector. Actual installation in Claude remains a manual client
+acceptance check; protocol tests alone do not establish Cowork tool availability.
+
+## Codex local plugin
+
+`pytest tests/test_mcp_codex_plugin.py` verifies that generated MCP configuration
+references a private connection instead of copying its token, that rebuilds are
+stable and content changes update the version, and that registration uses Codex's
+plugin installer. Templates ship inside the connector wheel. For acceptance,
+choose **Codex** on Connect external agents, run its setup prompt in a local
+Codex task, then start a new task to check plugin skills and MCP tools. CLI install
+tests can use a temporary Codex configuration directory to avoid changing the
+user's installed plugins.

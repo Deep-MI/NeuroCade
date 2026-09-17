@@ -26,7 +26,23 @@ runtime_pull_application() {
 }
 
 runtime_prepare_database() {
-  docker volume create "$DATABASE_VOLUME" >/dev/null
+  local volume_owner=""
+  if docker volume inspect "$DATABASE_VOLUME" >/dev/null 2>&1; then
+    volume_owner="$(docker volume inspect --format '{{index .Labels "org.neurocade.install-id"}}' "$DATABASE_VOLUME" 2>/dev/null || true)"
+    [[ "$volume_owner" == "<no value>" ]] && volume_owner=""
+    if [[ -n "$volume_owner" && "$volume_owner" != "$INSTALL_ID" ]]; then
+      fail "Docker database volume $DATABASE_VOLUME belongs to another NeuroCade installation; configure a different NEUROCADE_DATABASE_VOLUME"
+    fi
+    if [[ -z "$volume_owner" ]]; then
+      echo "WARN: Reusing existing unowned Docker database volume $DATABASE_VOLUME; it will be preserved during uninstall." >&2
+    fi
+  else
+    [[ -n "$INSTALL_ID" ]] || fail "The NeuroCade installation ID is missing"
+    docker volume create \
+      --label org.neurocade.managed=true \
+      --label "org.neurocade.install-id=$INSTALL_ID" \
+      "$DATABASE_VOLUME" >/dev/null
+  fi
   local -a volume_init_args=(docker run --rm --user 0)
   [[ -n "$DOCKER_PLATFORM" ]] && volume_init_args+=(--platform "$DOCKER_PLATFORM")
   volume_init_args+=(
@@ -38,15 +54,18 @@ runtime_prepare_database() {
 }
 
 docker_run_args() {
-  DOCKER_APP_ARGS=(docker run --name "$CONTAINER_NAME" --label "org.neurocade.launch-id=$LAUNCH_ID" --user "$(id -u):$(id -g)" --add-host host.docker.internal:host-gateway)
+  write_docker_env_file "$ENV_FILE" "$DOCKER_ENV_FILE"
+  DOCKER_APP_ARGS=(docker run --name "$CONTAINER_NAME" --label "org.neurocade.launch-id=$LAUNCH_ID" --label "org.neurocade.install-id=${INSTALL_ID:-}" --user "$(id -u):$(id -g)" --add-host host.docker.internal:host-gateway)
   [[ -n "$DOCKER_PLATFORM" ]] && DOCKER_APP_ARGS+=(--platform "$DOCKER_PLATFORM")
   DOCKER_APP_ARGS+=(
     -v "$HOST_DATA_DIR:/data" -v "$DATABASE_VOLUME:/database"
     -v "$BRIDGE_TOKEN_FILE:/run/neurocade/bridge-token:ro"
-    -p "$HTTP_BIND:$HTTP_PORT:8000" --env-file "$ENV_FILE"
+    -p "$HTTP_BIND:$HTTP_PORT:8000" --env-file "$DOCKER_ENV_FILE"
     -e NEUROCADE_RUNTIME=docker -e NEUROCADE_BRIDGE_URL="http://host.docker.internal:$BRIDGE_PORT"
     -e NEUROCADE_BRIDGE_TOKEN_FILE=/run/neurocade/bridge-token -e HOST_DATA_DIR=/data
     -e NEUROCADE_LAUNCH_ID="$LAUNCH_ID"
+    -e NEUROCADE_MCP_HOST_EXECUTABLE="$BRIDGE_VENV/bin/neurocade-mcp"
+    -e NEUROCADE_MCP_ENABLED="$MCP_ENABLED" -e NEUROCADE_MCP_ACCESS="$MCP_ACCESS" -e APP_HTTP_BIND="$HTTP_BIND"
     -e DATABASE_URL=sqlite+pysqlite:////database/neurocade.db -e HOME=/tmp
     -e NEUROCADE_ACCESS_URL="$(sed -n '1p' "$APP_URL_FILE")"
   )
@@ -59,8 +78,9 @@ runtime_start_application() {
   if [[ "$DETACH" -eq 1 ]]; then
     "${DOCKER_APP_ARGS[@]}" -d --restart unless-stopped "$IMAGE"
   else
-    trap 'stop_bridge || true' EXIT INT TERM
-    "${DOCKER_APP_ARGS[@]}" --rm "$IMAGE"
+    trap 'stop_mcp_discovery || true; stop_application || true; stop_bridge || true' EXIT INT TERM
+    "${DOCKER_APP_ARGS[@]}" --rm "$IMAGE" &
+    wait "$!"
   fi
 }
 
