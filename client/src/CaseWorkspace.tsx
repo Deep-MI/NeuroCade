@@ -1,6 +1,6 @@
 import { useAppAppearance } from './hooks/useAppPreferences';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 
 import { useAppSession } from './auth/sessionContext';
 import { CaseWorkspaceRightPanel } from './components/CaseWorkspaceRightPanel';
@@ -65,6 +65,7 @@ function selectCurrentIntensityInput(options: OutputVolume[], volumes: Volume[])
 
 function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: CaseWorkspaceProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const { session } = useAppSession();
   const [volumes, setVolumes] = useState<Volume[]>([]);
   const [showCaseManager, setShowCaseManager] = useState(false);
@@ -93,16 +94,18 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
     navigate,
     volumes,
     setVolumes,
+    initialNotification: typeof (location.state as { importNotice?: unknown } | null)?.importNotice === 'string'
+      ? (location.state as { importNotice: string }).importNotice
+      : null,
   });
   const activeCaseId = controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId;
   const downloads = useCaseDownloads({
     caseId: activeCaseId,
     caseTitle: controller.currentCaseTitle ?? activeCaseId,
-    volumes,
   });
   const currentAnalysisInput = useMemo(
-    () => selectCurrentIntensityInput(controller.runInputOptions, volumes),
-    [controller.runInputOptions, volumes],
+    () => selectCurrentIntensityInput(controller.viewerInputOptions, volumes),
+    [controller.viewerInputOptions, volumes],
   );
   const chatMessages = useMemo(
     () => [...controller.chatNotifications, ...viewerDiagnostics],
@@ -386,19 +389,20 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         onConfirm={confirmRun}
         tool={modalAnalysisTool}
         message={controller.queueMessage}
-        inputOptions={controller.runInputOptions}
+        inputOptions={controller.caseFiles}
       />
 
       {controller.showUploadModal && (
         <UploadCaseModal
           key={`${controller.pendingUploadFiles[0]?.name ?? ''}:${controller.pendingUploadFiles.length}:${controller.pendingUploadDefaultName}`}
-          isOpen={controller.showUploadModal}
-          filename={controller.pendingUploadFiles[0]?.name ?? null}
-          fileCount={controller.pendingUploadFiles.length}
+          selectedFiles={controller.pendingUploadFiles}
+          linkedSource={controller.pendingLinkedSource}
           defaultName={controller.pendingUploadDefaultName}
           addToCaseLabel={controller.currentCaseTitle ?? controller.activeCaseId ?? initialCaseId ?? null}
           onClose={controller.closeUploadModal}
           onSelectFiles={controller.selectUploadFiles}
+          onClearSelection={controller.clearPendingSelection}
+          onSelectLinkedDirectory={controller.selectLinkedDirectory}
           onCreateNewCase={controller.confirmCreateNewCaseUpload}
           onAddToCase={controller.confirmAddToCaseUpload}
         />
@@ -407,12 +411,12 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
       <DownloadCaseModal
         isOpen={downloads.isOpen}
         caseTitle={controller.currentCaseTitle ?? activeCaseId}
-        artifacts={downloads.artifacts}
-        loadingArtifacts={downloads.loading}
+        files={downloads.files}
+        loadingFiles={downloads.loading}
         error={downloads.error}
         actionLoading={downloads.action}
         onClose={downloads.close}
-        onDownloadVolume={downloads.downloadVolume}
+        onDownloadFile={downloads.downloadFile}
         onDownloadCase={downloads.downloadArchive}
       />
 

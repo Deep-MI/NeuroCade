@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { mergeOutputVolumesIntoViewerLayers, outputVolumesToViewerLayers } from '../src/utils/caseLayers.js';
+import { mergeOutputVolumesIntoViewerLayers, outputVolumesToViewerLayers, visibleOutputVolumes } from '../src/utils/caseLayers.js';
 import { orderedReferenceCandidate } from '../src/neurocadeViewer/layerDisplay.js';
 import type { OutputVolume } from '../src/types.js';
 
@@ -43,6 +43,17 @@ void test('converting output order does not mutate the API response', () => {
   outputVolumesToViewerLayers(outputs);
 
   assert.deepEqual(outputs.map((volume) => volume.id), ['first.mgz', 'second.mgz']);
+});
+
+void test('initial viewer layers contain only recommended semantic artifacts', () => {
+  const recommended = { ...intensity('orig.mgz'), visible: true };
+  const availableOnly = { ...intensity('other.mgz'), visible: false };
+
+  assert.deepEqual(
+    visibleOutputVolumes([recommended, availableOnly], new Set()).map((volume) => volume.id),
+    ['orig.mgz'],
+  );
+  assert.deepEqual(visibleOutputVolumes([recommended], new Set(['orig.mgz'])), []);
 });
 
 void test('live output polling adds declared layers without resetting viewer state', () => {

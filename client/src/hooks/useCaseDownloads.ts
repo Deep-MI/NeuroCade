@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { isSegmentationLayer, type ArtifactListItem, type Volume } from '../types';
+import type { CaseFileEntry } from '../types';
 import {
-  downloadArtifactFile,
+  downloadCaseFile,
   downloadCaseArchive,
-  fetchCaseArtifacts,
+  fetchCaseFiles,
 } from '../utils/api';
 
 const DOWNLOAD_ARTIFACT_TIMEOUT_MS = 8000;
@@ -12,42 +12,24 @@ const DOWNLOAD_ARTIFACT_TIMEOUT_MS = 8000;
 interface UseCaseDownloadsOptions {
   caseId: string | null;
   caseTitle: string | null;
-  volumes: Volume[];
 }
 
-export function useCaseDownloads({ caseId, caseTitle, volumes }: UseCaseDownloadsOptions) {
+export function useCaseDownloads({ caseId, caseTitle }: UseCaseDownloadsOptions) {
   const [isOpen, setIsOpen] = useState(false);
-  const [artifacts, setArtifacts] = useState<ArtifactListItem[]>([]);
+  const [files, setFiles] = useState<CaseFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [action, setAction] = useState<'volume' | 'case' | null>(null);
+  const [action, setAction] = useState<'file' | 'case' | null>(null);
   const requestIdRef = useRef(0);
 
   useEffect(() => {
     requestIdRef.current += 1;
     setIsOpen(false);
-    setArtifacts([]);
+    setFiles([]);
     setError(null);
     setAction(null);
     setLoading(false);
   }, [caseId]);
-
-  const fallbackArtifacts = useCallback((): ArtifactListItem[] => (
-    volumes
-      .filter((volume) => Boolean(volume.url))
-      .map((volume) => ({
-        id: volume.id,
-        name: volume.filename,
-        kind: 'volume',
-        downloadPath: volume.url,
-        metadata: {
-          volume_role: volume.type === 'segmentation' ? 'segmentation' : 'intensity',
-          lut: isSegmentationLayer(volume) ? volume.lut : undefined,
-          customLutDownloadUrl: isSegmentationLayer(volume) ? volume.customLutUrl : undefined,
-          visible: volume.visible,
-        },
-      }))
-  ), [volumes]);
 
   const close = useCallback(() => {
     requestIdRef.current += 1;
@@ -59,48 +41,46 @@ export function useCaseDownloads({ caseId, caseTitle, volumes }: UseCaseDownload
 
   const open = useCallback(() => {
     if (!caseId) return;
-    const fallback = fallbackArtifacts();
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     setIsOpen(true);
-    setArtifacts(fallback);
+    setFiles([]);
     setLoading(true);
     setError(null);
-    const timeout = new Promise<ArtifactListItem[]>((_, reject) => {
-      window.setTimeout(() => reject(new Error('Timed out while loading the full volume list. You can still download the whole folder or any volume already open.')), DOWNLOAD_ARTIFACT_TIMEOUT_MS);
+    const timeout = new Promise<CaseFileEntry[]>((_, reject) => {
+      window.setTimeout(() => reject(new Error('Timed out while loading the case file list. You can still download the whole folder.')), DOWNLOAD_ARTIFACT_TIMEOUT_MS);
     });
-    void Promise.race([fetchCaseArtifacts(caseId), timeout])
+    void Promise.race([fetchCaseFiles(caseId), timeout])
       .then((entries) => {
         if (requestIdRef.current !== requestId) return;
-        setArtifacts(entries.length > 0 ? entries : fallback);
+        setFiles(entries);
       })
       .catch((reason: unknown) => {
         if (requestIdRef.current !== requestId) return;
         const message = reason instanceof Error ? reason.message : String(reason);
-        setError(fallback.length > 0 ? `${message} Showing currently loaded volumes.` : message);
+        setError(message);
       })
       .finally(() => {
         if (requestIdRef.current === requestId) setLoading(false);
       });
-  }, [caseId, fallbackArtifacts]);
+  }, [caseId]);
 
-  const downloadVolume = useCallback(async (artifactId: string) => {
-    const artifact = artifacts.find((entry) => entry.id === artifactId);
-    if (!artifact) {
-      setError('Select a volume to download.');
+  const downloadFile = useCallback(async (file: CaseFileEntry) => {
+    if (!caseId) {
+      setError('No active case selected for download.');
       return;
     }
-    setAction('volume');
+    setAction('file');
     setError(null);
     try {
-      await downloadArtifactFile(artifact);
+      await downloadCaseFile(caseId, file);
       close();
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setAction(null);
     }
-  }, [artifacts, close]);
+  }, [caseId, close]);
 
   const downloadArchive = useCallback(async () => {
     if (!caseId) {
@@ -119,5 +99,5 @@ export function useCaseDownloads({ caseId, caseTitle, volumes }: UseCaseDownload
     }
   }, [caseId, caseTitle, close]);
 
-  return { isOpen, artifacts, loading, error, action, open, close, downloadVolume, downloadArchive };
+  return { isOpen, files, loading, error, action, open, close, downloadFile, downloadArchive };
 }

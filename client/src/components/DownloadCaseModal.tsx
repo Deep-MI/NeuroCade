@@ -1,53 +1,39 @@
 import { useMemo, useState } from 'react';
 import { Download, FolderDown, X } from 'lucide-react';
 
-import type { ArtifactListItem } from '../types';
+import type { CaseFileEntry } from '../types';
 
 interface DownloadCaseModalProps {
   isOpen: boolean;
   caseTitle: string | null;
-  artifacts: ArtifactListItem[];
-  loadingArtifacts: boolean;
+  files: CaseFileEntry[];
+  loadingFiles: boolean;
   error: string | null;
-  actionLoading: 'volume' | 'case' | null;
+  actionLoading: 'file' | 'case' | null;
   onClose: () => void;
-  onDownloadVolume: (artifactId: string) => Promise<void> | void;
+  onDownloadFile: (file: CaseFileEntry) => Promise<void> | void;
   onDownloadCase: () => Promise<void> | void;
 }
 
-function artifactLabel(artifact: ArtifactListItem): string {
-  const displayName = typeof artifact.metadata?.display_name === 'string'
-    ? artifact.metadata.display_name
-    : artifact.name;
-  const volumeRole = typeof artifact.metadata?.volume_role === 'string' ? artifact.metadata.volume_role : null;
-  if (volumeRole === 'segmentation') {
-    return `${displayName} (segmentation)`;
-  }
-  if (volumeRole === 'intensity') {
-    return `${displayName} (intensity)`;
-  }
-  return displayName;
+function fileKey(file: CaseFileEntry): string {
+  return `${file.source}\u0000${file.path}`;
 }
 
 export function DownloadCaseModal({
   isOpen,
   caseTitle,
-  artifacts,
-  loadingArtifacts,
+  files,
+  loadingFiles,
   error,
   actionLoading,
   onClose,
-  onDownloadVolume,
+  onDownloadFile,
   onDownloadCase,
 }: DownloadCaseModalProps) {
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string>('');
-  const downloadableArtifacts = useMemo(
-    () => artifacts.filter((artifact) => artifact.kind === 'volume'),
-    [artifacts],
-  );
-  const selectedDownloadArtifactId = downloadableArtifacts.some((artifact) => artifact.id === selectedArtifactId)
-    ? selectedArtifactId
-    : downloadableArtifacts[0]?.id ?? '';
+  const [selectedFileKey, setSelectedFileKey] = useState<string>('');
+  const downloadableFiles = useMemo(() => files.filter((entry) => entry.type === 'file'), [files]);
+  const selectedFile = downloadableFiles.find((entry) => fileKey(entry) === selectedFileKey)
+    ?? downloadableFiles[0];
 
   if (!isOpen) return null;
 
@@ -71,35 +57,35 @@ export function DownloadCaseModal({
           <div>
             <h3 className="text-lg font-semibold text-white">Download Case Data</h3>
             <p className="text-sm text-slate-400">
-              Download one volume from {caseTitle ?? 'the current case'} or export the whole case folder as a zip archive.
+              Download one file from {caseTitle ?? 'the current case'} or export the whole case folder as a zip archive.
             </p>
           </div>
         </div>
 
         <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-          Download Volume
+          Download File
         </label>
         <select
           data-testid="download-volume-select"
-          value={selectedDownloadArtifactId}
-          onChange={(event) => setSelectedArtifactId(event.target.value)}
-          disabled={downloadableArtifacts.length === 0 || actionLoading !== null}
+          value={selectedFile ? fileKey(selectedFile) : ''}
+          onChange={(event) => setSelectedFileKey(event.target.value)}
+          disabled={downloadableFiles.length === 0 || actionLoading !== null}
           className="mb-4 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-[var(--nc-interactive)] disabled:opacity-50"
         >
-          {downloadableArtifacts.length === 0 ? (
-            <option value="">No downloadable volumes available</option>
+          {downloadableFiles.length === 0 ? (
+            <option value="">No downloadable files available</option>
           ) : (
-            downloadableArtifacts.map((artifact) => (
-              <option key={artifact.id} value={artifact.id}>
-                {artifactLabel(artifact)}
+            downloadableFiles.map((file) => (
+              <option key={fileKey(file)} value={fileKey(file)}>
+                {file.path}{file.source === 'linked' ? ' (linked)' : ''}
               </option>
             ))
           )}
         </select>
 
-        {loadingArtifacts && (
+        {loadingFiles && (
           <div className="mb-4 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300">
-            Loading full artifact list…
+            Loading case files…
           </div>
         )}
 
@@ -121,11 +107,11 @@ export function DownloadCaseModal({
           <button
             type="button"
             data-testid="download-volume-button"
-            onClick={() => void onDownloadVolume(selectedDownloadArtifactId)}
-            disabled={actionLoading !== null || !selectedDownloadArtifactId}
+            onClick={() => selectedFile && void onDownloadFile(selectedFile)}
+            disabled={actionLoading !== null || !selectedFile}
             className="flex-1 rounded-xl border border-sky-400/30 bg-sky-400/10 px-4 py-3 font-semibold text-sky-100 transition-colors hover:bg-sky-400/20 disabled:opacity-50"
           >
-            {actionLoading === 'volume' ? 'Preparing…' : 'Download Volume'}
+            {actionLoading === 'file' ? 'Preparing…' : 'Download File'}
           </button>
           <button
             type="button"
