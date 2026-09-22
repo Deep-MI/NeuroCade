@@ -80,8 +80,13 @@ def build_container_argv(
             raise TypeError("Apptainer adapter requires root-relative bridge binds")
         if bind.mode not in {"ro", "rw"}:
             raise ValueError(f"Unsupported bind mode: {bind.mode}")
-        source = (root / bind.source_relative).resolve(strict=True)
-        source.relative_to(root)
+        if bind.host_path is not None:
+            if bind.mode != "ro":
+                raise ValueError("Linked source binds must be read-only")
+            source = bind.host_path.resolve(strict=True)
+        else:
+            source = (root / bind.source_relative).resolve(strict=True)
+            source.relative_to(root)
         target = _container_path(bind.container_path, label="Bind target")
         specification = f"{source}:{target}" + (":ro" if bind.mode == "ro" else "")
         argv.extend(["--bind", specification])

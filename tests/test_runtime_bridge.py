@@ -669,6 +669,129 @@ def test_bridge_duplicate_run_ids_and_lifecycle(monkeypatch: pytest.MonkeyPatch,
     assert run.public()["stdout"].strip() == "bridge-ok"
 
 
+def test_linked_source_registry_scans_reads_and_builds_read_only_bind(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    (data_root / "case").mkdir()
+    linked = tmp_path / "external" / "subject-01"
+    (linked / "mri").mkdir(parents=True)
+    (linked / "stats").mkdir()
+    (linked / "mri" / "orig.mgz").write_bytes(b"volume-data")
+    (linked / "stats" / "aseg.stats").write_text("stats", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("secret", encoding="utf-8")
+    (linked / "escape").symlink_to(outside, target_is_directory=True)
+
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+    )
+    registered = runtime.register_linked_source(str(linked))
+    assert "path" not in registered
+    assert (tmp_path / "linked-sources.json").stat().st_mode & 0o077 == 0
+    source_id = registered["source_id"]
+    assert runtime.register_linked_source(str(linked))["source_id"] != source_id
+
+    manifest = runtime.linked_source_manifest(source_id)
+    paths = {entry["path"] for entry in manifest["entries"]}
+    assert {"mri/orig.mgz", "stats/aseg.stats"} <= paths
+    assert "escape" not in paths
+    assert manifest["skipped_symlinks"] == 1
+    content, size = runtime.read_linked_source(source_id, "mri/orig.mgz", offset=2, length=4)
+    assert content == b"lume"
+    assert size == len(b"volume-data")
+    with pytest.raises(ValueError, match="symbolic links"):
+        runtime.read_linked_source(source_id, "escape/secret")
+
+    payload = _payload(data_root)
+    payload["container"]["binds"] = [{
+        "linked_source_id": source_id,
+        "linked_relative": ".",
+        "container_path": "/source",
+        "mode": "ro",
+    }]
+    request, _paths = runtime._validated_request(payload)
+    assert request.binds[0].host_path == linked
+    payload["container"]["binds"][0]["mode"] = "rw"
+    with pytest.raises(ValueError, match="read-only"):
+        runtime._validated_request(payload)
+
+    assert runtime.revoke_linked_source(source_id) is True
+    assert runtime.revoke_linked_source(source_id) is False
+    with pytest.raises(ValueError, match="not authorized"):
+        runtime.linked_source_manifest(source_id)
+
+
+def test_linked_source_manifest_enforces_configured_file_limit(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    linked = tmp_path / "external"
+    linked.mkdir()
+    (linked / "one.mgz").write_bytes(b"one")
+    (linked / "two.mgz").write_bytes(b"two")
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+        max_source_files=1,
+    )
+
+    source_id = runtime.register_linked_source(str(linked))["source_id"]
+    manifest = runtime.linked_source_manifest(source_id)
+
+    assert manifest["truncated"] is True
+    assert len([entry for entry in manifest["entries"] if entry["type"] == "file"]) == 1
+
+
+def test_linked_source_manifest_bounds_directory_entries(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    linked = tmp_path / "external"
+    linked.mkdir()
+    for index in range(5):
+        (linked / f"empty-{index}").mkdir()
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+        max_source_files=1,
+    )
+
+    source_id = runtime.register_linked_source(str(linked))["source_id"]
+    manifest = runtime.linked_source_manifest(source_id)
+
+    assert manifest["truncated"] is True
+    assert len(manifest["entries"]) == 4
+
+
+def test_linked_source_manifest_reports_depth_truncation(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    linked = tmp_path / "external"
+    deepest = linked
+    for index in range(34):
+        deepest = deepest / f"level-{index}"
+    deepest.mkdir(parents=True)
+    (deepest / "volume.mgz").write_bytes(b"volume")
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+    )
+
+    source_id = runtime.register_linked_source(str(linked))["source_id"]
+    manifest = runtime.linked_source_manifest(source_id)
+
+    assert manifest["truncated"] is True
+    assert not any(entry["path"].endswith("volume.mgz") for entry in manifest["entries"])
+
+
 def test_bridge_writes_image_preparation_failure_to_requested_stderr(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -912,6 +1035,7 @@ def test_http_bridge_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: P
             runtime,
             "x" * 43,
             launch_id="test-launch",
+            source_token="s" * 43,
         )
     except PermissionError:
         pytest.skip("sandbox does not permit loopback listeners")
@@ -934,6 +1058,19 @@ def test_http_bridge_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         assert response.status_code == 200
         assert response.json()["protocol_version"] == PROTOCOL_VERSION
         assert response.json()["launch_id"] == "test-launch"
+        register_url = f"http://127.0.0.1:{server.server_port}/v1/sources/register"
+        body = {"protocol_version": PROTOCOL_VERSION, "host_path": str(data_root)}
+        assert session.post(register_url, headers={
+            "Authorization": f"Bearer {'x' * 43}",
+            "X-NeuroCade-Launch-ID": "test-launch",
+        }, json=body, timeout=2).status_code == 403
+        registered = session.post(register_url, headers={
+            "Authorization": f"Bearer {'x' * 43}",
+            "X-NeuroCade-Launch-ID": "test-launch",
+            "X-NeuroCade-Source-Authorization": "s" * 43,
+        }, json=body, timeout=2)
+        assert registered.status_code == 201
+        assert "path" not in registered.json()
     finally:
         server.shutdown()
         server.server_close()

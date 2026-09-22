@@ -91,8 +91,13 @@ def build_docker_argv(
     for bind in request.binds:
         if not isinstance(bind, BridgeBind):
             raise TypeError("Docker adapter requires root-relative bridge binds")
-        source = (data_root / bind.source_relative).resolve()
-        source.relative_to(data_root)
+        if bind.host_path is not None:
+            if bind.mode != "ro":
+                raise ValueError("Linked source binds must be read-only")
+            source = bind.host_path.resolve(strict=True)
+        else:
+            source = (data_root / bind.source_relative).resolve()
+            source.relative_to(data_root)
         mount = f"type=bind,src={source},dst={bind.container_path}"
         if bind.mode == "ro":
             mount += ",readonly"

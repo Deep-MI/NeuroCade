@@ -25,6 +25,7 @@ IMAGE_DIR="$RUNTIME_DIR/images"
 BRIDGE_VENV="$RUNTIME_DIR/bridge-venv"
 BRIDGE_BIN="$BRIDGE_VENV/bin/neurocade-runtime-bridge"
 BRIDGE_TOKEN_FILE="$RUNTIME_DIR/bridge-token"
+SOURCE_TOKEN_FILE="$RUNTIME_DIR/source-token"
 BRIDGE_PID_FILE="$RUNTIME_DIR/bridge.pid"
 BRIDGE_LOG="$RUNTIME_DIR/bridge.log"
 LAUNCH_ID_FILE="$RUNTIME_DIR/launch-id"
@@ -38,6 +39,7 @@ MCP_ENABLED="${NEUROCADE_MCP_ENABLED:-false}"
 MCP_ACCESS="${NEUROCADE_MCP_ACCESS:-standard}"
 MCP_EXPLICIT=0
 HTTP_PORT="${APP_HTTP_PORT:-8000}"
+MAX_UPLOAD_FILES="${MAX_UPLOAD_FILES:-30000}"
 STARTUP_TIMEOUT_SECONDS="${NEUROCADE_STARTUP_TIMEOUT_SECONDS:-120}"
 IMAGE="${NEUROCADE_IMAGE:-docker.io/deepmi/neurocade:latest}"
 CONTAINER_NAME="${NEUROCADE_CONTAINER_NAME:-neurocade}"
@@ -78,6 +80,7 @@ validate_configuration() {
   case "$RUNTIME" in docker|apptainer) ;; *) fail "NEUROCADE_RUNTIME=docker|apptainer is required. Rerun scripts/install.sh --runtime docker|apptainer." ;; esac
   [[ "$BRIDGE_PORT" =~ ^[0-9]+$ ]] && (( BRIDGE_PORT > 0 && BRIDGE_PORT < 65536 )) || fail "Invalid NEUROCADE_BRIDGE_PORT"
   [[ "$HTTP_PORT" =~ ^[0-9]+$ ]] && (( HTTP_PORT > 0 && HTTP_PORT < 65536 )) || fail "Invalid APP_HTTP_PORT"
+  [[ "$MAX_UPLOAD_FILES" =~ ^[0-9]+$ ]] && (( MAX_UPLOAD_FILES > 0 )) || fail "Invalid MAX_UPLOAD_FILES"
   [[ "$DATABASE_VOLUME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] || fail "Invalid NEUROCADE_DATABASE_VOLUME"
   if [[ "$RUNTIME" == "docker" ]]; then
     command -v docker >/dev/null 2>&1 || fail "Docker is required for the docker profile"
@@ -143,6 +146,11 @@ ensure_token() {
     "$BRIDGE_VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))' >"$BRIDGE_TOKEN_FILE"
   fi
   chmod 600 "$BRIDGE_TOKEN_FILE"
+  if [[ ! -s "$SOURCE_TOKEN_FILE" ]]; then
+    umask 077
+    "$BRIDGE_VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))' >"$SOURCE_TOKEN_FILE"
+  fi
+  chmod 600 "$SOURCE_TOKEN_FILE"
 }
 
 load_launch_id() {
@@ -238,6 +246,8 @@ start_bridge() {
   [[ "$RUNTIME" == "docker" ]] && bind_host=0.0.0.0
   "$BRIDGE_BIN" serve --runtime "$RUNTIME" --data-root "$HOST_DATA_DIR" --image-dir "$IMAGE_DIR" \
     --host "$bind_host" --port "$BRIDGE_PORT" --token-file "$BRIDGE_TOKEN_FILE" \
+    --source-token-file "$SOURCE_TOKEN_FILE" \
+    --max-source-files "$MAX_UPLOAD_FILES" \
     --launch-id "$LAUNCH_ID" \
     --daemonize --pid-file "$BRIDGE_PID_FILE" --log-file "$BRIDGE_LOG"
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))

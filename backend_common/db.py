@@ -179,6 +179,38 @@ class Case(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text)
 
 
+class LinkedCaseSource(Base, TimestampMixin):
+    """A host directory authorized by the native bridge and attached to a case."""
+
+    __tablename__ = "linked_case_sources"
+    __table_args__ = (UniqueConstraint("case_id", name="uq_linked_case_sources_case"),)
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
+    case_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("cases.id", onupdate="CASCADE", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.id", onupdate="CASCADE", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("linked_source_claims.source_id", onupdate="CASCADE"), nullable=False, index=True
+    )
+    source_relative: Mapped[str] = mapped_column(String(1024), default=".", nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    format: Mapped[str] = mapped_column(String(32), default="generic", nullable=False)
+
+
+class LinkedSourceClaim(Base, TimestampMixin):
+    """Bind one opaque runtime-bridge source capability to its first owner."""
+
+    __tablename__ = "linked_source_claims"
+
+    source_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+
+
 class PacsImport(Base, TimestampMixin):
     __tablename__ = "pacs_imports"
     __table_args__ = (UniqueConstraint("workspace_id", "submission_key", name="uq_pacs_submission"),)
@@ -211,9 +243,7 @@ class Workspace(Base, TimestampMixin):
 
 class WorkspaceMembership(Base, TimestampMixin):
     __tablename__ = "workspace_memberships"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "user_id", name="uq_workspace_memberships_workspace_user"),
-    )
+    __table_args__ = (UniqueConstraint("workspace_id", "user_id", name="uq_workspace_memberships_workspace_user"),)
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
@@ -353,9 +383,7 @@ class AppEvent(Base):
 
 class AssistantThread(Base, TimestampMixin):
     __tablename__ = "assistant_threads"
-    __table_args__ = (
-        UniqueConstraint("thread_key", name="uq_assistant_threads_thread_key"),
-    )
+    __table_args__ = (UniqueConstraint("thread_key", name="uq_assistant_threads_thread_key"),)
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     thread_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
@@ -369,9 +397,7 @@ class AssistantThread(Base, TimestampMixin):
 
 class AssistantMessage(Base, TimestampMixin):
     __tablename__ = "assistant_messages"
-    __table_args__ = (
-        UniqueConstraint("thread_id", "sequence", name="uq_assistant_messages_thread_sequence"),
-    )
+    __table_args__ = (UniqueConstraint("thread_id", "sequence", name="uq_assistant_messages_thread_sequence"),)
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     thread_id: Mapped[str] = mapped_column(ForeignKey("assistant_threads.id"), nullable=False, index=True)
@@ -388,9 +414,7 @@ class AssistantTurn(Base, TimestampMixin):
     """Durable lifecycle record for one private assistant request."""
 
     __tablename__ = "assistant_turns"
-    __table_args__ = (
-        Index("ix_assistant_turns_thread_status", "thread_id", "status"),
-    )
+    __table_args__ = (Index("ix_assistant_turns_thread_status", "thread_id", "status"),)
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
     thread_id: Mapped[str] = mapped_column(ForeignKey("assistant_threads.id"), nullable=False, index=True)
@@ -446,21 +470,15 @@ class AssistantToolExecution(Base, TimestampMixin):
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True, default=lambda: str(uuid4()))
-    turn_id: Mapped[str | None] = mapped_column(
-        ForeignKey("assistant_turns.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    turn_id: Mapped[str | None] = mapped_column(ForeignKey("assistant_turns.id", ondelete="CASCADE"), nullable=True, index=True)
     thread_id: Mapped[str | None] = mapped_column(ForeignKey("assistant_threads.id"), nullable=True, index=True)
     source: Mapped[str] = mapped_column(String(32), default="builtin_assistant", server_default="builtin_assistant", nullable=False)
     client_id: Mapped[str | None] = mapped_column(ForeignKey("mcp_clients.id"))
     configuration_digest: Mapped[str | None] = mapped_column(String(64))
     approval_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     expires_at: Mapped[int | None] = mapped_column(Integer)
-    workspace_id: Mapped[str] = mapped_column(
-        ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True
-    )
-    case_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True
-    )
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", onupdate="CASCADE"), nullable=False, index=True)
+    case_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("cases.id", onupdate="CASCADE"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     call_id: Mapped[str] = mapped_column(String(255), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)

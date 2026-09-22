@@ -10,10 +10,12 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from .apptainer_runtime import build_container_argv, nvidia_capability
+from .bridge_paths import container_path as _container_path
+from .bridge_paths import resolve_relative as _resolve_relative
 from .docker_runtime import active_writer_run_ids, build_docker_argv, configured_docker_platform
 from .execution import (
     BridgeBind,
@@ -23,6 +25,8 @@ from .execution import (
     run_managed_command,
 )
 from .images import prepare_image
+from .linked_sources import MAX_SOURCE_READ_BYTES, LinkedSourceRegistry
+from .linked_sources import MAX_SOURCE_SCAN_DEPTH as MAX_SOURCE_SCAN_DEPTH
 from .protocol import (
     ACTIVE_RUN_STATES,
     BUILD_VERSION,
@@ -47,30 +51,6 @@ def _bounded(value: str, limit: int = MAX_CAPTURE_BYTES) -> str:
     return (encoded[: budget // 2] + marker + encoded[-(budget - budget // 2) :]).decode("utf-8", errors="replace")
 
 
-def _resolve_relative(root: Path, value: str, *, label: str, must_exist: bool) -> Path:
-    relative = validate_relative_path(value, label=label, allow_dot=True)
-    candidate = (root / relative).resolve(strict=False)
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"{label} escapes the configured data root") from exc
-    if must_exist and not candidate.exists():
-        raise ValueError(f"{label} does not exist")
-    if candidate.exists() and not (candidate.is_file() or candidate.is_dir()):
-        raise ValueError(f"{label} cannot be a device or special file")
-    ancestor = candidate if candidate.exists() else next((path for path in candidate.parents if path.exists()), root)
-    try:
-        ancestor.resolve(strict=True).relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"{label} escapes the configured data root through a symlink") from exc
-    return candidate
-
-
-def _container_path(value: str, *, label: str) -> str:
-    path = PurePosixPath(str(value or ""))
-    if not path.is_absolute() or ".." in path.parts or "\x00" in str(value):
-        raise ValueError(f"{label} must be an absolute normalized path")
-    return path.as_posix()
 
 
 @dataclass
@@ -166,6 +146,8 @@ class BridgeRuntime:
         image_dir: Path,
         launch_id: str = "test-launch",
         terminal_ttl_s: int = TERMINAL_RESULT_TTL_SECONDS,
+        source_registry_path: Path | None = None,
+        max_source_files: int = 30_000,
     ) -> None:
         if backend not in {"docker", "apptainer"}:
             raise ValueError("NEUROCADE_RUNTIME must be docker or apptainer")
@@ -175,6 +157,10 @@ class BridgeRuntime:
         self.launch_id = launch_id
         self.data_root = data_root.expanduser().resolve(strict=True)
         self.image_dir = image_dir.expanduser().resolve()
+        self.linked_sources = LinkedSourceRegistry(
+            source_registry_path or self.image_dir.parent / "linked-sources.json",
+            max_files=max_source_files,
+        )
         self.terminal_ttl_s = terminal_ttl_s
         self._runs: dict[str, RunRecord] = {}
         self._capabilities: dict[str, dict[str, Any]] = {}
@@ -335,6 +321,27 @@ class BridgeRuntime:
             self._capabilities[key] = result
         return result
 
+    def register_linked_source(self, host_path: str) -> dict[str, Any]:
+        result = self.linked_sources.register(host_path)
+        return {"protocol_version": PROTOCOL_VERSION, **result}
+
+    def linked_source_manifest(self, source_id: str) -> dict[str, Any]:
+        return self.linked_sources.manifest(source_id)
+
+    def revoke_linked_source(self, source_id: str) -> bool:
+        return self.linked_sources.revoke(source_id)
+
+    def read_linked_source(self, source_id: str, relative_path: str, *, offset: int = 0, length: int = MAX_SOURCE_READ_BYTES) -> tuple[bytes, int]:
+        if offset < 0:
+            raise ValueError("Linked source read offset must not be negative")
+        if length <= 0 or length > MAX_SOURCE_READ_BYTES:
+            raise ValueError(f"Linked source reads are limited to {MAX_SOURCE_READ_BYTES} bytes")
+        path = self.linked_sources.resolve_path(source_id, relative_path, file_only=True)
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            return handle.read(length), size
+
     def _validated_request(self, payload: dict[str, Any]) -> tuple[RuntimeContainerRunRequest, PreparedRunPaths]:
         require_protocol(payload)
         run_id = str(payload.get("run_id") or "")
@@ -353,12 +360,26 @@ class BridgeRuntime:
         for value in container.get("binds", []):
             if not isinstance(value, dict) or value.get("mode") not in {"ro", "rw"}:
                 raise ValueError("Invalid runtime bind")
-            source_relative = validate_relative_path(str(value.get("source_relative") or ""), label="Bind source", allow_dot=True)
-            source = _resolve_relative(self.data_root, source_relative, label="Bind source", must_exist=True)
+            linked_source_id = value.get("linked_source_id")
+            if linked_source_id is not None:
+                if value.get("mode") != "ro":
+                    raise ValueError("Linked source binds must be read-only")
+                source_relative = validate_relative_path(
+                    str(value.get("linked_relative") or "."), label="Linked bind source", allow_dot=True
+                )
+                source = self.linked_sources.resolve_path(str(linked_source_id), source_relative)
+            else:
+                source_relative = validate_relative_path(str(value.get("source_relative") or ""), label="Bind source", allow_dot=True)
+                source = _resolve_relative(self.data_root, source_relative, label="Bind source", must_exist=True)
             if not source.is_dir() and not source.is_file():
                 raise ValueError("Bind source must be a regular file or directory")
             binds.append(
-                BridgeBind(source_relative, _container_path(str(value.get("container_path") or ""), label="Bind target"), value["mode"])
+                BridgeBind(
+                    source_relative,
+                    _container_path(str(value.get("container_path") or ""), label="Bind target"),
+                    value["mode"],
+                    source if linked_source_id is not None else None,
+                )
             )
         scratch_paths = tuple(
             _container_path(str(value), label="Scratch path")

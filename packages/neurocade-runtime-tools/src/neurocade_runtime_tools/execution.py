@@ -45,6 +45,21 @@ class RuntimeBind:
     mode: str = "ro"
 
 
+@dataclass(slots=True)
+class LinkedRuntimeBind:
+    """A read-only bind from a directory explicitly authorized on the host."""
+
+    source_id: str
+    source_relative: str
+    container_path: str
+    mode: str = "ro"
+
+    @property
+    def host_path(self) -> None:
+        """Linked binds deliberately have no application-visible host path."""
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class BridgeBind:
     """A validated bind path relative to the bridge's configured data root."""
@@ -52,6 +67,7 @@ class BridgeBind:
     source_relative: str
     container_path: str
     mode: str = "ro"
+    host_path: Path | None = None
 
 
 @dataclass(slots=True)
@@ -60,7 +76,7 @@ class RuntimeContainerRunRequest:
 
     image: RuntimeImageSpec
     command: Sequence[str]
-    binds: Sequence[RuntimeBind | BridgeBind] = field(default_factory=tuple)
+    binds: Sequence[RuntimeBind | LinkedRuntimeBind | BridgeBind] = field(default_factory=tuple)
     scratch_paths: Sequence[str] = field(default_factory=tuple)
     env: Mapping[str, str] | None = None
     cwd: str | None = None

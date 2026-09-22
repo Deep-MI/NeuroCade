@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     pacs_max_series: int = Field(default=100, gt=0)
     pacs_max_pending: int = Field(default=10, gt=0)
     max_upload_file_size_bytes: int = Field(default=2 * 1024 * 1024 * 1024, alias="MAX_UPLOAD_FILE_SIZE_BYTES")
-    dicom_zip_max_entries: int = Field(default=5000, alias="DICOM_ZIP_MAX_ENTRIES")
+    max_upload_files: int = Field(default=30_000, gt=0, alias="MAX_UPLOAD_FILES")
+    max_upload_batch_size_bytes: int = Field(default=512 * 1024 * 1024 * 1024, gt=0, alias="MAX_UPLOAD_BATCH_SIZE_BYTES")
+    dicom_zip_max_entries: int = Field(default=30_000, gt=0, alias="DICOM_ZIP_MAX_ENTRIES")
     dicom_zip_max_expanded_bytes: int = Field(default=4 * 1024 * 1024 * 1024, alias="DICOM_ZIP_MAX_EXPANDED_BYTES")
 
     clerk_publishable_key: str | None = Field(default=None, alias="CLERK_PUBLISHABLE_KEY")

@@ -28,11 +28,13 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         token: str,
         *,
         launch_id: str,
+        source_token: str | None = None,
     ):
         super().__init__(address, BridgeHandler)
         self.runtime = runtime
         self.token = token
         self.launch_id = launch_id
+        self.source_token = source_token
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -49,7 +51,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _authorized(self) -> bool:
+    def _authorized(self, *, source_registration: bool = False) -> bool:
         supplied = self.headers.get("Authorization", "")
         expected = f"Bearer {self.server.token}"
         if not hmac.compare_digest(supplied.encode(), expected.encode()):
@@ -59,7 +61,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(launch_id.encode(), self.server.launch_id.encode()):
             self._json(HTTPStatus.CONFLICT, {"error": "launch session mismatch"})
             return False
+        if source_registration:
+            supplied_source_token = self.headers.get("X-NeuroCade-Source-Authorization", "")
+            expected_source_token = self.server.source_token or ""
+            if (
+                not expected_source_token
+                or self.client_address[0] not in {"127.0.0.1", "::1"}
+                or not hmac.compare_digest(supplied_source_token.encode(), expected_source_token.encode())
+            ):
+                self._json(HTTPStatus.FORBIDDEN, {"error": "host directory authorization required"})
+                return False
         return True
+
+    def _bytes(self, status: int, body: bytes, *, file_size: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-NeuroCade-File-Size", str(file_size))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _body(self) -> dict[str, Any]:
         try:
@@ -89,10 +109,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self._json(HTTPStatus.OK, run.public())
             return
+        if self.path.startswith("/v1/sources/") and self.path.endswith("/manifest"):
+            source_id = self.path.removeprefix("/v1/sources/").removesuffix("/manifest").strip("/")
+            try:
+                self._json(HTTPStatus.OK, self.server.runtime.linked_source_manifest(source_id))
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self._authorized():
+        is_registration = self.path == "/v1/sources/register"
+        if not self._authorized(source_registration=is_registration):
             return
         try:
             body = self._body()
@@ -103,6 +131,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/capabilities/resolve":
                 require_protocol(body)
                 self._json(HTTPStatus.OK, self.server.runtime.resolve_capability(body.get("image")))
+                return
+            if self.path == "/v1/sources/register":
+                require_protocol(body)
+                self._json(HTTPStatus.CREATED, self.server.runtime.register_linked_source(str(body.get("host_path") or "")))
+                return
+            if self.path == "/v1/sources/read":
+                require_protocol(body)
+                content, size = self.server.runtime.read_linked_source(
+                    str(body.get("source_id") or ""),
+                    str(body.get("relative_path") or ""),
+                    offset=int(body.get("offset") or 0),
+                    length=int(body.get("length") or 8 * 1024 * 1024),
+                )
+                self._bytes(HTTPStatus.OK, content, file_size=size)
                 return
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except OverflowError as exc:
@@ -117,6 +159,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         if not self._authorized():
+            return
+        if self.path.startswith("/v1/sources/"):
+            source_id = self.path.removeprefix("/v1/sources/").strip("/")
+            try:
+                self._json(HTTPStatus.OK, {"revoked": self.server.runtime.revoke_linked_source(source_id)})
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
         if not self.path.startswith("/v1/runs/"):
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -146,13 +195,22 @@ def serve_bridge(
     port: int,
     token_file: Path,
     launch_id: str,
+    source_token_file: Path | None = None,
+    max_source_files: int = 30_000,
 ) -> int:
-    runtime = BridgeRuntime(backend=backend, data_root=data_root, image_dir=image_dir, launch_id=launch_id)
+    runtime = BridgeRuntime(
+        backend=backend,
+        data_root=data_root,
+        image_dir=image_dir,
+        launch_id=launch_id,
+        max_source_files=max_source_files,
+    )
     server = BridgeHTTPServer(
         (host, port),
         runtime,
         read_token(token_file),
         launch_id=launch_id,
+        source_token=read_token(source_token_file) if source_token_file is not None else None,
     )
 
     def request_shutdown(_signum: int, _frame: Any) -> None:

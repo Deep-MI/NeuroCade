@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from .execution import (
+    LinkedRuntimeBind,
     RuntimeBind,
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
@@ -136,6 +137,48 @@ class BridgeClient:
             raise BridgeError("Runtime bridge returned an invalid writer listing")
         return bool(payload.get("determined")), {str(value) for value in run_ids}
 
+    def linked_source_manifest(self, source_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/sources/{source_id}/manifest")
+
+    def revoke_linked_source(self, source_id: str) -> bool:
+        payload = self._request("DELETE", f"/v1/sources/{source_id}")
+        return bool(payload.get("revoked"))
+
+    def read_linked_source(
+        self,
+        source_id: str,
+        relative_path: str,
+        *,
+        offset: int = 0,
+        length: int = 8 * 1024 * 1024,
+    ) -> tuple[bytes, int]:
+        try:
+            response = self.session.post(
+                f"{self.base_url}/v1/sources/read",
+                headers=self.headers,
+                json={
+                    "protocol_version": PROTOCOL_VERSION,
+                    "source_id": source_id,
+                    "relative_path": relative_path,
+                    "offset": offset,
+                    "length": length,
+                },
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise BridgeError(f"Runtime bridge is unavailable: {exc}") from exc
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("error")
+            except ValueError:
+                detail = response.text
+            raise BridgeError(f"Runtime bridge returned {response.status_code}: {detail or 'request failed'}")
+        try:
+            size = int(response.headers["X-NeuroCade-File-Size"])
+        except (KeyError, ValueError) as exc:
+            raise BridgeError("Runtime bridge returned an invalid linked file response") from exc
+        return response.content, size
+
     def status(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{run_id}")
 
@@ -151,13 +194,23 @@ class BridgeClient:
         assert run is not None and run.run_id is not None
         binds = []
         for bind in run.binds:
-            if not isinstance(bind, RuntimeBind):
-                raise TypeError("Application requests require host-path runtime binds")
-            binds.append({
-                "source_relative": relative_to_data_root(bind.host_path, self.data_root, label="Bind source"),
-                "container_path": bind.container_path,
-                "mode": bind.mode,
-            })
+            if isinstance(bind, RuntimeBind):
+                binds.append({
+                    "source_relative": relative_to_data_root(bind.host_path, self.data_root, label="Bind source"),
+                    "container_path": bind.container_path,
+                    "mode": bind.mode,
+                })
+            elif isinstance(bind, LinkedRuntimeBind):
+                if bind.mode != "ro":
+                    raise ValueError("Linked source binds must be read-only")
+                binds.append({
+                    "linked_source_id": bind.source_id,
+                    "linked_relative": bind.source_relative,
+                    "container_path": bind.container_path,
+                    "mode": "ro",
+                })
+            else:
+                raise TypeError("Application requests require host-path or linked-source runtime binds")
         return {
             "protocol_version": PROTOCOL_VERSION,
             "build_version": BUILD_VERSION,
