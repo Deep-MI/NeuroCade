@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from neurocade_runtime_tools.container_request import RuntimeBind
-from neurocade_runtime_tools.execution import RuntimeExecutionResult
+from neurocade_runtime_tools.execution import LinkedRuntimeBind, RuntimeExecutionResult
 from neurocade_runtime_tools.protocol import RuntimeImageSpec
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,6 +20,7 @@ from api_service.runtime_tools import workflow_execution as execution_module  # 
 from api_service.runtime_tools.workflow_catalog import (  # noqa: E402
     NeuroimagingWorkflow,
     WorkflowExecution,
+    WorkflowInput,
     WorkflowReturn,
     _read_workflow_catalog,
     delete_user_workflow,
@@ -123,7 +124,7 @@ def test_search_payload_is_compact_and_inspect_is_lazy():
         "fastsurfer_segmentation",
         "fastsurfer_fast",
     ]
-    assert {tool["input_artifact_kind"] for tool in payload} == {"intensity_volume"}
+    assert {item["kind"] for tool in payload for item in tool["inputs"]} == {"file"}
     inspected = inspect_workflow("fastsurfer_full")
     assert "details" in inspected
     assert inspected["image"] == "vnmd/fastsurfer_2.5.4:latest"
@@ -400,6 +401,31 @@ def test_prepare_workflow_validates_ordered_paths_and_symlink_escape(tmp_path):
         execution_module.prepare_workflow(workflow.id, ["/case/escape.mgz"], bind, workflow=workflow)
     with pytest.raises(ValueError, match="exactly 1"):
         execution_module.prepare_workflow(workflow.id, [], bind, workflow=workflow)
+
+
+def test_prepare_workflow_accepts_mixed_managed_file_and_linked_directory(tmp_path):
+    case_root = tmp_path / "case"
+    case_root.mkdir()
+    (case_root / "input.mgz").write_bytes(b"volume")
+    workflow = header_probe_workflow().model_copy(
+        update={
+            "inputs": [
+                WorkflowInput(name="volume", description="Managed volume"),
+                WorkflowInput(name="subject", description="Linked subject tree", kind="directory"),
+            ]
+        }
+    )
+
+    prepared = execution_module.prepare_workflow(
+        workflow.id,
+        ["/case/input.mgz", "/linked-input"],
+        RuntimeBind(case_root, "/case", "rw"),
+        workflow=workflow,
+        run_id="run-mixed",
+        linked_bind=LinkedRuntimeBind("source-id", "subject-01", "/linked-input"),
+    )
+
+    assert prepared.container_inputs == ("/case/input.mgz", "/linked-input")
 
 
 def test_typed_output_maps_to_declared_case_file_and_is_reported(tmp_path):

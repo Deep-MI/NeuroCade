@@ -47,6 +47,8 @@ def submit_workflow_run(
     bind_container_path: str,
     job_id: str,
     gpu_enabled: bool,
+    linked_source_id: str | None = None,
+    linked_source_relative: str = ".",
 ) -> None:
     """Submit a persisted run and verify that the worker kept its durable job ID."""
     submitted_job_id = submit_neuroimaging_workflow(
@@ -57,6 +59,8 @@ def submit_workflow_run(
         bind_container_path=bind_container_path,
         job_id=job_id,
         gpu_enabled=gpu_enabled,
+        linked_source_id=linked_source_id,
+        linked_source_relative=linked_source_relative,
     )
     if submitted_job_id != job_id:
         raise RuntimeError("Background worker returned an unexpected job id")

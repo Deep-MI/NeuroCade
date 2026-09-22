@@ -1,10 +1,14 @@
 """Provide API service cases behavior for NeuroCade."""
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from typing import Any
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api_service.cases.operations import (
     add_upload_to_case,
+    create_case_from_linked_source,
     create_case_from_upload,
     delete_case_for_user,
     save_generated_case_volume,
@@ -21,12 +25,14 @@ from api_service.deps import get_context, get_db
 from api_service.helpers import get_workspace_for_user
 from api_service.jobs import job_manager
 from api_service.policies import require_workspace_manage
+from api_service.runtime import settings
 from api_service.schemas import (
     ArtifactSummary,
     CaseDetail,
     CaseSummary,
     CaseUpdateRequest,
     CaseUpdateResponse,
+    LinkedCaseCreateRequest,
     RunSummary,
     StartRunRequest,
     UploadResponse,
@@ -34,6 +40,16 @@ from api_service.schemas import (
 from backend_common.auth import AuthContext
 
 router = APIRouter(prefix="/api/app", tags=["cases"])
+
+
+@router.post("/cases/linked", response_model=UploadResponse)
+def create_linked_case(
+    request: LinkedCaseCreateRequest,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> UploadResponse:
+    """Create a case backed by a native, read-only host directory."""
+    return create_case_from_linked_source(db, context, request=request)
 
 
 @router.get("/cases", response_model=list[CaseSummary])
@@ -56,7 +72,6 @@ def get_case_detail(
     return get_case_detail_for_user(db, context, case_id=case_id)
 
 
-@router.post("/cases", response_model=UploadResponse)
 async def create_case_with_upload(
     workspace_id: str = Form(...),
     title: str | None = Form(None),
@@ -66,10 +81,16 @@ async def create_case_with_upload(
     notes: str | None = Form(None),
     file: UploadFile | None = File(None),
     files: list[UploadFile] | None = File(None),
+    relative_paths: str | None = Form(None),
+    import_mode: str = Form("auto"),
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> UploadResponse:
     """Create a case from uploaded input files."""
+    if not isinstance(relative_paths, str):
+        relative_paths = None
+    if not isinstance(import_mode, str):
+        import_mode = "auto"
     return await create_case_from_upload(
         db,
         context,
@@ -81,19 +102,101 @@ async def create_case_with_upload(
         notes=notes,
         file=file,
         files=files,
+        relative_paths=relative_paths,
+        import_mode=import_mode,
     )
 
 
-@router.post("/cases/{case_id}/uploads", response_model=UploadResponse)
 async def add_case_upload(
     case_id: str,
     file: UploadFile | None = File(None),
     files: list[UploadFile] | None = File(None),
+    relative_paths: str | None = Form(None),
     db: Session = Depends(get_db),
     context: AuthContext = Depends(get_context),
 ) -> UploadResponse:
     """Attach uploaded input files to an existing case."""
-    return await add_upload_to_case(db, context, case_id=case_id, file=file, files=files)
+    if not isinstance(relative_paths, str):
+        relative_paths = None
+    return await add_upload_to_case(db, context, case_id=case_id, file=file, files=files, relative_paths=relative_paths)
+
+
+def _multipart_text(form: Any, key: str) -> str | None:
+    value = form.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _multipart_uploads(form: Any, key: str) -> list[UploadFile]:
+    return [value for value in form.getlist(key) if hasattr(value, "filename") and hasattr(value, "file")]
+
+
+async def _configured_upload_form(request: Request) -> Any:
+    # One JSON string carries every relative path. Allow the maximum UTF-8 size
+    # implied by the per-path validation while keeping the field itself bounded.
+    manifest_part_limit = max(1024 * 1024, settings.max_upload_files * 4096 + 2)
+    try:
+        return await request.form(max_files=settings.max_upload_files, max_part_size=manifest_part_limit)
+    except StarletteHTTPException as exc:
+        if exc.status_code == 400 and "Maximum number of files" in str(exc.detail):
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload contains more than {settings.max_upload_files} files",
+            ) from exc
+        raise
+
+
+@router.post("/cases", response_model=UploadResponse)
+async def create_case_with_upload_request(
+    request: Request,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> UploadResponse:
+    """Parse case uploads with NeuroCade's configured limit instead of Starlette's 1,000-file default."""
+    form = await _configured_upload_form(request)
+    try:
+        workspace_id = _multipart_text(form, "workspace_id")
+        if not workspace_id:
+            raise HTTPException(status_code=422, detail="workspace_id is required")
+        single = _multipart_uploads(form, "file")
+        return await create_case_with_upload(
+            workspace_id=workspace_id,
+            title=_multipart_text(form, "title"),
+            description=_multipart_text(form, "description"),
+            modalities=_multipart_text(form, "modalities"),
+            tags=_multipart_text(form, "tags"),
+            notes=_multipart_text(form, "notes"),
+            file=single[0] if single else None,
+            files=_multipart_uploads(form, "files"),
+            relative_paths=_multipart_text(form, "relative_paths"),
+            import_mode=_multipart_text(form, "import_mode") or "auto",
+            db=db,
+            context=context,
+        )
+    finally:
+        await form.close()
+
+
+@router.post("/cases/{case_id}/uploads", response_model=UploadResponse)
+async def add_case_upload_request(
+    case_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(get_context),
+) -> UploadResponse:
+    """Parse additional case files with the same configured upload limit."""
+    form = await _configured_upload_form(request)
+    try:
+        single = _multipart_uploads(form, "file")
+        return await add_case_upload(
+            case_id=case_id,
+            file=single[0] if single else None,
+            files=_multipart_uploads(form, "files"),
+            relative_paths=_multipart_text(form, "relative_paths"),
+            db=db,
+            context=context,
+        )
+    finally:
+        await form.close()
 
 
 @router.post("/cases/{case_id}/generated-volume", response_model=ArtifactSummary)

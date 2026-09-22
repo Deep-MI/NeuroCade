@@ -78,7 +78,7 @@ def workflow_approval_presentation(
 ) -> AssistantWorkflowApprovalPresentation | None:
     """Resolve configured workflow metadata for one exact tool_call request."""
     tool_id = arguments.get("tool_id")
-    inputs = arguments.get("inputs")
+    inputs = arguments.get("input_files")
     if not isinstance(tool_id, str) or not isinstance(inputs, list):
         return None
     try:
@@ -91,13 +91,15 @@ def workflow_approval_presentation(
         return None
 
     presented_inputs: list[dict[str, str]] = []
-    for index, path in enumerate(inputs):
+    for index, reference in enumerate(inputs):
         configured = workflow.inputs[index] if index < len(workflow.inputs) else None
+        source = reference.get("source") if isinstance(reference, dict) else None
+        path = reference.get("path") if isinstance(reference, dict) else None
         presented_inputs.append(
             {
                 "name": configured.name if configured is not None else f"input_{index + 1}",
                 "description": configured.description if configured is not None else "Workflow input",
-                "path": str(path),
+                "path": f"{source}:{path}" if source and path else str(reference),
             }
         )
     return AssistantWorkflowApprovalPresentation.model_validate(

@@ -114,6 +114,7 @@ def get_case_detail_for_user(db: Session, context: AuthContext, *, case_id: str)
     artifacts = db.query(Artifact).filter(Artifact.case_id == case.id).order_by(Artifact.created_at.desc()).all()
     runs = db.query(Run).filter(Run.case_id == case.id).order_by(Run.created_at.desc()).all()
     log_event(db, context, "case.viewed", case_id=case_id)
+    db.commit()
     return serialize_case_detail(
         case,
         role,

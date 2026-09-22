@@ -75,9 +75,12 @@ def run_neuroimaging_workflow_task(
     case_id: str | None,
     gpu_enabled: bool,
     workflow_definition: dict[str, Any] | None = None,
+    linked_source_id: str | None = None,
+    linked_source_relative: str = ".",
 ) -> dict[str, Any]:
     """Execute one background workflow and persist its durable run lifecycle."""
     from neurocade_runtime_tools.container_request import RuntimeBind
+    from neurocade_runtime_tools.execution import LinkedRuntimeBind
 
     host_root = Path(bind_host_path).resolve()
     stdout_path, stderr_path = initialize_run_logs(host_root, run_id)
@@ -112,6 +115,10 @@ def run_neuroimaging_workflow_task(
                 stderr_path=stderr_path,
                 artifact_case_id=case_id,
                 db=db,
+                linked_bind=(
+                    LinkedRuntimeBind(linked_source_id, linked_source_relative, "/linked-input", "ro")
+                    if linked_source_id else None
+                ),
             )
             db.commit()
     except Exception as exc:
@@ -159,6 +166,8 @@ def submit_neuroimaging_workflow(
     bind_container_path: str,
     job_id: str,
     gpu_enabled: bool,
+    linked_source_id: str | None = None,
+    linked_source_relative: str = ".",
 ) -> str:
     """Submit a pre-persisted Run to the durable in-process worker."""
     resolved_workflow = workflow or resolve_workflow(str(tool_id or ""))
@@ -173,6 +182,8 @@ def submit_neuroimaging_workflow(
             "case_id": run.case_id,
             "gpu_enabled": gpu_enabled,
             "workflow_definition": resolved_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+            "linked_source_id": linked_source_id,
+            "linked_source_relative": linked_source_relative,
         },
         queue=resolved_workflow.execution.queue,
         job_id=job_id,

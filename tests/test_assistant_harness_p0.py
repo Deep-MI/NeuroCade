@@ -372,7 +372,7 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
             turn_id=workflow_turn.id,
             tool=workflow_tool,
             call_id="call-workflow",
-            arguments={"tool_id": "fastsurfer_fast", "inputs": ["/workspace/input.mgz"]},
+            arguments={"tool_id": "fastsurfer_fast", "input_files": [{"source": "managed", "path": "input.mgz"}]},
             approved=True,
         )
         assert workflow_execution is not None
@@ -386,7 +386,7 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
             created_by_user_id=user.id,
             status=RunStatus.queued,
             run_type="fastsurfer_fast",
-            input_json={"inputs": ["/workspace/input.mgz"]},
+            input_json={"input_files": [{"source": "managed", "path": "input.mgz"}]},
             result_json={"status": "queued"},
         ))
         db.commit()

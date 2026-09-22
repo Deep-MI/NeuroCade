@@ -22,6 +22,7 @@ from api_service.assistant.tools.catalog_execution import (
 )
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk
 from api_service.assistant.tools.registration import ToolRegistration
+from api_service.assistant.tools.workflow_inputs import prepare_analysis_inputs
 from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.policies import require_case_write, require_workspace_write
 from api_service.runtime_tools.neurodesk_images import validate_catalog_image
@@ -120,8 +121,8 @@ class AssistantCatalogTools:
             ),
             ToolRegistration(
                 "tool_call",
-                "Run one fixed catalog workflow using its exact tool_id and ordered /case/... or /workspace/... inputs.",
-                CatalogToolCallArgs.model_json_schema(),
+                "Run one fixed catalog workflow using its exact tool_id and ordered authorized case-relative inputs.",
+                _inline_schema(CatalogToolCallArgs.model_json_schema()),
                 self.call,
                 ToolRisk.workflow,
                 approval_presentation=partial(workflow_approval_presentation, settings=settings),
@@ -221,6 +222,7 @@ class AssistantCatalogTools:
                 tool.execution.gpu,
                 image=runtime_image_spec(tool.neurodesk_image),
             )
+            prepared_inputs = prepare_analysis_inputs(state, arguments)
         except Exception as exc:
             return ToolResult.error(f"Error preparing tool image: {exc}")
         binds = self.catalog_executor.catalog_runtime_binds(state)
@@ -243,6 +245,7 @@ class AssistantCatalogTools:
             workflow=tool,
             validate_submission=validate_submission,
             gpu_enabled=gpu_enabled,
+            prepared_inputs=prepared_inputs,
         )
         if result.is_error:
             return result

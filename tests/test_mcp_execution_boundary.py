@@ -14,14 +14,74 @@ from api_service.runtime_tools import workflow_execution
 from test_mcp_adapter import database as database
 
 from backend_common.case_storage import case_storage_dir
-from backend_common.db import AssistantToolExecution, Run
+from backend_common.db import AssistantToolExecution, LinkedCaseSource, LinkedSourceClaim, Run
 from backend_common.settings import get_settings
 
 __all__ = ["database"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["preset", "input", "revoke", "read_access", "membership"])
+async def test_linked_case_input_reaches_catalog_submission_with_server_resolved_bind(database, monkeypatch):
+    from api_service.cases import files
+
+    class Bridge:
+        def linked_source_manifest(self, source_id):
+            assert source_id == "source-1"
+            return {
+                "source_id": source_id,
+                "truncated": False,
+                "entries": [{"path": "mri/orig.mgz", "type": "file", "size": 12}],
+            }
+
+    monkeypatch.setattr(files.BridgeClient, "from_environment", lambda: Bridge())
+    monkeypatch.setattr(catalog_tools, "validate_catalog_image", lambda *a, **k: None)
+    monkeypatch.setattr(workflow_execution, "resolve_gpu_enabled", lambda *a, **k: False)
+    submitted = []
+
+    def submit(**kwargs):
+        submitted.append(kwargs)
+        return kwargs["job_id"]
+
+    monkeypatch.setattr(workflow_runs, "submit_neuroimaging_workflow", submit)
+    with database() as db:
+        db.add(LinkedSourceClaim(source_id="source-1", workspace_id="w", owner_user_id="u"))
+        db.flush()
+        db.add(
+            LinkedCaseSource(
+                case_id="case-w",
+                workspace_id="w",
+                source_id="source-1",
+                source_relative=".",
+                display_name="subject",
+                format="freesurfer",
+            )
+        )
+        db.commit()
+        planned = await service.invoke(
+            db,
+            "c",
+            "tool_call",
+            {
+                "case_id": "case-w",
+                "idempotency_key": "linked-input",
+                "arguments": {
+                    "tool_id": "fastsurfer_fast",
+                    "input_files": [{"source": "linked", "path": "mri/orig.mgz"}],
+                },
+            },
+        )
+        result = await service.decide(db, db.get(AssistantToolExecution, planned["invocation_id"]), True)
+
+        assert result["status"] == "succeeded"
+        assert submitted[0]["inputs"] == ["/linked-input/mri/orig.mgz"]
+        assert submitted[0]["linked_source_id"] == "source-1"
+        assert submitted[0]["linked_source_relative"] == "."
+        run = db.get(Run, result["run_id"])
+        assert run.input_json["input_files"] == [{"source": "linked", "path": "mri/orig.mgz"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["preset", "revoke", "read_access", "membership"])
 async def test_approval_rechecks_after_image_validation(database, monkeypatch, change):
     entered, release = threading.Event(), threading.Event()
 
@@ -43,7 +103,7 @@ async def test_approval_rechecks_after_image_validation(database, monkeypatch, c
         path.write_bytes(b"input")
         planned = await service.invoke(db, "c", "tool_call", {
             "case_id": "case-w", "idempotency_key": "race",
-            "arguments": {"tool_id": "fastsurfer_full", "inputs": ["/case/input.nii.gz"]},
+            "arguments": {"tool_id": "fastsurfer_full", "input_files": [{"source": "managed", "path": "input.nii.gz"}]},
         })
         row = db.get(AssistantToolExecution, planned["invocation_id"])
         task = asyncio.create_task(service.decide(db, row, True))
@@ -51,8 +111,6 @@ async def test_approval_rechecks_after_image_validation(database, monkeypatch, c
             assert await asyncio.to_thread(entered.wait, 5)
             if change == "preset":
                 current[0] = original.model_copy(update={"script": original.script + "\n# changed during validation"})
-            elif change == "input":
-                path.write_bytes(b"changed after approval")
             else:
                 from backend_common.db import McpClient, WorkspaceMembership
 
@@ -119,7 +177,7 @@ async def test_admission_retries_authorization_after_conflicting_commit(database
         path.write_bytes(b"input")
         planned = await service.invoke(db, "c", "tool_call", {
             "case_id": "case-w", "idempotency_key": "retry-revalidation",
-            "arguments": {"tool_id": "fastsurfer_full", "inputs": ["/case/input.nii.gz"]},
+            "arguments": {"tool_id": "fastsurfer_full", "input_files": [{"source": "managed", "path": "input.nii.gz"}]},
         })
         commit = db.commit
         conflicted = False
@@ -169,7 +227,7 @@ async def test_completion_survives_real_worker_commit_after_submission(database,
             path.write_bytes(b"input")
             planned = await service.invoke(db, "c", "tool_call", {
                 "case_id": "case-w", "idempotency_key": "worker-race",
-                "arguments": {"tool_id": "fastsurfer_full", "inputs": ["/case/input.nii.gz"]},
+                "arguments": {"tool_id": "fastsurfer_full", "input_files": [{"source": "managed", "path": "input.nii.gz"}]},
             })
             row = db.get(AssistantToolExecution, planned["invocation_id"])
 

@@ -249,7 +249,8 @@ def build_system_prompt(
         session_lines.append(
             "Workflow catalog rule: use tool_search to find a workflow, then tool_inspect on the "
             "selected workflow before calling it. tool_call accepts only the exact tool_id "
-            "and ordered explicit /case/... input paths. Use tool_run_list to discover recent runs, "
+            "and ordered input_files references with source managed or linked and a case-relative path. "
+            "Never send host paths, bridge source IDs, or /case prefixes in input_files. Use tool_run_list to discover recent runs, "
             "then tool_run_status or tool_run_cancel for a specific background run."
         )
         session_lines.append(
@@ -257,7 +258,7 @@ def build_system_prompt(
         )
     if scope == AssistantScope.workspace.value:
         session_lines.append(
-            "Workspace chat has no active /case mount. Catalog workflows use explicit /workspace paths. "
+            "Workspace chat has no active /case mount. Catalog workflows use managed input_files paths relative to the workspace. "
             "To inspect case files from workspace chat, use workspace_case_file_tree with an explicit case_id, "
             "or ask the user to open/select a case first."
         )

@@ -25,7 +25,7 @@ def ledger(db, status="planned"):
         call_id="key",
         tool_name="tool_call",
         arguments_digest="digest",
-        arguments_json={"tool_id": "fastsurfer_fast", "inputs": []},
+        arguments_json={"tool_id": "fastsurfer_fast", "input_files": []},
         risk="workflow",
         status=status,
     )

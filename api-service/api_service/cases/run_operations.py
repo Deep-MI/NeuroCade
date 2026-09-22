@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from neurocade_runtime_tools.bridge_client import RuntimeGpuUnavailableError, resolve_gpu_enabled
 from neurocade_runtime_tools.container_request import RuntimeBind
+from neurocade_runtime_tools.execution import LinkedRuntimeBind
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -17,7 +18,7 @@ from api_service.cases.service import (
     raise_case_conflict,
     require_mutations_enabled,
 )
-from api_service.cases.uploads import _require_run_analysis_input_artifact
+from api_service.cases.workflow_inputs import resolve_case_workflow_inputs
 from api_service.helpers import get_case_for_user, log_event
 from api_service.policies import require_case_write
 from api_service.runtime import settings, workflow_runs
@@ -31,7 +32,6 @@ from backend_common.auth import AuthContext
 from backend_common.db import Run, RunStatus
 from backend_common.run_logs import initialize_run_logs
 from backend_common.run_statuses import TERMINAL_RUN_STATUSES
-from backend_common.storage import resolve_artifact_path
 
 
 def _validate_output_name_overrides(request: StartRunRequest, tool) -> dict[str, str]:
@@ -72,29 +72,23 @@ def _start_neuroimaging_run(db: Session, context: AuthContext, *, request: Start
         gpu_enabled = resolve_gpu_enabled(tool.execution.gpu, image=runtime_image_spec(tool.neurodesk_image))
     except RuntimeGpuUnavailableError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if len(request.input_artifact_ids) != len(tool.inputs):
+    if len(request.input_files) != len(tool.inputs):
         raise HTTPException(
             status_code=400,
-            detail=f"{tool.label} requires exactly {len(tool.inputs)} ordered input file(s)",
+            detail=f"{tool.label} requires exactly {len(tool.inputs)} ordered input(s)",
         )
 
     case, workspace, role, case_dir = get_case_for_user(db, request.case_id, context.user.id)
     require_case_write(role, detail="Case not found")
     ensure_case_not_active(db, case)
-    input_artifacts = [
-        _require_run_analysis_input_artifact(db, case, artifact_id)
-        for artifact_id in request.input_artifact_ids
-    ]
-
     case_dir = case_dir.resolve()
-    container_inputs = []
-    for artifact in input_artifacts:
-        input_path = resolve_artifact_path(artifact).resolve()
-        try:
-            relative = input_path.relative_to(case_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Input artifact is outside the case storage root") from exc
-        container_inputs.append(f"/case/{relative.as_posix()}")
+    try:
+        resolved_inputs = resolve_case_workflow_inputs(db, case, case_dir, request.input_files, tool.inputs)
+    except WorkflowInputError as exc:
+        raise HTTPException(422, detail={"code": exc.code, "message": str(exc)}) from exc
+    container_inputs = resolved_inputs.container_paths
+    linked_source_id = resolved_inputs.linked_source_id
+    linked_source_relative = resolved_inputs.linked_source_relative
 
     job_id = str(uuid4())
     run = Run(
@@ -105,7 +99,7 @@ def _start_neuroimaging_run(db: Session, context: AuthContext, *, request: Start
         run_type=tool.id,
         input_json={
             "tool_id": tool.id,
-            "input_artifact_ids": [artifact.id for artifact in input_artifacts],
+            "input_files": [item.model_dump() for item in request.input_files],
             "output_name_overrides": output_name_overrides,
             **workflow_runs.workflow_run_snapshot(tool, gpu_enabled=gpu_enabled),
         },
@@ -129,6 +123,7 @@ def _start_neuroimaging_run(db: Session, context: AuthContext, *, request: Start
             run_id=run.id,
             gpu_enabled=gpu_enabled,
             db=db,
+            linked_bind=(LinkedRuntimeBind(linked_source_id, linked_source_relative, "/linked-input", "ro") if linked_source_id else None),
         )
         initialize_run_logs(case_dir, run.id)
         # ``db.refresh(run)`` opened a read transaction. End that snapshot
@@ -144,6 +139,8 @@ def _start_neuroimaging_run(db: Session, context: AuthContext, *, request: Start
             bind_container_path="/case",
             job_id=job_id,
             gpu_enabled=gpu_enabled,
+            linked_source_id=linked_source_id,
+            linked_source_relative=linked_source_relative,
         )
     except Exception as exc:
         workflow_runs.mark_workflow_run_failed(db, run.id, tool.id, exc)
@@ -152,6 +149,7 @@ def _start_neuroimaging_run(db: Session, context: AuthContext, *, request: Start
         raise
 
     log_event(db, context, "run.started", case_id=case.id, details={"run_id": run.id, "tool_id": tool.id})
+    db.commit()
     return serialize_run_summary(run)
 
 
@@ -165,4 +163,5 @@ def cancel_active_case_run(db: Session, context: AuthContext, *, case_id: str) -
         raise HTTPException(status_code=409, detail="Case has no active run")
     workflow_runs.cancel_workflow_run(db, latest_run, cancel_job_first=True)
     log_event(db, context, "run.canceled", case_id=case_id)
+    db.commit()
     return {**workflow_runs.cancellation_result(latest_run), "case_id": case_id}

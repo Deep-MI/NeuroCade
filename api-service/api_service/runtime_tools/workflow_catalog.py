@@ -40,13 +40,23 @@ class StrictWorkflowModel(BaseModel):
 
 
 class WorkflowInput(StrictWorkflowModel):
-    """One ordered regular-file input accepted by a workflow."""
+    """One ordered file or directory input accepted by a workflow."""
 
     name: str = Field(pattern=_ID_PATTERN)
     description: str
+    kind: Literal["file", "directory"] = "file"
     modalities: list[str] = Field(default_factory=list)
     dimensions: list[int] = Field(default_factory=list)
     sequences: list[str] = Field(default_factory=list)
+    volume_roles: list[Literal["intensity", "segmentation"]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_directory_metadata(self):
+        if self.kind == "directory" and (
+            self.modalities or self.dimensions or self.sequences or self.volume_roles
+        ):
+            raise ValueError("directory inputs cannot declare file imaging constraints")
+        return self
 
 
 class WorkflowOutput(StrictWorkflowModel):
@@ -521,7 +531,6 @@ def run_analysis_workflows_payload(
                 for item in tool.outputs
             ],
             "execution": tool.execution.model_dump(),
-            "input_artifact_kind": "intensity_volume",
         }
         for tool in workflows(settings=settings, user_id=user_id)
     ]

@@ -115,7 +115,10 @@ async def test_prepare_analysis_rejects_incompatible_pacs_before_approval(databa
         db.add(artifact)
         db.commit()
         result = await service.invoke(db, 'c', 'prepare_analysis', {
-            'case_id': 'case-w', 'arguments': {'tool_id': 'fastsurfer_fast', 'artifact_ids': [artifact.id]},
+            'case_id': 'case-w', 'arguments': {
+                'tool_id': 'fastsurfer_fast',
+                'input_files': [{'source': 'managed', 'path': 'scan.nii'}],
+            },
         })
         assert result['result']['is_error'], result
         assert message in result['result']['content']

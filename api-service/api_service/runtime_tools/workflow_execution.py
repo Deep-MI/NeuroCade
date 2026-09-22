@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from neurocade_runtime_tools.bridge_client import resolve_gpu_enabled
 from neurocade_runtime_tools.container_request import RuntimeBind, build_container_request
-from neurocade_runtime_tools.execution import RuntimeExecutionRequest, execute_runtime_request
+from neurocade_runtime_tools.execution import LinkedRuntimeBind, RuntimeExecutionRequest, execute_runtime_request
 from sqlalchemy.orm import Session
 
 from api_service.runtime import settings
@@ -62,9 +62,10 @@ class PreparedWorkflow:
     host_run_dir: Path
     gpu_enabled: bool
     host_output_root: Path | None
+    linked_bind: LinkedRuntimeBind | None = None
 
 
-def _path_under_container_root(path: str, container_root: str) -> PurePosixPath:
+def _path_under_container_root(path: str, container_root: str, *, allow_root: bool = False) -> PurePosixPath:
     candidate = PurePosixPath(path)
     root = PurePosixPath(container_root)
     if not candidate.is_absolute():
@@ -73,21 +74,22 @@ def _path_under_container_root(path: str, container_root: str) -> PurePosixPath:
         relative = candidate.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"Input path must stay under {container_root}: {path}") from exc
-    if not relative.parts or ".." in relative.parts:
+    if (not allow_root and not relative.parts) or ".." in relative.parts:
         raise ValueError(f"Input path must name a file under {container_root}: {path}")
     return relative
 
 
-def _host_path_for_container_path(path: str, bind: RuntimeBind) -> Path:
-    relative = _path_under_container_root(path, bind.container_path)
+def _host_path_for_container_path(path: str, bind: RuntimeBind, *, allow_directory: bool = False) -> Path:
+    relative = _path_under_container_root(path, bind.container_path, allow_root=allow_directory)
     root = Path(bind.host_path).expanduser().resolve()
     candidate = (root / Path(*relative.parts)).resolve(strict=True)
     try:
         candidate.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"Input path escapes the authorized root: {path}") from exc
-    if not candidate.is_file():
-        raise ValueError(f"Input path must be an existing regular file: {path}")
+    if not (candidate.is_dir() if allow_directory else candidate.is_file()):
+        expected = "directory" if allow_directory else "regular file"
+        raise ValueError(f"Input path must be an existing {expected}: {path}")
     return candidate
 
 
@@ -100,6 +102,7 @@ def prepare_workflow(
     run_id: str | None = None,
     gpu_enabled: bool | None = None,
     db: Session | None = None,
+    linked_bind: LinkedRuntimeBind | None = None,
 ) -> PreparedWorkflow:
     """Resolve one workflow invocation and validate all model-supplied paths."""
     tool = workflow or resolve_workflow(tool_id)
@@ -112,8 +115,22 @@ def prepare_workflow(
     host_root = Path(bind.host_path).expanduser().resolve()
     if not host_root.is_dir():
         raise ValueError(f"Authorized workflow root does not exist: {host_root}")
-    from api_service.runtime_tools.workflow_validation import validate_workflow_inputs
-    validate_workflow_inputs(tool, [_host_path_for_container_path(path, bind) for path in inputs], db=db)
+    from api_service.runtime_tools.workflow_validation import validate_workflow_input
+
+    linked_root = linked_bind.container_path.rstrip("/") if linked_bind is not None else None
+    for path, requirement in zip(inputs, tool.inputs, strict=True):
+        try:
+            host_path = _host_path_for_container_path(
+                path,
+                bind,
+                allow_directory=requirement.kind == "directory",
+            )
+        except ValueError:
+            if linked_root is None:
+                raise
+            _path_under_container_root(path, linked_root, allow_root=requirement.kind == "directory")
+        else:
+            validate_workflow_input(requirement, host_path, db=db)
 
     resolved_run_id = run_id or str(uuid4())
     host_run_dir = (host_root / ".runs" / resolved_run_id).resolve()
@@ -161,6 +178,7 @@ def prepare_workflow(
             else gpu_enabled
         ),
         host_output_root=host_output_root,
+        linked_bind=linked_bind,
     )
 
 
@@ -253,7 +271,7 @@ def _read_log(path: Path | None, limit: int) -> str:
 
 
 def _index_output_records(
-    prepared: PreparedWorkflow,
+    prepared: Any,
     output_records: list[dict[str, Any]],
     artifact_case_id: str | None,
     db: Session | None,
@@ -296,7 +314,9 @@ def execute_prepared_workflow(
     prepared.host_run_dir.mkdir(parents=True, exist_ok=True)
     baseline = snapshot_workflow_outputs(prepared.tool, prepared.host_outputs)
     write_output_baseline(prepared.host_run_dir, baseline)
-    binds = [prepared.bind]
+    binds: list[RuntimeBind | LinkedRuntimeBind] = [prepared.bind]
+    if prepared.linked_bind is not None:
+        binds.append(prepared.linked_bind)
     scratch_paths: list[str] = []
     if prepared.host_output_root is not None:
         prepared.host_output_root.mkdir(parents=True, exist_ok=True)
@@ -401,6 +421,7 @@ def execute_workflow(
     stderr_path: Path | None = None,
     artifact_case_id: str | None = None,
     db: Session | None = None,
+    linked_bind: LinkedRuntimeBind | None = None,
 ) -> dict[str, Any]:
     """Prepare and execute a workflow in one call."""
     prepared = prepare_workflow(
@@ -411,6 +432,7 @@ def execute_workflow(
         run_id=run_id,
         gpu_enabled=gpu_enabled,
         db=db,
+        linked_bind=linked_bind,
     )
     return execute_prepared_workflow(
         prepared,

@@ -10,6 +10,10 @@ from backend_common.storage import resolve_artifact_path
 
 
 def _exists(artifact: Artifact) -> bool:
+    # Availability is checked by the bridge at read/run time. Do not remove a
+    # durable link merely because its host directory is temporarily offline.
+    if (artifact.metadata_json or {}).get("source") == "linked":
+        return True
     try:
         return resolve_artifact_path(artifact).is_file()
     except (FileNotFoundError, ValueError):
