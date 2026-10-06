@@ -14,6 +14,7 @@ import {
 } from '../utils/api';
 import { useAssistantProviderStatus } from '../hooks/useAssistantProviderStatus';
 import { useAssistantTurnMonitor } from '../hooks/useAssistantTurnMonitor';
+import { useRequestScope } from '../hooks/useRequestScope';
 import { ChatApprovalContent } from './ChatApprovalContent';
 import { ChatMessageList } from './ChatMessageList';
 import { consumeAssistantTurnStream } from './assistantTurnStream';
@@ -50,6 +51,7 @@ interface ChatProps {
 
 export function Chat({ externalMessages = [], style, hideHeader = false, currentLocation, getMriSnapshots, workspaceId = null, caseId = null, guiSessionId, clearRequestToken, onClearStateChange, onAssistantTurnComplete }: ChatProps) {
     const scope: AssistantScope = caseId ? 'case' : 'workspace';
+    const requestScope = useRequestScope(JSON.stringify([workspaceId, scope, caseId]));
     const [messages, setMessages] = useState<ChatMessage[]>(defaultMessages(scope));
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -71,21 +73,23 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
 
     const loadPersistedChatState = useCallback(async () => {
         if (!workspaceId) return;
+        const isCurrent = requestScope.capture();
         const requestVersion = historyRequestVersionRef.current + 1;
         historyRequestVersionRef.current = requestVersion;
         const history = await fetchAssistantHistory(workspaceId, scope, caseId);
-        if (historyRequestVersionRef.current !== requestVersion) return;
+        if (!isCurrent() || historyRequestVersionRef.current !== requestVersion) return;
         setMessages(appendUniqueChatMessages([
             ...defaultMessages(scope),
             ...history.messages,
         ], externalMessagesRef.current));
         setPendingApproval(history.pending_approval ?? null);
-    }, [caseId, scope, workspaceId]);
+    }, [caseId, requestScope, scope, workspaceId]);
 
     const handleBackgroundTurnComplete = useCallback(async () => {
+        const isCurrent = requestScope.capture();
         await loadPersistedChatState();
-        onAssistantTurnComplete?.();
-    }, [loadPersistedChatState, onAssistantTurnComplete]);
+        if (isCurrent()) onAssistantTurnComplete?.();
+    }, [loadPersistedChatState, onAssistantTurnComplete, requestScope]);
 
     const {
         activeTurnId,
@@ -110,6 +114,10 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             return;
         }
         setPendingApproval(null);
+        setMessages(defaultMessages(scope));
+        setIsLoading(false);
+        setIsClearing(false);
+        setInput('');
         void loadPersistedChatState()
             .catch((error) => {
                 console.error('Failed to load assistant history:', error);
@@ -117,7 +125,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         return () => {
             historyRequestVersionRef.current += 1;
         };
-    }, [loadPersistedChatState, workspaceId]);
+    }, [loadPersistedChatState, scope, workspaceId]);
 
     useEffect(() => {
         return () => {
@@ -126,7 +134,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 abortRef.current.abort();
             }
         };
-    }, []);
+    }, [caseId, workspaceId]);
 
     useEffect(() => {
         if (isLoading) {
@@ -149,6 +157,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
 
     const handleClear = useCallback(async () => {
         if (!workspaceId || isClearing || isTurnActive) return;
+        const isCurrent = requestScope.capture();
         historyRequestVersionRef.current += 1;
         suppressAbortMessageRef.current = true;
         abortRef.current?.abort();
@@ -157,17 +166,19 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         setIsClearing(true);
         try {
             await clearAssistantHistory(workspaceId, scope, caseId);
+            if (!isCurrent()) return;
             setMessages(defaultMessages(scope));
             setInput('');
             setPendingApproval(null);
         } catch (error) {
+            if (!isCurrent()) return;
             console.error('Failed to clear assistant history:', error);
             const errorMsg = (error instanceof Error ? error.message : null) ?? 'Failed to clear chat history.';
             setMessages(prev => [...prev, { role: 'info', content: errorMsg }]);
         } finally {
-            setIsClearing(false);
+            if (isCurrent()) setIsClearing(false);
         }
-    }, [caseId, isClearing, isTurnActive, scope, workspaceId]);
+    }, [caseId, isClearing, isTurnActive, requestScope, scope, workspaceId]);
 
     useEffect(() => {
         onClearStateChange?.(isClearing || isTurnActive);
@@ -181,6 +192,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
 
     const handleSend = async (approval?: AssistantApprovalRequest) => {
         if ((!approval && !input.trim()) || isTurnActive || isClearing || assistantDisabledMessage) return;
+        const isCurrent = requestScope.capture();
 
         const userContent = approval
             ? { content: `I approve the requested action: ${approval.presentation?.title ?? approval.description}.`, error: undefined }
@@ -242,6 +254,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 }),
                 signal: controller.signal,
             });
+            if (!isCurrent()) return;
             const responseStartedElapsedMs = Math.round(performance.now() - startedAt);
             const responseTurnId = response.headers.get('X-Assistant-Turn-Id');
             if (responseTurnId) {
@@ -258,6 +271,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             if (!response.ok) {
                 if (response.status === 409 && workspaceId) {
                     const turnId = await discoverTurn().catch(() => null);
+                    if (!isCurrent()) return;
                     if (turnId) {
                         trackTurn(turnId);
                         return;
@@ -275,6 +289,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
 
             const streamResult = await consumeAssistantTurnStream(response.body, {
                 onText: (streamedText, startsNewMessage) => {
+                    if (!isCurrent()) return;
                     if (startsNewMessage) {
                         setMessages(prev => [...prev, { role: 'assistant', content: streamedText }]);
                         return;
@@ -286,14 +301,17 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                             : [...prev, { role: 'assistant', content: streamedText }];
                     });
                 },
-                onActivity: updateAssistantActivity,
+                onActivity: (activity) => { if (isCurrent()) updateAssistantActivity(activity); },
                 onAssistantMessage: (content) => {
+                    if (!isCurrent()) return;
                     setMessages(prev => [...prev, { role: 'assistant', content }]);
                 },
                 onToolUpdates: (toolCalls, reasoningEntries) => {
+                    if (!isCurrent()) return;
                     setMessages(prev => upsertToolCallsMessage(prev, toolCalls, reasoningEntries));
                 },
                 onDone: (apiData, streamedText) => {
+                    if (!isCurrent()) return;
                     const assistantContent = apiData.message.content;
                     if (assistantContent !== streamedText) {
                         setMessages(prev => [...prev, { role: 'assistant', content: assistantContent }]);
@@ -301,6 +319,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     setPendingApproval(apiData.approval_request ?? null);
                 },
             });
+            if (!isCurrent()) return;
             if (!streamResult.receivedFinalEvent) {
                 reportChatEvent('warning', 'frontend.assistant_turn.incomplete_stream', 'Assistant response stream ended before a final event', {
                     chat_request_id: chatRequestId,
@@ -312,6 +331,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 markTurnFinished();
             }
         } catch (error: unknown) {
+            if (!isCurrent()) return;
             if (error instanceof DOMException && error.name === 'AbortError') {
                 if (didTimeout) {
                     reportChatEvent('warning', 'frontend.assistant_turn.timeout', 'Assistant turn request timed out in the browser', {
@@ -348,16 +368,20 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             }
         } finally {
             window.clearTimeout(timeoutId);
-            abortRef.current = null;
-            setIsLoading(false);
-            onAssistantTurnComplete?.();
+            if (abortRef.current === controller) abortRef.current = null;
+            if (isCurrent()) {
+                setIsLoading(false);
+                onAssistantTurnComplete?.();
+            }
         }
     };
 
     const handleStop = async () => {
         if (!workspaceId || isCanceling) return;
+        const isCurrent = requestScope.capture();
         try {
             const status = await cancelTurn();
+            if (!isCurrent()) return;
             if (status === 'canceling') {
                 setMessages(prev => [...prev, { role: 'info', content: 'Assistant cancellation requested.' }]);
             }
@@ -366,6 +390,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 abortRef.current.abort();
             }
         } catch (error) {
+            if (!isCurrent()) return;
             const message = error instanceof Error ? error.message : 'Failed to stop the assistant turn.';
             setMessages(prev => [...prev, { role: 'info', content: message }]);
         }
