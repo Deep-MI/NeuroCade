@@ -81,3 +81,28 @@ def test_plain_output_is_unchanged(tmp_path: Path) -> None:
     rendered = render_run_logs(tmp_path, RUN_ID)
 
     assert rendered == "line one\nline two\n--- STDERR ---\na warning\n"
+
+
+def test_case_logs_identify_the_run_that_produced_the_transcript(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from api_service.cases import queries
+
+    from backend_common.db import RoleEnum, Run, RunStatus
+    from backend_common.run_logs import initialize_run_logs
+
+    run = Run(id="recorded-run", run_type="fastsurfer", status=RunStatus.completed,
+              created_at=datetime(2026, 9, 22, tzinfo=UTC))
+    stdout, _stderr = initialize_run_logs(tmp_path, run.id)
+    stdout.write_text("finished\n")
+    monkeypatch.setattr(queries, "get_case_for_user", lambda *_args: (SimpleNamespace(id="case"), None, RoleEnum.owner, tmp_path))
+    monkeypatch.setattr(queries, "latest_case_run", lambda *_args: run)
+    context = cast(Any, SimpleNamespace(user=SimpleNamespace(id="user")))
+    response = queries.get_case_logs_for_user(cast(Any, None), context, case_id="case")
+    assert response["logs"] == "finished\n"
+    assert response["run"] == {"id": run.id, "tool_id": "fastsurfer", "status": "completed",
+                               "created_at": "2026-09-22T00:00:00+00:00"}
+    monkeypatch.setattr(queries, "latest_case_run", lambda *_args: None)
+    assert queries.get_case_logs_for_user(cast(Any, None), context, case_id="case") == {"logs": "", "run": None}

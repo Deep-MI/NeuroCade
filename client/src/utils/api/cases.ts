@@ -1,4 +1,5 @@
 import type { RunCancellation } from '../runCancellation';
+import { describeRunLogSource, type RunLogSource } from '../runLogProvenance';
 import type {
   AnalysisToolSummary,
   ArtifactListItem,
@@ -123,8 +124,9 @@ export async function fetchLogs(caseId: string): Promise<string> {
     console.warn(`fetchLogs: server returned ${res.status} for case ${caseId}`);
     return '';
   }
-  const data = await res.json() as { logs: string };
-  return data.logs;
+  const data = await res.json() as { logs: string; run?: RunLogSource | null };
+  const caption = describeRunLogSource(data.run ?? null);
+  return caption ? `[workflow] ${caption}\n\n${data.logs}` : data.logs;
 }
 
 interface SurfaceCompanionUrls {
