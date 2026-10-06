@@ -14,6 +14,7 @@ from api_service.assistant.approval_contracts import (
     AssistantApprovalTone,
     AssistantWorkflowApprovalPresentation,
 )
+from api_service.runtime_tools.neurodesk_images import validate_catalog_image
 from api_service.runtime_tools.workflow_catalog import (
     NeuroimagingWorkflow,
     load_user_workflow_catalog,
@@ -134,10 +135,8 @@ def config_upsert_approval_presentation(
     definition = arguments.get("definition")
     if not isinstance(definition, dict):
         return None
-    try:
-        workflow = NeuroimagingWorkflow.model_validate(definition)
-    except ValueError:
-        return None
+    workflow = NeuroimagingWorkflow.model_validate(definition)
+    validate_catalog_image(workflow.neurodesk_image, settings=settings)
 
     user_id = _user_id(state)
     existing_source: str | None = None

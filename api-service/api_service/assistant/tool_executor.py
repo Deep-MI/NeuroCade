@@ -165,6 +165,21 @@ class AssistantToolExecutor:
                     ),
                     "status": "completed",
                 }
+            presentation = None
+            if tool.risk.requires_confirmation and state.get("require_tool_approval", True):
+                try:
+                    presentation = ToolInvocationService.approval_presentation(tool, arguments)
+                except ValueError as exc:
+                    tool_result = ToolResultRenderer.from_exception(exc)
+                    entry = await self.record_result(state, tool, call_id, arguments, tool_result, time.monotonic())
+                    tool_logs.append(entry)
+                    if state.get("event_sink") is not None:
+                        await state["event_sink"]("tool_call", entry)
+                    conversation.append({
+                        "role": "tool", "name": tool.name, "call_id": call_id,
+                        "content": ToolResultRenderer.for_model(tool.name, tool_result),
+                    })
+                    continue
             db = state.get("db") if isinstance(state.get("db"), Session) else None
             execution = self.executions.plan(
                 db,
@@ -178,7 +193,6 @@ class AssistantToolExecutor:
                 if not self.consume_approval(state, tool.name, arguments, call_id=call_id):
                     presenter = tool.approval_presentation
                     assert presenter is not None
-                    presentation = ToolInvocationService.approval_presentation(tool, arguments)
                     approval_request = self.approval_request(
                         tool.name,
                         arguments,
