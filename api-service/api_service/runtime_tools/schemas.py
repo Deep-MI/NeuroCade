@@ -21,7 +21,7 @@ STATIC_TOOLS = [
 ]
 
 
-def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
+def get_gui_tools() -> list[RuntimeToolSpec]:
     """Return the stable case and typed-viewer tool vocabulary."""
     return [
         RuntimeToolSpec(

@@ -14,11 +14,11 @@ from .handlers import handle_gui_set_layer_visibility as handle_gui_set_layer_vi
 from .load_handler import handle_gui_load_layer as handle_gui_load_layer
 from .read_stats import handle_read_stats as handle_read_stats
 from .schemas import STATIC_TOOLS as STATIC_TOOLS
-from .schemas import get_dynamic_gui_tools as get_dynamic_gui_tools
+from .schemas import get_gui_tools as get_gui_tools
 
 __all__ = [
     "STATIC_TOOLS",
-    "get_dynamic_gui_tools",
+    "get_gui_tools",
     "handle_case_file_tree",
     "handle_gui_apply_view_preset",
     "handle_gui_command_status",

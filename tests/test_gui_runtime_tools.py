@@ -285,3 +285,17 @@ def test_freesurfer_lut_filters_results_to_labels_present_in_volume(runtime_case
     assert "251\tCC_Posterior" in result
     assert "192\tCorpus_Callosum" not in result
     assert "1004\tctx-lh-corpuscallosum" not in result
+
+
+def test_static_tool_discovery_does_not_read_gui_state():
+    from types import SimpleNamespace
+    from typing import cast
+
+    from api_service.runtime.gui_state import GuiStateStore
+    from api_service.runtime.tool_dispatcher import RuntimeToolDispatcher
+
+    def unavailable(_key):
+        raise AssertionError("Tool discovery must not read session state")
+    dispatcher = RuntimeToolDispatcher(cast(GuiStateStore, SimpleNamespace(state_for_key=unavailable)))
+    tools = dispatcher.available_tools(gui_state_key="unused", gui_state_override={"case_id": "unused"})
+    assert "gui_move_cursor" in {tool["function"]["name"] for tool in tools}
