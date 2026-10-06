@@ -57,7 +57,7 @@ SAMPLE_CASE_SHA256="${NEUROCADE_SAMPLE_CASE_SHA256:-71814b4687180e10543523bb0729
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/run.sh [start|stop|status|logs|pull|build|prepare-tools|doctor] [options]
+Usage: ./scripts/run.sh [start|stop|status|logs|pull|build|prepare-tools|doctor|repair] [options]
 
 NEUROCADE_RUNTIME=docker|apptainer is required and selects both the application
 artifact and the host tool runtime. Start options: -d, --detach, --build, --port PORT, --mcp, --mcp-access read|standard.
@@ -99,7 +99,7 @@ ensure_directories() {
 }
 
 ensure_bridge_environment() {
-  local python_bin managed_identity bridge_identity=""
+  local python_bin managed_identity bridge_identity="" fingerprint installed_fingerprint=""
   require_managed_uv || fail "Managed Python tooling is unavailable"
   python_bin="$(managed_python_path)" || fail "Managed Python $NEUROCADE_PYTHON_VERSION is missing; rerun scripts/install.sh"
   managed_identity="$(python_runtime_identity "$python_bin")"
@@ -110,10 +110,21 @@ ensure_bridge_environment() {
     managed_uv venv --clear --python "$python_bin" "$BRIDGE_VENV"
   fi
   [[ -e "$BRIDGE_PACKAGE" ]] || fail "The matched runtime bridge package is missing; rerun scripts/install.sh"
-  managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$BRIDGE_PACKAGE"
+  fingerprint="$("$python_bin" "$ROOT_DIR/scripts/package_fingerprint.py" "$BRIDGE_PACKAGE" "$managed_identity")"
+  [[ ! -f "$BRIDGE_VENV/.package-fingerprint" ]] || installed_fingerprint="$(cat "$BRIDGE_VENV/.package-fingerprint")"
+  if [[ ! -x "$BRIDGE_BIN" || "$fingerprint" != "$installed_fingerprint" || "${COMMAND:-}" == repair ]]; then
+    managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$BRIDGE_PACKAGE"
+    printf '%s\n' "$fingerprint" >"$BRIDGE_VENV/.package-fingerprint"
+  fi
   [[ -x "$BRIDGE_BIN" ]] || fail "Managed runtime bridge installation failed"
   if [[ "$MCP_ENABLED" == true ]]; then
-    managed_uv pip install --python "$BRIDGE_VENV/bin/python" "$ROOT_DIR/packages/neurocade-mcp"
+    fingerprint="$("$python_bin" "$ROOT_DIR/scripts/package_fingerprint.py" "$ROOT_DIR/packages/neurocade-mcp" "$managed_identity")"
+    installed_fingerprint=""
+    [[ ! -f "$BRIDGE_VENV/.mcp-fingerprint" ]] || installed_fingerprint="$(cat "$BRIDGE_VENV/.mcp-fingerprint")"
+    if [[ ! -x "$BRIDGE_VENV/bin/neurocade-mcp" || "$fingerprint" != "$installed_fingerprint" || "${COMMAND:-}" == repair ]]; then
+      managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$ROOT_DIR/packages/neurocade-mcp"
+      printf '%s\n' "$fingerprint" >"$BRIDGE_VENV/.mcp-fingerprint"
+    fi
     echo "Local agent connector: $BRIDGE_VENV/bin/neurocade-mcp"
   fi
 }
@@ -336,7 +347,7 @@ acquire_launcher_lock() {
 }
 
 COMMAND="${1:-start}"
-case "$COMMAND" in start|stop|status|logs|pull|build|prepare-tools|doctor) shift || true ;; -h|--help) usage; exit 0 ;; *) COMMAND=start ;; esac
+case "$COMMAND" in start|stop|status|logs|pull|build|prepare-tools|doctor|repair) shift || true ;; -h|--help) usage; exit 0 ;; *) COMMAND=start ;; esac
 DETACH=0
 BUILD=0
 while [[ $# -gt 0 ]]; do
@@ -364,13 +375,14 @@ validate_configuration
 ensure_directories
 source "$ROOT_DIR/scripts/lib/runtime_${RUNTIME}.sh"
 source "$ROOT_DIR/scripts/lib/mcp.sh"
-case "$COMMAND" in start|stop|doctor|prepare-tools|pull) acquire_launcher_lock ;; esac
+case "$COMMAND" in start|stop|doctor|prepare-tools|pull|repair) acquire_launcher_lock ;; esac
 
 case "$COMMAND" in
   build)
     [[ "$RUNTIME" == "docker" ]] || fail "The canonical application build is the Docker image; Apptainer uses the published SIF"
     exec "$ROOT_DIR/scripts/build_image.sh"
     ;;
+  repair) ensure_bridge_environment ;;
   pull) ensure_bridge_environment; runtime_pull_application ;;
   prepare-tools) ensure_bridge_environment; ensure_token; prepare_tools ;;
   doctor)
