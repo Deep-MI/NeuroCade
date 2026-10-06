@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 provenance_value() {
-  local root="$1" key="$2" file="$root/.runtime/provenance.json" python_bin
+  local root="$1" key="$2" file python_bin
+  file="$root/.runtime/provenance.json"
   [[ -s "$file" ]] || return 0
   python_bin="$(managed_python_path 2>/dev/null || command -v python3 || true)"
   [[ -n "$python_bin" ]] || return 0
