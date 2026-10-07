@@ -99,7 +99,7 @@ ensure_directories() {
 }
 
 ensure_bridge_environment() {
-  local python_bin managed_identity bridge_identity="" fingerprint installed_fingerprint=""
+  local python_bin managed_identity bridge_identity=""
   require_managed_uv || fail "Managed Python tooling is unavailable"
   python_bin="$(managed_python_path)" || fail "Managed Python $NEUROCADE_PYTHON_VERSION is missing; rerun scripts/install.sh"
   managed_identity="$(python_runtime_identity "$python_bin")"
@@ -110,22 +110,21 @@ ensure_bridge_environment() {
     managed_uv venv --clear --python "$python_bin" "$BRIDGE_VENV"
   fi
   [[ -e "$BRIDGE_PACKAGE" ]] || fail "The matched runtime bridge package is missing; rerun scripts/install.sh"
-  fingerprint="$("$python_bin" "$ROOT_DIR/scripts/package_fingerprint.py" "$BRIDGE_PACKAGE" "$managed_identity")"
-  [[ ! -f "$BRIDGE_VENV/.package-fingerprint" ]] || installed_fingerprint="$(cat "$BRIDGE_VENV/.package-fingerprint")"
-  if [[ ! -x "$BRIDGE_BIN" || "$fingerprint" != "$installed_fingerprint" || "${COMMAND:-}" == repair ]]; then
-    managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$BRIDGE_PACKAGE"
-    printf '%s\n' "$fingerprint" >"$BRIDGE_VENV/.package-fingerprint"
-  fi
+  ensure_bridge_package "$BRIDGE_PACKAGE" "$BRIDGE_BIN" "$BRIDGE_VENV/.package-fingerprint" "$managed_identity"
   [[ -x "$BRIDGE_BIN" ]] || fail "Managed runtime bridge installation failed"
   if [[ "$MCP_ENABLED" == true ]]; then
-    fingerprint="$("$python_bin" "$ROOT_DIR/scripts/package_fingerprint.py" "$ROOT_DIR/packages/neurocade-mcp" "$managed_identity")"
-    installed_fingerprint=""
-    [[ ! -f "$BRIDGE_VENV/.mcp-fingerprint" ]] || installed_fingerprint="$(cat "$BRIDGE_VENV/.mcp-fingerprint")"
-    if [[ ! -x "$BRIDGE_VENV/bin/neurocade-mcp" || "$fingerprint" != "$installed_fingerprint" || "${COMMAND:-}" == repair ]]; then
-      managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$ROOT_DIR/packages/neurocade-mcp"
-      printf '%s\n' "$fingerprint" >"$BRIDGE_VENV/.mcp-fingerprint"
-    fi
+    ensure_bridge_package "$ROOT_DIR/packages/neurocade-mcp" "$BRIDGE_VENV/bin/neurocade-mcp" "$BRIDGE_VENV/.mcp-fingerprint" "$managed_identity"
     echo "Local agent connector: $BRIDGE_VENV/bin/neurocade-mcp"
+  fi
+}
+
+ensure_bridge_package() {
+  local package="$1" executable="$2" marker="$3" identity="$4" fingerprint installed_fingerprint=""
+  fingerprint="$("$BRIDGE_VENV/bin/python" "$ROOT_DIR/scripts/package_fingerprint.py" "$package" "$identity")"
+  [[ ! -f "$marker" ]] || installed_fingerprint="$(cat "$marker")"
+  if [[ ! -x "$executable" || "$fingerprint" != "$installed_fingerprint" || "${COMMAND:-}" == repair ]]; then
+    managed_uv pip install --reinstall --python "$BRIDGE_VENV/bin/python" "$package"
+    printf '%s\n' "$fingerprint" >"$marker"
   fi
 }
 

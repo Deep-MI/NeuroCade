@@ -171,14 +171,9 @@ class AssistantToolExecutor:
                     presentation = ToolInvocationService.approval_presentation(tool, arguments)
                 except ValueError as exc:
                     tool_result = ToolResultRenderer.from_exception(exc)
-                    entry = await self.record_result(state, tool, call_id, arguments, tool_result, time.monotonic())
-                    tool_logs.append(entry)
-                    if state.get("event_sink") is not None:
-                        await state["event_sink"]("tool_call", entry)
-                    conversation.append({
-                        "role": "tool", "name": tool.name, "call_id": call_id,
-                        "content": ToolResultRenderer.for_model(tool.name, tool_result),
-                    })
+                    await self.publish_result(
+                        state, tool, call_id, arguments, tool_result, time.monotonic(), conversation, tool_logs,
+                    )
                     continue
             db = state.get("db") if isinstance(state.get("db"), Session) else None
             execution = self.executions.plan(
@@ -239,24 +234,17 @@ class AssistantToolExecutor:
                     tool, context, arguments, store=self.executions, db=db, execution=execution, handler=self.execute_tool,
                 )
 
-            entry = await self.record_result(
+            await self.publish_result(
                 state,
                 tool,
                 call_id,
                 arguments,
                 tool_result,
                 started_at,
+                conversation,
+                tool_logs,
                 execution=execution,
             )
-            tool_logs.append(entry)
-            if state.get("event_sink") is not None:
-                await state["event_sink"]("tool_call", entry)
-            conversation.append({
-                "role": "tool",
-                "name": tool.name,
-                "call_id": call_id,
-                "content": ToolResultRenderer.for_model(tool.name, tool_result),
-            })
             if tool_result.terminal:
                 return {
                     "conversation": conversation,
@@ -368,24 +356,17 @@ class AssistantToolExecutor:
 
         terminal_result = None
         for tool, call_id, arguments, execution, tool_result, started_at, _executed in completed:
-            entry = await self.record_result(
+            await self.publish_result(
                 state,
                 tool,
                 call_id,
                 arguments,
                 tool_result,
                 started_at,
+                conversation,
+                tool_logs,
                 execution=execution,
             )
-            tool_logs.append(entry)
-            if state.get("event_sink") is not None:
-                await state["event_sink"]("tool_call", entry)
-            conversation.append({
-                "role": "tool",
-                "name": tool.name,
-                "call_id": call_id,
-                "content": ToolResultRenderer.for_model(tool.name, tool_result),
-            })
             terminal_result = terminal_result or (tool_result if tool_result.terminal else None)
         if terminal_result is not None:
             return {
@@ -457,16 +438,19 @@ class AssistantToolExecutor:
         }
 
     @staticmethod
-    async def record_result(
+    async def publish_result(
         state: AssistantState,
         tool: ToolDefinition,
         call_id: str,
         arguments: dict[str, Any],
         tool_result: ToolResult,
         started_at: float,
+        conversation: list[dict[str, Any]],
+        tool_logs: list[dict[str, Any]],
         *,
         execution: Any | None = None,
-    ) -> dict[str, Any]:
+    ) -> None:
+        """Publish every validated tool result in log, event, and conversation order."""
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         log_message = (
             "assistant.tool_call.failed request_id=%s round=%s tool=%s elapsed_ms=%s result_chars=%s"
@@ -481,7 +465,7 @@ class AssistantToolExecutor:
             elapsed_ms,
             len(tool_result.content),
         )
-        return {
+        entry = {
             "call_id": call_id,
             "name": tool.name,
             "arguments": arguments,
@@ -495,3 +479,12 @@ class AssistantToolExecutor:
             "external_run_id": getattr(execution, "external_run_id", None),
             "elapsed_ms": elapsed_ms,
         }
+        tool_logs.append(entry)
+        if state.get("event_sink") is not None:
+            await state["event_sink"]("tool_call", entry)
+        conversation.append({
+            "role": "tool",
+            "name": tool.name,
+            "call_id": call_id,
+            "content": ToolResultRenderer.for_model(tool.name, tool_result),
+        })

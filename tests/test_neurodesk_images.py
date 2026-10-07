@@ -118,10 +118,20 @@ def test_invalid_workflow_image_returns_tool_error_without_approval_or_execution
                           approval_presentation=partial(config_upsert_approval_presentation, {}, settings=get_settings()))
     arguments = {"definition": {"id": "missing", "image": "vnmd/missing_1:20260101",
                                 "description": "missing", "details": "missing", "script": "echo example"}}
+    events = []
+
+    async def event_sink(kind, payload):
+        events.append((kind, payload))
+
     result = asyncio.run(AssistantToolExecutor(AssistantToolExecutionStore()).execute({
+        "event_sink": event_sink,
         "tool_definitions": [tool], "pending_tool_calls": [{"name": tool.name, "call_id": "invalid", "arguments": arguments}],
     }))
     assert result["status"] == "running"
     assert "approval_request" not in result
     assert "Unknown" in result["conversation"][-1]["content"]
     assert result["tool_calls_log"][-1]["is_error"]
+    assert len(result["conversation"]) == len(result["tool_calls_log"]) == 1
+    assert len(events) == 1
+    assert events[0][0] == "tool_call"
+    assert events[0][1]["call_id"] == "invalid"
