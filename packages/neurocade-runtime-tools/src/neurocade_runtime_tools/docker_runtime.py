@@ -7,7 +7,7 @@ import platform as host_platform
 import re
 from pathlib import Path
 
-from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command
+from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command, validate_synthetic_fixture
 from .protocol import validate_environment
 
 _DOCKER_PLATFORM = re.compile(
@@ -44,7 +44,8 @@ def build_docker_argv(
     platform: str,
     launch_id: str | None = None,
 ) -> list[str]:
-    if request.isolated and request.binds:
+    validate_synthetic_fixture(request, data_root)
+    if request.isolated and request.binds and not request.synthetic_fixture:
         raise ValueError("Isolated container execution cannot use bind mounts")
     command = [str(part) for part in request.command]
     if not command:

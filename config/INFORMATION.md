@@ -33,16 +33,12 @@ to read a complete effective definition before changing it,
 edits are validated and reloaded immediately. Deleting an override reveals the
 built-in workflow again; it never deletes the built-in definition.
 
-Before adding an unfamiliar command-line utility, use `tool_image_search` to
-find a pinned NeuroDesk image, then call `tool_probe` with that image. Images
-download automatically on first use. Use `command -v` and the utility's `--help` or
-`--version` output to verify its presence and syntax; if it is not on `PATH`,
-search common executable roots such as `/opt` and `/usr/local` before calling
-`tool_config_upsert`. The probe has no case, workspace, user configuration,
-credentials, or host filesystem mounts; it is network-disabled and only a small
-ephemeral `/tmp` is writable. It cannot validate real inputs, licenses, mounts,
-or scientific output quality, so the configured workflow must still be run and
-its outputs checked.
+Use `tool_image_search` to select a tagged image, then `tool_inspect` to locate
+an executable, request help/version, or read bounded wrapper source. Images
+are downloaded on first use. Inspection takes literal arguments, not shell
+scripts; it has no case, workspace, credentials, or host mounts and no network.
+Its completed status reports command exit, not a successful workflow assertion.
+Read stdout/stderr; some CLI help requests legitimately exit nonzero.
 
 Workflow scripts receive `${INPUTS[n]}`, `${OUTPUTS[n]}`, `${RUN_DIR}`,
 `${CASE_ROOT}`, and `${DEVICE}`. When `case_output_folder` is configured, they
@@ -63,25 +59,19 @@ searching children. Preserve input files and handle spaces and repeated runs.
 For a subject-based command, a staged subject at `${OUTPUT_ROOT}` can be addressed
 using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory.
 
-Use `tool_config_validate` to review the exact draft without saving or running it.
-It returns resolved output paths, the output mount alias, and warnings such as
-all outputs being optional. Its `schema_valid` status covers schema and Bash syntax
-only; it is not an execution or staging test. Address the warnings before save approval.
-
-Before saving newly generated staging logic, use `tool_probe` with tiny synthetic
-directories in `/tmp` and a stub in place of expensive processing. Exercise the
-actual staging logic with the destination inside the input case, an existing
-output folder, and paths containing spaces. Check that produced file locations
-match the declared outputs. This checks file handling, not real mount behavior,
-licensing, segmentation success, or scientific validity; report those limits.
-
-The `{run_id}` placeholder in an output path is resolved before the script starts;
-`${RUN_ID}` is not defined. Directly double-quote runtime path references.
-Use only CLI flags documented for the selected program. Every workflow in the
-effective per-user catalog is available through Run Analysis; use `ui.label` only
-when a custom display name is useful. Run Analysis schedules even synchronous
-workflows as background jobs so the browser is never blocked. A FreeSurfer-LUT
-segmentation output should declare `metadata: {lut: freesurfer, visible: true}`.
+`tool_workflow_test` combines two authoring checks:
+- `mode: validate`: schema/Bash validation, resolved output paths, mount aliases,
+  and warnings; nothing is saved or executed.
+- `mode: staging`: test the exact draft in a disposable prepared-subject fixture.
+  Requires one directory input, a dedicated single-component case_output_folder,
+  and processing_command with the positional contract SUBJECT_NAME SUBJECTS_DIR.
+  The harness supplies a Bash-function stub, tests actual output mount aliases,
+  paths with spaces, input preservation, existing output and rerun, and checks
+  declared results. This is synthetic file handling, not scientific processing.
+  No current case is read or mounted. Only generated scratch data is writable;
+  the bridge rejects case/linked mounts, symlink aliases, network and GPU access.
+Use mode validate for unsupported fixture contracts. Report CLI compatibility,
+real-input execution and scientific correctness as unverified until actually run.
 
 Workflow outputs declared as intensity volumes, segmentation volumes, or surfaces
 are registered for the viewer as they appear. Other outputs remain accessible as

@@ -52,4 +52,4 @@ def test_probe_reports_command_failure_and_evidence_limits(monkeypatch, returnco
     assert result.is_error is bool(returncode)
     assert result.details["stdout"] == "diagnostic evidence"
     assert "real bind-mount aliases" in result.details["not_verified"]
-    assert result.details["status"] == ("failed" if returncode else "passed")
+    assert result.details["status"] == ("command_failed" if returncode else "completed")

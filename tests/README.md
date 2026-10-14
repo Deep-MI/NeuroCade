@@ -200,3 +200,19 @@ These do not use the running application or its database.
 with temporary case storage and SQLite, including shared-agent access,
 automatic registration during GUI load, metadata repair, repeat loads, and viewer resource resolution. No live app
 or processing container is required.
+
+### Isolated authoring tools
+
+`pytest tests/test_isolated_authoring_tools.py tests/test_workflow_authoring_feedback.py`
+covers the two authoring tool schemas, staging assertions, and synthetic mount
+boundary on Docker and Apptainer. `tool_inspect` replaces the advertised shell
+probe and also retains configured-workflow inspection by `tool_id`.
+`tool_workflow_test` combines static validation and the prepared-subject staging
+fixture; processing is stubbed and no scientific output is claimed.
+
+With the FSL and FreeSurfer benchmark images already cached, run
+`RUN_AUTHORING_SANDBOX=1 pytest tests/evaluations/eval_authoring_sandbox.py -q`.
+This starts its own temporary bridge and data directory, exercises real mount
+aliases and a host-write sentinel, and shuts down only that bridge. It never
+connects to the running app or its bridge. Apptainer execution itself is not
+covered by this Docker-only smoke test.

@@ -222,6 +222,7 @@ class BridgeClient:
                 "env": dict(run.env or {}), "cwd": run.cwd,
                 "network_disabled": run.network_disabled, "gpu_enabled": run.gpu_enabled,
                 "isolated": run.isolated,
+                "synthetic_fixture": run.synthetic_fixture,
             },
             "timeout_s": request.timeout_s,
             "workdir_relative": relative_to_data_root(request.cwd, self.data_root, label="Working directory") if request.cwd else None,

@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command
+from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command, validate_synthetic_fixture
 from .protocol import validate_environment
 
 
@@ -50,7 +50,7 @@ def _assert_rootless(request: RuntimeContainerRunRequest) -> None:
         value = str(token)
         if value in {"--fakeroot", "--writable", "--writable-tmpfs", "sudo"} or value.startswith("--fakeroot"):
             raise ValueError(f"Disallowed privilege escalation in tool command: {value}")
-    if request.isolated and (request.binds or request.gpu_enabled):
+    if request.isolated and ((request.binds and not request.synthetic_fixture) or request.gpu_enabled):
         raise ValueError("Isolated Apptainer runs cannot use binds or a GPU")
 
 
@@ -61,6 +61,7 @@ def build_container_argv(
     prepared_image: Path | str,
 ) -> list[str]:
     """Build a shell-free argv for a verified, immutable SIF."""
+    validate_synthetic_fixture(request, data_root)
     _assert_rootless(request)
     root = data_root.expanduser().resolve(strict=True)
     image = Path(prepared_image).expanduser().resolve(strict=True)

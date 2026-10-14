@@ -356,6 +356,7 @@ class BridgeRuntime:
         if not isinstance(command, list) or not command or any("\x00" in str(part) for part in command):
             raise ValueError("Container command must be a non-empty argument array")
         isolated = bool(container.get("isolated", False))
+        synthetic_fixture = bool(container.get("synthetic_fixture", False))
         binds: list[BridgeBind] = []
         for value in container.get("binds", []):
             if not isinstance(value, dict) or value.get("mode") not in {"ro", "rw"}:
@@ -387,7 +388,7 @@ class BridgeRuntime:
         )
         if len(set(scratch_paths)) != len(scratch_paths) or "/" in scratch_paths:
             raise ValueError("Scratch paths must be unique non-root container paths")
-        if isolated and (binds or container.get("gpu_enabled")):
+        if isolated and ((binds and not synthetic_fixture) or container.get("gpu_enabled")):
             raise ValueError("Isolated runs cannot use binds or GPUs")
         request = RuntimeContainerRunRequest(
             image=spec,
@@ -399,9 +400,16 @@ class BridgeRuntime:
             network_disabled=bool(container.get("network_disabled", True)),
             gpu_enabled=bool(container.get("gpu_enabled", False)),
             isolated=isolated,
+            synthetic_fixture=synthetic_fixture,
             run_id=run_id,
         )
+        from .execution import validate_synthetic_fixture
+        validate_synthetic_fixture(request, self.data_root)
+        if synthetic_fixture and any(payload.get(key) is not None for key in ("stdout_relative", "stderr_relative", "workdir_relative")):
+            raise ValueError("Synthetic tests cannot select host log files or working directories")
         timeout = float(payload["timeout_s"]) if payload.get("timeout_s") is not None else None
+        if synthetic_fixture and (timeout is None or timeout > 30):
+            raise ValueError("Synthetic tests require a timeout of at most 30 seconds")
         if timeout is not None and (timeout <= 0 or timeout > 7 * 24 * 3600):
             raise ValueError("Runtime timeout is outside the allowed range")
         paths = PreparedRunPaths(
@@ -506,7 +514,7 @@ class BridgeRuntime:
                 stderr_handle = paths.stderr.open("w", encoding="utf-8")
                 stderr_target = stderr_handle
             process = subprocess.Popen(
-                argv, cwd=paths.cwd, text=True, stdin=subprocess.DEVNULL,
+                argv, cwd=paths.cwd, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
                 stdout=stdout_target, stderr=stderr_target, start_new_session=True,
             )
             if not self._register_running_process(record, process):

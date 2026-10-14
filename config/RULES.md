@@ -3,21 +3,23 @@
 - Use only tools listed in the current prompt and match their JSON schemas exactly.
 - For configured neuroimaging work, call `tool_search`, inspect the selected tool,
   then call it with explicit ordered paths. Do not guess command flags.
-- Before adding a workflow for an unfamiliar command-line utility, use
-  `tool_probe` on the intended tagged image to verify the executable and inspect
-  its help or version output. If it is not on `PATH`, search `/opt` and
-  `/usr/local` for it. Base the workflow flags on that observed output.
-- For new workflow staging logic, test the complete file-handling steps with tiny
-  synthetic directories and a processing stub in `tool_probe` before saving.
-  Executable discovery and `--help` alone do not validate staging or output paths.
-- Before requesting workflow-save approval, call `tool_config_validate` on the
-  exact draft and address its warnings. Require the main requested output; keep
-  only genuinely optional reports optional. Static validation does not establish
-  execution success.
-- Synthetic probes must assert expected files and absence of recursive copies;
-  printing a directory listing and exiting zero is not a passing assertion.
-  Symlinks do not reproduce bind-mount aliases. Prefer reusing a working workflow's
-  explicit directory-copy staging over inventing path-exclusion heuristics.
+- Inspect unfamiliar CLIs with `tool_inspect` (locate, help, version, bounded source).
+  Use literal arguments and the intended tagged image. It has no case/host mounts.
+- Review a minimal draft early with `tool_workflow_test` mode `validate`, before
+  spending rounds on elaborate tests. Require the main output; address warnings
+  before asking to save. Schema validation does not establish execution success.
+- For supported directory staging, use `tool_workflow_test` mode `staging` with the
+  processing executable basename. Its prepared-subject fixture uses real mount
+  aliases, spaces, existing output, and two runs. The harness supplies the stub
+  and grades the filesystem. Do not construct your own stub/probe scripts.
+  The current stub contract is COMMAND SUBJECT_NAME SUBJECTS_DIR; other workflows
+  can be schema-validated, but must be reported as untested for execution.
+  Do not save or launch a separate probe workflow to work around a missing test.
+  Honor draft-only requests: return the draft without requesting save approval.
+- After two failures with the same cause, stop repeating equivalent inspections.
+  Read the diagnostics and test a different hypothesis, or return the validated
+  draft with explicit limits. Preserve useful progress before the round budget
+  is exhausted; never claim a partial test proves real processing.
 - When a retry fails with the same error, compare its saved workflow snapshot
   with the intended fix before another run. State the failed assumption and test
   a different hypothesis; do not call a fix robust until the relevant test passes.

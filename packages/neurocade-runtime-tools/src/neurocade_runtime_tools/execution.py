@@ -91,7 +91,35 @@ class RuntimeContainerRunRequest:
     network_disabled: bool = True
     gpu_enabled: bool = False
     isolated: bool = False
+    synthetic_fixture: bool = False
     run_id: str | None = None
+
+
+def validate_synthetic_fixture(request: RuntimeContainerRunRequest, data_root: Path) -> None:
+    """Only two mounts of one fresh fixture subtree; never a case/data-root mount."""
+    if not request.synthetic_fixture:
+        return
+    if not request.isolated or not request.network_disabled or request.gpu_enabled:
+        raise ValueError("Synthetic tests require isolation, no network, and no GPU")
+    if tuple(request.scratch_paths) != ("/workflow_output",) or len(request.binds) != 2:
+        raise ValueError("Synthetic tests require exactly the fixture and output-alias mounts")
+    case, output = request.binds
+    if not isinstance(case, BridgeBind) or not isinstance(output, BridgeBind):
+        raise ValueError("Synthetic fixtures require validated bridge binds")
+    if (case.host_path is not None or output.host_path is not None or case.mode != "rw" or output.mode != "rw"
+            or case.container_path != "/case with spaces" or output.container_path != "/workflow_output/output"):
+        raise ValueError("Synthetic fixtures cannot use host, linked-source, or arbitrary mounts")
+    relative = Path(case.source_relative)
+    out_relative = Path(output.source_relative)
+    if (len(relative.parts) != 2 or not relative.parts[0].startswith(".workflow-test-")
+            or relative.parts[1] != "case with spaces" or out_relative.parent != relative
+            or len(out_relative.parts) != 3):
+        raise ValueError("Synthetic fixture source must be a dedicated temporary subtree")
+    root = data_root.resolve(strict=True)
+    for bind in (case, output):
+        lexical = root / bind.source_relative
+        if lexical.resolve(strict=True) != lexical or not lexical.is_dir():
+            raise ValueError("Synthetic fixture paths must be directories without symlink aliases")
 
 
 @dataclass(slots=True)
@@ -144,6 +172,7 @@ def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) ->
         "network_disabled": request.network_disabled,
         "gpu_enabled": request.gpu_enabled,
         "isolated": request.isolated,
+        "synthetic_fixture": request.synthetic_fixture,
         "run_id": request.run_id,
     }
 

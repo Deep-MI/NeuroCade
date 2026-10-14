@@ -110,18 +110,6 @@ class AssistantCatalogTools:
                 parallel_safe=True,
             ),
             ToolRegistration(
-                "tool_inspect",
-                "Load the extended guidance, ordered inputs, outputs, and execution contract for one configured workflow.",
-                {
-                    "type": "object",
-                    "properties": {"tool_id": {"type": "string", "description": "Exact tool id returned by tool_search."}},
-                    "required": ["tool_id"],
-                    "additionalProperties": False,
-                },
-                self.inspect,
-                parallel_safe=True,
-            ),
-            ToolRegistration(
                 "tool_call",
                 "Run one fixed catalog workflow using its exact tool_id and ordered authorized case-relative inputs.",
                 _inline_schema(CatalogToolCallArgs.model_json_schema()),
@@ -161,18 +149,9 @@ class AssistantCatalogTools:
                     parallel_safe=True,
                 ),
                 ToolRegistration(
-                    "tool_config_validate",
-                    "Review a draft workflow without saving or executing it. Validate its schema and Bash syntax, "
-                    "show resolved output paths and mount aliases, and flag validation gaps. "
-                    "Use before tool_config_upsert; this does not prove staging or scientific correctness.",
-                    _catalog_config_upsert_schema(),
-                    self.config_validate,
-                    parallel_safe=True,
-                ),
-                ToolRegistration(
                     "tool_config_upsert",
                     "Create or replace one workflow in the authenticated user's private catalog overlay. "
-                    "First review the draft with tool_config_validate and address its warnings.",
+                    "First review the draft with tool_workflow_test mode=validate and address its warnings.",
                     _catalog_config_upsert_schema(),
                     self.config_upsert,
                     ToolRisk.write,
@@ -373,7 +352,8 @@ class AssistantCatalogTools:
         except Exception as exc:
             return ToolResult.error(f"Error reading workflow configuration: {exc}")
 
-    def config_validate(self, _state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+    @staticmethod
+    def config_validate(_state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         """Return concrete authoring feedback without mutating the catalog or running a script."""
         try:
             parsed = CatalogConfigUpsertArgs.model_validate(arguments)
@@ -406,8 +386,9 @@ class AssistantCatalogTools:
                 } if tool.case_output_folder else None,
                 "warnings": warnings,
                 "not_verified": ["script semantics and staging", "real inputs and bind mounts", "CLI compatibility", "scientific output"],
-                "next_step": "Test the exact staging with assertions and a processing stub; save only after addressing warnings. "
-                "A zero exit code is evidence only for assertions actually executed. Reuse a working workflow's staging where applicable.",
+                "next_step": "Address warnings. For supported directory workflows use tool_workflow_test mode=staging. "
+                "If the fixture is unsupported, return the validated draft and report execution as unverified. "
+                "Do not save or launch a separate probe workflow as a substitute for an unavailable test.",
             })
         except Exception as exc:
             return ToolResult.error(f"Workflow validation failed: {exc}")
