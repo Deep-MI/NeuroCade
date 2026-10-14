@@ -12,6 +12,7 @@ type AssistantApprovalAction = Literal[
     "run_cancel",
     "file_write",
     "file_edit",
+    "file_register",
 ]
 type AssistantApprovalTone = Literal["warning", "danger"]
 

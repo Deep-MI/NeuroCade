@@ -49,10 +49,11 @@ class AssistantToolBuilder:
         fetches GUI/runtime tools for the active GUI state and adds file and
         catalog tools.
         """
+        from api_service.assistant.tools.artifact_tools import artifact_tools
         from api_service.assistant.tools.inspection_tools import additional_tools
         from api_service.assistant.tools.navigation_tools import navigation_tools
         from api_service.documentation.tools import documentation_tools
-        catalog_definitions = [*self.catalog_tools.build_tools(state), *documentation_tools(state), *additional_tools(state), *navigation_tools(state), *self.workspace_tools.build_inspection_tools(state)]
+        catalog_definitions = [*self.catalog_tools.build_tools(state), *documentation_tools(state), *additional_tools(state), *artifact_tools(state), *navigation_tools(state), *self.workspace_tools.build_inspection_tools(state)]
         image_definitions = self.image_tools.build_tools(state)
         probe_definitions = self.probe_tools.build_tools(state)
         file_definitions = self.file_tools.build_tools(state)

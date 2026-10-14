@@ -27,7 +27,7 @@ def test_registry_and_prompt_parity(database, case_id):
             assert tool.risk == external[tool.name].risk
         advertised = {tool.name for tool in builder.discover(state)}
         assert set(external) <= advertised
-        assert {'read', 'write', 'edit', 'tool_config_upsert', 'tool_config_delete', 'tool_probe', 'tool_image_search', 'gui_load_layer', 'workspace_file_tree', 'get_case'} <= advertised
+        assert {'read', 'write', 'edit', 'tool_config_upsert', 'tool_config_delete', 'tool_probe', 'tool_image_search', 'gui_load_layer', 'register_case_file', 'workspace_file_tree', 'get_case'} <= advertised
         state['tool_specs'] = builder.build(state)[1]
         assert build_system_prompt(ROOT_DIR / 'config', state) in instructions(state)
         for name in ['SOUL.md', 'INFORMATION.md', 'RULES.md']:

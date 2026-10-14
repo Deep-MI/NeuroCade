@@ -64,6 +64,8 @@ def get_gui_tools() -> list[RuntimeToolSpec]:
             description=(
                 "Load or refresh an MRI intensity, segmentation, or FreeSurfer surface layer. "
                 "Registered artifact metadata determines layer type and LUT. "
+                "For untracked files or incorrect layer classification, first use register_case_file "
+                "with an explicit layer_type and segmentation lut; do not rerun analysis. "
                 "To rename a loaded layer without reloading, use gui_set_layer_display with name. "
                 "Surface curvature and DKT annotation companions are resolved automatically."
             ),

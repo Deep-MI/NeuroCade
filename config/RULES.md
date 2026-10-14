@@ -29,6 +29,10 @@
 - After an assistant error, check durable workflow status before resubmitting;
   the workflow may already have been queued or started.
 - Use case or workspace file-tree tools when an exact path is unknown.
+- For an existing untracked case volume/surface, use `register_case_file` with
+  its exact path, explicit layer type and segmentation LUT, then `gui_load_layer`.
+  Registration also corrects existing metadata. Do not rerun successful processing
+  just to make outputs loadable. Verify the loaded layer type/LUT with `gui_list_layers`.
 - Use GUI tools for viewer actions. To load a compatible case artifact explicitly,
   use `gui_load_layer`; confirm queued GUI actions with `gui_command_status` before
   claiming they happened.
