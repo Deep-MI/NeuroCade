@@ -18,6 +18,7 @@ interface SseEvent {
 }
 
 export interface AssistantTurnStreamCallbacks {
+  onEvent?: () => void;
   onText: (content: string, startsNewMessage: boolean) => void;
   onActivity: (activity: AssistantActivity) => void;
   onAssistantMessage: (content: string) => void;
@@ -56,6 +57,7 @@ function processSsePart(
   const event = parseSsePart(part);
   if (!event) return;
   const { eventType, data } = event;
+  callbacks.onEvent?.();
   state.eventCounts[eventType] = (state.eventCounts[eventType] ?? 0) + 1;
 
   if (eventType === 'text_delta') {

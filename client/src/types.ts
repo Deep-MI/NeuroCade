@@ -233,7 +233,7 @@ export interface AssistantActivity {
   run_id?: string | null;
   mode?: 'synchronous' | 'background' | null;
   device?: 'cpu' | 'gpu' | null;
-  phase?: 'waiting' | 'downloading' | 'extracting' | 'preparing' | 'verifying' | 'ready' | null;
+  phase?: 'waiting' | 'resolving_platform' | 'downloading' | 'extracting' | 'preparing' | 'verifying' | 'ready' | null;
   progress?: number | null;
   completed_layers?: number | null;
   total_layers?: number | null;

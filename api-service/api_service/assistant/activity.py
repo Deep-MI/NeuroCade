@@ -14,7 +14,7 @@ class AssistantActivity(BaseModel):
     run_id: str | None = None
     mode: Literal["synchronous", "background"] | None = None
     device: Literal["cpu", "gpu"] | None = None
-    phase: Literal["waiting", "downloading", "extracting", "preparing", "verifying", "ready"] | None = None
+    phase: Literal["waiting", "resolving_platform", "downloading", "extracting", "preparing", "verifying", "ready"] | None = None
     progress: float | None = Field(default=None, ge=0.0, le=1.0)
     completed_layers: int | None = Field(default=None, ge=0)
     total_layers: int | None = Field(default=None, ge=0)

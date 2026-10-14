@@ -165,6 +165,53 @@ def test_app_create_assistant_turn_streams_timeout_event(monkeypatch, test_clien
     assert "timed out" in response.text
 
 
+
+@pytest.mark.parametrize("advancing", [True, False])
+def test_image_progress_extends_turn_but_unchanged_heartbeats_do_not(monkeypatch, test_client, advancing):
+    async def fake_run_chat(**kwargs):
+        for step in range(12):
+            await kwargs["event_sink"]("activity", {
+                "kind": "image", "label": "freesurfer", "phase": "downloading",
+                "current_bytes": step if advancing else 0,
+                "total_bytes": 12, "stalled_seconds": step, "process_active": True,
+            })
+            await asyncio.sleep(0.02)
+        return {"message": {"role": "assistant", "content": "image ready"}}
+
+    monkeypatch.setattr(assistant_turns_module.assistant_runtime, "run_chat", fake_run_chat)
+    monkeypatch.setattr(assistant_turn_streaming_module.settings, "assistant_turn_timeout_seconds", 0.1)
+    main_module.app.dependency_overrides[get_context] = _dummy_context
+    response = test_client.post("/api/app/assistant/turns", json={
+        "messages": [{"role": "user", "content": "Download image"}],
+        "workspace_id": "workspace-1", "gui_session_id": "gui-test", "scope": "workspace",
+    })
+    assert response.status_code == 200
+    if advancing:
+        assert "event: done" in response.text
+        assert "image ready" in response.text
+        assert "assistant_timeout" not in response.text
+    else:
+        assert "assistant_timeout" in response.text
+        assert "without progress" in response.text
+        assert "event: done" not in response.text
+
+
+def test_platform_resolution_activity_reaches_client(monkeypatch, test_client):
+    async def fake_run_chat(**kwargs):
+        await kwargs["event_sink"]("activity", {
+            "kind": "image", "label": "freesurfer", "phase": "resolving_platform",
+        })
+        return {"message": {"role": "assistant", "content": "ready"}}
+
+    monkeypatch.setattr(assistant_turns_module.assistant_runtime, "run_chat", fake_run_chat)
+    main_module.app.dependency_overrides[get_context] = _dummy_context
+    response = test_client.post("/api/app/assistant/turns", json={
+        "messages": [{"role": "user", "content": "Prepare image"}],
+        "workspace_id": "workspace-1", "gui_session_id": "gui-test", "scope": "workspace",
+    })
+    assert "resolving_platform" in response.text
+    assert "event: done" in response.text
+
 def test_active_assistant_turn_status_and_cancel(monkeypatch, test_client):
     class FakeManager:
         canceled: tuple[str, str] | None = None

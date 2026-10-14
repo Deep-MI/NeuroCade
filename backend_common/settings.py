@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     chat_max_concurrent_requests: int = Field(default=8, alias="CHAT_MAX_CONCURRENT_REQUESTS")
     chat_max_concurrent_per_key: int = Field(default=2, alias="CHAT_MAX_CONCURRENT_PER_KEY")
     job_history_retention_days: int = Field(default=30, alias="JOB_HISTORY_RETENTION_DAYS")
-    assistant_turn_timeout_seconds: int = Field(default=600, alias="ASSISTANT_TURN_TIMEOUT_SECONDS")
+    assistant_turn_timeout_seconds: int = Field(default=600, alias="ASSISTANT_TURN_TIMEOUT_SECONDS", description="Maximum seconds without assistant or image preparation progress")
     assistant_workflow_wait_seconds: float = Field(default=300, gt=0, alias="ASSISTANT_WORKFLOW_WAIT_SECONDS")
     assistant_gui_ack_wait_seconds: float = Field(default=10, gt=0, alias="ASSISTANT_GUI_ACK_WAIT_SECONDS")
     assistant_max_rounds: int = Field(default=18, alias="ASSISTANT_MAX_ROUNDS")

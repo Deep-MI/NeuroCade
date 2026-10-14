@@ -212,10 +212,15 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
         const startedAt = performance.now();
         let managedTurnId: string | null = null;
         let didTimeout = false;
-        const timeoutId = window.setTimeout(() => {
-            didTimeout = true;
-            controller.abort();
-        }, CHAT_REQUEST_TIMEOUT_MS);
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const resetStreamTimeout = () => {
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+                didTimeout = true;
+                controller.abort();
+            }, CHAT_REQUEST_TIMEOUT_MS);
+        };
+        resetStreamTimeout();
         abortRef.current = controller;
         reportChatEvent('info', 'frontend.assistant_turn.started', 'Assistant turn request started', {
             chat_request_id: chatRequestId,
@@ -288,6 +293,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
             }
 
             const streamResult = await consumeAssistantTurnStream(response.body, {
+                onEvent: resetStreamTimeout,
                 onText: (streamedText, startsNewMessage) => {
                     if (!isCurrent()) return;
                     if (startsNewMessage) {
@@ -345,7 +351,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                     setMessages(prev => [...prev, {
                         role: 'info',
                         content: managedTurnId
-                            ? `Live updates timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. The assistant is continuing in the background.`
+                            ? `No live updates received for ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. The assistant is continuing in the background.`
                             : `Assistant request timed out after ${CHAT_REQUEST_TIMEOUT_SECONDS} seconds. Please try again or narrow the request.`,
                     }]);
                 } else if (!suppressAbortMessageRef.current) {
@@ -367,7 +373,7 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
                 setMessages(prev => [...prev, { role: 'info', content: errorMsg }]);
             }
         } finally {
-            window.clearTimeout(timeoutId);
+            clearTimeout(timeoutId);
             if (abortRef.current === controller) abortRef.current = null;
             if (isCurrent()) {
                 setIsLoading(false);

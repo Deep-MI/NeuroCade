@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.requests import Request
 from fastapi.responses import StreamingResponse
+from neurocade_runtime_tools.execution import progress_signature
 
 from api_service.assistant.runtime import AssistantRuntime
 from api_service.assistant.turn_manager import AssistantTurnManager, assistant_turn_manager
@@ -74,15 +75,29 @@ async def _produce_events(
     details: dict,
     activity_sink=None,
 ) -> None:
+    timeout_seconds = max(0.001, float(settings.assistant_turn_timeout_seconds))
+    timeout: asyncio.Timeout | None = None
+    last_activity: tuple[Any, ...] | None = None
+
     async def emit(event: str, data: dict) -> None:
-        if event == "activity" and activity_sink is not None:
-            await activity_sink(data)
+        nonlocal last_activity
+        made_progress = event != "activity"
+        if event == "activity":
+            if activity_sink is not None:
+                await activity_sink(data)
+            signature = progress_signature(data)
+            made_progress = signature != last_activity
+            last_activity = signature
+        if made_progress and timeout is not None and not timeout.expired():
+            timeout.reschedule(asyncio.get_running_loop().time() + timeout_seconds)
         await publish(f"event: {event}\ndata: {json.dumps(data)}\n\n")
 
     try:
-        timeout_seconds = max(0.001, float(settings.assistant_turn_timeout_seconds))
-        async with asyncio.timeout(timeout_seconds):
-            result = await _run_chat(runtime=runtime, payload=payload, context=context, emit=emit, request_id=request_id)
+        async with asyncio.timeout(timeout_seconds) as timeout:
+            try:
+                result = await _run_chat(runtime=runtime, payload=payload, context=context, emit=emit, request_id=request_id)
+            finally:
+                timeout = None
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info("assistant.turn.completed request_id=%s elapsed_ms=%s", request_id, elapsed_ms)
         record_assistant_turn_event(
@@ -114,7 +129,7 @@ async def _produce_events(
             "error",
             {
                 "error": {
-                    "message": f"Assistant request timed out after {timeout_label} seconds. Please try again or narrow the request.",
+                    "message": f"Assistant request timed out after {timeout_label} seconds without progress. Please try again or narrow the request.",
                     "code": "assistant_timeout",
                 }
             },

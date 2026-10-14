@@ -283,3 +283,54 @@ async def test_completion_retry_never_reexecutes_handler(database, monkeypatch):
         # A second completion cannot overwrite the first durable outcome.
         AssistantToolExecutionStore.complete(db, row, ToolResult.error("late duplicate"))
         assert row.status == "succeeded" and row.result_json["content"] == "accepted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock_once", [False, True])
+async def test_cancellation_survives_concurrent_commit_without_masking_cancel(database, monkeypatch, lock_once):
+    from api_service.assistant.tool_execution_store import AssistantToolExecutionStore
+
+    from backend_common.db import Case
+
+    calls = []
+
+    async def handler(_context, _arguments):
+        calls.append(True)
+        with database() as other:
+            other.get(Case, "case-w").title = "UI change during download"
+            other.commit()
+        raise asyncio.CancelledError
+
+    tool = ToolDefinition("tool_probe", "read", service.schema(), handler)
+    with database() as db:
+        row = AssistantToolExecution(source="mcp", client_id="c", user_id="u", workspace_id="w",
+                                     call_id="cancel-snapshot", tool_name="tool_probe", arguments_digest="unused",
+                                     arguments_json={}, risk="read", status="executing")
+        db.add(row)
+        db.commit()
+        if lock_once:
+            from sqlalchemy.exc import OperationalError
+
+            commit = db.commit
+            attempts = 0
+
+            def transient_lock():
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OperationalError("UPDATE assistant_tool_executions", {}, Exception("database is locked"))
+                commit()
+
+            monkeypatch.setattr(db, "commit", transient_lock)
+        with pytest.raises(asyncio.CancelledError):
+            await ToolInvocationService.execute_claimed(
+                tool, ToolExecutionContext(call_id=row.call_id, execution_id=row.id), {},
+                store=AssistantToolExecutionStore(), db=db, execution=row,
+            )
+        assert calls == [True]
+        if lock_once:
+            assert attempts == 2
+        assert row.status == "ambiguous"
+        assert row.result_json["terminal"] is True
+        AssistantToolExecutionStore.complete(db, row, ToolResult.success("late result"))
+        assert row.status == "ambiguous"

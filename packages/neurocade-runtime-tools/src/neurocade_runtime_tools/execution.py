@@ -36,6 +36,14 @@ runtime_progress_observer: ContextVar[ProgressObserver | None] = ContextVar(
 )
 
 
+def progress_signature(payload: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Exclude timestamps and liveness heartbeats from observable progress."""
+    return tuple(payload.get(key) for key in (
+        "kind", "label", "image", "run_id", "phase", "current_bytes", "total_bytes",
+        "completed_layers", "total_layers", "progress",
+    ))
+
+
 @dataclass(slots=True)
 class RuntimeBind:
     """Describe a bind mount for a structured runtime container request."""

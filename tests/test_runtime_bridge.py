@@ -1176,7 +1176,7 @@ def _clock_past_every_budget(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_monotonic() -> float:
         readings["count"] += 1
-        return 0.0 if readings["count"] == 1 else 100_000.0
+        return (readings["count"] - 1) * 100_000.0
 
     monkeypatch.setattr("neurocade_runtime_tools.bridge_client.time.monotonic", fake_monotonic)
 
@@ -1215,3 +1215,36 @@ def test_declared_timeout_still_bounds_a_bridge_that_never_finishes(
 
     with pytest.raises(TimeoutError, match="terminal result"):
         client.execute(_client_request(tmp_path))
+
+
+@pytest.mark.parametrize("advancing", [True, False])
+def test_image_preparation_uses_progress_idle_budget(monkeypatch, tmp_path, advancing):
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
+    monkeypatch.setenv("NEUROCADE_BRIDGE_PREPARE_TIMEOUT_SECONDS", "60")
+    clock = iter((0.0, 40.0, 80.0, 120.0, 160.0))
+    monkeypatch.setattr("neurocade_runtime_tools.bridge_client.time.monotonic", lambda: next(clock))
+    statuses = iter([
+        *({"state": "accepted", "progress": {
+            "phase": "downloading", "current_bytes": step if advancing else 0, "updated_at": step,
+        }} for step in range(3)),
+        {"state": "running"},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "stdout": "ok"},
+    ])
+    cancellations = []
+
+    def request(method, path, **_kwargs):
+        if method == "POST":
+            return {}
+        if method == "DELETE":
+            cancellations.append(path)
+            return {}
+        return next(statuses)
+
+    monkeypatch.setattr(client, "_request", request)
+    if advancing:
+        assert client.execute(_client_request(tmp_path)).stdout == "ok"
+        assert not cancellations
+    else:
+        with pytest.raises(TimeoutError, match="no progress"):
+            client.execute(_client_request(tmp_path))
+        assert cancellations == ["/v1/runs/client-run"]

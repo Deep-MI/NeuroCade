@@ -42,6 +42,7 @@ void test('decodes split SSE events and accumulates one streamed round', async (
 void test('handles CRLF, new rounds, activity, reasoning, and tool calls', async () => {
   const textUpdates: [string, boolean][] = [];
   const activities: AssistantActivity[] = [];
+  let receivedEvents = 0;
   const toolUpdates: [ToolCallEntry[], ReasoningEntry[]][] = [];
   const assistantMessages: string[] = [];
   const result = await consumeAssistantTurnStream(
@@ -55,6 +56,7 @@ void test('handles CRLF, new rounds, activity, reasoning, and tool calls', async
     ]),
     {
       onText: (content, startsNewMessage) => textUpdates.push([content, startsNewMessage]),
+      onEvent: () => { receivedEvents++; },
       onActivity: (activity) => activities.push(activity),
       onAssistantMessage: (content) => assistantMessages.push(content),
       onToolUpdates: (tools, reasoning) => toolUpdates.push([tools, reasoning]),
@@ -64,6 +66,7 @@ void test('handles CRLF, new rounds, activity, reasoning, and tool calls', async
 
   assert.deepEqual(textUpdates, [['first', true], ['second', true]]);
   assert.equal(activities[0]?.label, 'case_file_tree');
+  assert.equal(receivedEvents, 6, 'parsed events keep the transport watchdog alive');
   assert.deepEqual(toolUpdates.map(([tools, reasoning]) => [tools.length, reasoning.length]), [[0, 1], [1, 1]]);
   assert.deepEqual(assistantMessages, ['Interim result']);
   assert.equal(result.receivedFinalEvent, false);
