@@ -536,6 +536,7 @@ def test_prepare_image_uses_native_platform_for_pull_and_run(
     assert prepared.platform == "linux/arm64/v8"
     assert captured["platform"] == prepared.platform
     assert captured["metadata"] == {
+        "image": "vnmd/freesurfer_8.2.0:20260818",
         "host_platform": "linux/arm64",
         "platform": "linux/arm64/v8",
         "supported_platforms": ["linux/amd64", "linux/arm64/v8"],
@@ -551,6 +552,45 @@ def test_prepare_image_uses_native_platform_for_pull_and_run(
     assert run_argv[2:4] == ["--platform", captured["platform"]]
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+@pytest.mark.parametrize("verbose", [False, True])
+def test_prepare_image_prefetches_selected_manifest_before_registering_original_reference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pinned: bool, verbose: bool,
+) -> None:
+    spec = RuntimeImageSpec("example/tool:1", oci_digest="sha256:" + "f" * 64 if pinned else None)
+    selected_digest = "sha256:" + "a" * 64
+    descriptors = [
+        {"platform": {"os": "linux", "architecture": "amd64"}, "digest": selected_digest},
+        {"platform": {"os": "unknown", "architecture": "unknown"}, "digest": "sha256:" + "b" * 64},
+    ]
+    payload = [{"Descriptor": row} for row in descriptors] if verbose else {"manifests": descriptors}
+    inspected: list[list[str]] = []
+    pulls: list[str] = []
+
+    def command(args, **_kwargs):  # noqa: ANN001, ANN003
+        inspected.append(args)
+        if args[:3] == ["docker", "manifest", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    def pull(reference, **kwargs):  # noqa: ANN001, ANN003
+        pulls.append(reference)
+        assert kwargs["platform"] == "linux/amd64"
+        assert kwargs["metadata"]["image"] == spec.oci_reference
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.detected_docker_host_platform", lambda: "linux/arm64")
+    monkeypatch.setattr("neurocade_runtime_tools.images.run_managed_command", command)
+    monkeypatch.setattr("neurocade_runtime_tools.images._pull_docker_image", pull)
+    monkeypatch.setattr("neurocade_runtime_tools.images._storage_preflight", lambda: {})
+
+    prepared = prepare_image(spec, backend="docker", image_dir=tmp_path)
+
+    assert inspected[0][-1] == spec.docker_reference
+    assert pulls == [spec.docker_reference.split("@", 1)[0] + "@" + selected_digest, spec.docker_reference]
+    assert prepared == spec.docker_reference
+    assert prepared.platform == "linux/amd64"
+
+
 def test_docker_platform_resolution_falls_back_to_amd64(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("neurocade_runtime_tools.images.detected_docker_host_platform", lambda: "linux/arm64")
     monkeypatch.setattr(
@@ -562,9 +602,10 @@ def test_docker_platform_resolution_falls_back_to_amd64(monkeypatch: pytest.Monk
         ),
     )
 
-    resolved, supported = resolve_docker_image_platform("example/tool:1")
+    resolved, supported, reference = resolve_docker_image_platform("example/tool:1")
 
     assert resolved == "linux/amd64"
+    assert reference == "example/tool:1"
     assert supported == {"linux/amd64"}
 
 
@@ -591,6 +632,7 @@ def test_docker_platform_resolution_rejects_unsupported_manifest(monkeypatch: py
 
 def test_docker_pull_failure_preserves_registry_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
+    updates: list[dict] = []
     chunks = iter([b"Error response from daemon: no matching manifest for linux/arm64/v8\r"])
 
     class FakeProcess:
@@ -617,9 +659,11 @@ def test_docker_pull_failure_preserves_registry_diagnostic(monkeypatch: pytest.M
             "vnmd/freesurfer_8.2.0:20260818",
             platform="linux/amd64",
             process_observer=None,
-            progress_observer=None,
+            progress_observer=updates.append,
         )
 
+    assert updates[0]["phase"] == "downloading"
+    assert "progress" not in updates[0]
     assert captured["args"] == [
         "docker",
         "pull",
