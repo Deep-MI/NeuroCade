@@ -144,7 +144,7 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
     outputs: list[WorkflowOutput] = Field(default_factory=list)
     case_output_folder: str | None = Field(
         default=None,
-        description="Optional user-visible case folder containing every declared output.",
+        description="Optional user-visible case folder containing every declared output. Output paths are relative to this folder; do not repeat its prefix.",
     )
     script: str = Field(
         description=(
@@ -153,7 +153,10 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
             "${OUTPUTS[n]} paths. Every runtime path reference must be directly enclosed in "
             "double quotes, for example command \"${INPUTS[0]}\" \"${OUTPUTS[0]}\". "
             "Output {run_id} templates are resolved before execution; "
-            "${RUN_ID} is not available."
+            "${RUN_ID} is not available. When staging a subject, copy only required subject "
+            "directories into ${OUTPUT_ROOT}; never recursively copy the whole ${CASE_ROOT} "
+            "or a selected ancestor of the output directory. ${OUTPUT_ROOT} is a second mount "
+            "of the case output folder, not storage outside the case."
         )
     )
     execution: WorkflowExecution = Field(default_factory=WorkflowExecution)
