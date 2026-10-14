@@ -71,6 +71,9 @@ def handle_gui_load_layer(arguments: dict, gui_state: dict) -> list[ToolTextCont
     is_binary_mask = any(keyword in filename.lower() for keyword in ("mask", "brainmask")) or "_bin" in filename.lower()
     lut_type = "binary" if is_binary_mask else ("freesurfer" if is_segmentation else None)
     layer_type = "surface" if surface_parts else ("segmentation" if is_segmentation else "intensity")
+    if arguments.get("layer_type") in {"intensity", "segmentation", "surface"}:
+        layer_type = arguments["layer_type"]
+        lut_type = arguments.get("lut") if layer_type == "segmentation" else None
     load_command: dict[str, Any] = {
         "resource": output_resource_descriptor(descriptor_path),
         "filename": filename,

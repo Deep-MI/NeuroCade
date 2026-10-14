@@ -197,6 +197,6 @@ for separate opt-in container runs, prerequisites, and the agent scoring protoco
 These do not use the running application or its database.
 
 `pytest tests/test_case_file_registration.py -q` verifies existing-file registration
-with temporary case storage and SQLite, including shared-agent approval/access,
-metadata repair, repeat registration, and viewer resource resolution. No live app
+with temporary case storage and SQLite, including shared-agent access,
+automatic registration during GUI load, metadata repair, repeat loads, and viewer resource resolution. No live app
 or processing container is required.

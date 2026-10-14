@@ -413,7 +413,7 @@ export interface WorkflowApprovalPresentation {
 
 export interface ActionApprovalPresentation {
   kind: 'action';
-  action: 'config_upsert' | 'config_delete' | 'run_cancel' | 'file_write' | 'file_edit' | 'file_register';
+  action: 'config_upsert' | 'config_delete' | 'run_cancel' | 'file_write' | 'file_edit';
   title: string;
   description: string;
   confirm_label: string;

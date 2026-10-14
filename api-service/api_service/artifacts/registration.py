@@ -11,7 +11,7 @@ from nibabel.spatialimages import SpatialImage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
-from api_service.artifacts.service import serialize_artifact
+from api_service.artifacts.service import find_artifact_for_relative_path, serialize_artifact
 from api_service.cases.files import resolve_case_file
 from api_service.helpers import get_case_for_user
 from api_service.policies import require_case_write
@@ -19,6 +19,7 @@ from api_service.runtime_tools.load_handler import _surface_parts
 from backend_common.artifact_classification import VOLUME_SUFFIXES, classify_artifact
 from backend_common.artifact_upsert import insert_artifact_if_missing
 from backend_common.auth import AuthContext
+from backend_common.db import run_with_sqlite_lock_retry
 
 
 class RegisterCaseFile(BaseModel):
@@ -88,5 +89,41 @@ def register_case_file(db: Session, context: AuthContext, *, workspace_id: str,
     db.flush()
     return {'status': 'registered', 'artifact': serialize_artifact(artifact).model_dump(mode='json'),
             'file_path': request.file_path, 'loaded': False,
-            'validation': 'File format/header checked; layer type and LUT explicitly supplied. Scientific correctness not verified.',
-            'next_step': {'tool': 'gui_load_layer', 'arguments': {'file_path': request.file_path}}}
+            'validation': 'File format/header checked; layer type and LUT explicitly supplied. Scientific correctness not verified.'}
+
+
+def ensure_layer_registered(session: Session, context: AuthContext, *, workspace_id: str,
+                            case_id: str, file_path: str, layer_type: str | None = None,
+                            lut: str | None = None) -> dict:
+    """Resolve or register a file before enqueueing its GUI load; never enqueue on failure."""
+    if not case_id or not file_path.startswith('/case/'):
+        raise HTTPException(400, 'Loading requires an active case and a /case/... file path.')
+    with Session(bind=session.get_bind(), expire_on_commit=False) as db:
+        def register():
+            db.connection(execution_options={'sqlite_begin_immediate': True})
+            case, _, _, _ = get_case_for_user(db, case_id, context.user.id, workspace_id=workspace_id)
+            relative = file_path.removeprefix('/case/')
+            entry = resolve_case_file(db, context, case.id, 'managed', relative)
+            if entry.kind != 'file':
+                raise HTTPException(400, 'Choose a file, not a directory.')
+            artifact = find_artifact_for_relative_path(db, case.id, relative)
+            metadata = (artifact.metadata_json or {}) if artifact else {}
+            known_type = metadata.get('volume_role') or metadata.get('layer_role')
+            if artifact and known_type in {'intensity', 'segmentation', 'surface'} and layer_type is None and lut is None:
+                result = {'artifact': serialize_artifact(artifact).model_dump(mode='json')}
+            else:
+                chosen_type = layer_type or known_type
+                if chosen_type is None and _surface_parts(entry.name):
+                    chosen_type = 'surface'
+                if chosen_type is None:
+                    raise HTTPException(400, 'Untracked volume: supply layer_type (intensity or segmentation), '
+                                             'and lut for segmentation, in this gui_load_layer call.')
+                chosen_lut = (lut or (metadata.get('lut') if known_type == 'segmentation' else None)) if chosen_type == 'segmentation' else lut
+                request = RegisterCaseFile.model_validate({
+                    'file_path': file_path, 'layer_type': chosen_type, 'lut': chosen_lut,
+                })
+                result = register_case_file(db, context, workspace_id=workspace_id, case_id=case_id, request=request)
+            db.commit()
+            return result
+
+        return run_with_sqlite_lock_retry(db, register)

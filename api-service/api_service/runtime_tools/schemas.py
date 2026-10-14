@@ -63,9 +63,9 @@ def get_gui_tools() -> list[RuntimeToolSpec]:
             name="gui_load_layer",
             description=(
                 "Load or refresh an MRI intensity, segmentation, or FreeSurfer surface layer. "
-                "Registered artifact metadata determines layer type and LUT. "
-                "For untracked files or incorrect layer classification, first use register_case_file "
-                "with an explicit layer_type and segmentation lut; do not rerun analysis. "
+                "Automatically registers existing managed case files before loading so they also appear in the load list. "
+                "Existing type/LUT metadata is preserved unless explicitly overridden. "
+                "For untracked volumes supply layer_type, and lut for segmentation; do not rerun analysis. "
                 "To rename a loaded layer without reloading, use gui_set_layer_display with name. "
                 "Surface curvature and DKT annotation companions are resolved automatically."
             ),
@@ -78,6 +78,10 @@ def get_gui_tools() -> list[RuntimeToolSpec]:
                             "Active-case path such as /case/mri/orig.mgz or /case/surf/lh.pial."
                         ),
                     },
+                    "layer_type": {"type": "string", "enum": ["intensity", "segmentation", "surface"],
+                                   "description": "Required for untracked volumes; optional explicit correction for tracked files."},
+                    "lut": {"type": "string", "enum": ["freesurfer", "binary"],
+                            "description": "Required when registering a segmentation without an existing LUT."},
                     "name": {"type": "string"},
                     "visible": {"type": "boolean", "default": True},
                 },

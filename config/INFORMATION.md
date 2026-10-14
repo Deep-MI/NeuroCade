@@ -94,8 +94,8 @@ GUI state is a point-in-time snapshot. A queued GUI command is only applied afte
 may be explicitly bounded; follow an omission marker with a narrower inspection
 instead of inferring unseen content.
 
-Existing managed case volumes and FreeSurfer surfaces can be registered with
-`register_case_file` (explicit `layer_type`, and `lut` for segmentation), then
-loaded with `gui_load_layer`. This updates artifact metadata only; it does not
-copy files, rerun processing, or rewrite historical run results. Linked sources
-are not supported by this registration action.
+`gui_load_layer` registers existing managed case volumes/surfaces automatically
+before queueing their viewer load. Supply `layer_type` for an untracked volume and
+`lut` for segmentation. Tracked files retain their metadata unless explicitly
+overridden. This updates artifact metadata only, without copying files, rerunning
+processing or changing run history. Linked sources are not supported by this path.

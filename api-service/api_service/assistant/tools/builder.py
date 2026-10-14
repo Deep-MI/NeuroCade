@@ -49,11 +49,10 @@ class AssistantToolBuilder:
         fetches GUI/runtime tools for the active GUI state and adds file and
         catalog tools.
         """
-        from api_service.assistant.tools.artifact_tools import artifact_tools
         from api_service.assistant.tools.inspection_tools import additional_tools
         from api_service.assistant.tools.navigation_tools import navigation_tools
         from api_service.documentation.tools import documentation_tools
-        catalog_definitions = [*self.catalog_tools.build_tools(state), *documentation_tools(state), *additional_tools(state), *artifact_tools(state), *navigation_tools(state), *self.workspace_tools.build_inspection_tools(state)]
+        catalog_definitions = [*self.catalog_tools.build_tools(state), *documentation_tools(state), *additional_tools(state), *navigation_tools(state), *self.workspace_tools.build_inspection_tools(state)]
         image_definitions = self.image_tools.build_tools(state)
         probe_definitions = self.probe_tools.build_tools(state)
         file_definitions = self.file_tools.build_tools(state)
@@ -84,13 +83,29 @@ class AssistantToolBuilder:
                 *,
                 tool_name: str = name,
             ) -> ToolResult:
-                return ToolResult.success(
-                    self.gui_runtime.call_tool(
-                        tool_name,
-                        arguments,
-                        gui_state_override=gui_state_override,
-                        gui_state_key=gui_state_key,
+                registration = None
+                if tool_name == "gui_load_layer":
+                    from api_service.artifacts.registration import ensure_layer_registered
+                    registration = ensure_layer_registered(
+                        state["db"], state["context"], workspace_id=state["workspace_id"],
+                        case_id=state["case_id"], file_path=arguments.get("file_path", ""),
+                        layer_type=arguments.get("layer_type"), lut=arguments.get("lut"),
                     )
+                    metadata = registration["artifact"]["metadata"]
+                    arguments = {**arguments, "layer_type": metadata.get("volume_role") or metadata.get("layer_role"),
+                                 "lut": metadata.get("lut")}
+                content = self.gui_runtime.call_tool(
+                    tool_name,
+                    arguments,
+                    gui_state_override=gui_state_override,
+                    gui_state_key=gui_state_key,
+                )
+                if registration and content.startswith("Error:"):
+                    return ToolResult.error(content, details={"status": "registered", "loaded": False,
+                                                              "artifact": registration["artifact"]})
+                return ToolResult.success(
+                    content,
+                    details={"status": "queued", "loaded": False, "artifact": registration["artifact"]} if registration else None,
                 )
 
             definitions.append(

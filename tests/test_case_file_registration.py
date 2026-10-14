@@ -3,9 +3,11 @@ import hashlib
 
 import numpy as np
 import pytest
-from api_service.assistant.tools.artifact_tools import artifact_tools
+from api_service.assistant.tools.builder import AssistantToolBuilder
 from api_service.assistant.tools.definition import ToolExecutionContext, ToolRisk
+from api_service.gui_state import build_gui_state_session_key
 from api_service.mcp_adapter import service
+from api_service.runtime.gui_runtime import GuiRuntime, gui_runtime
 from api_service.viewer_resources import resolve_load_layer_command
 from fastapi import HTTPException
 from nibabel.freesurfer.io import write_geometry
@@ -27,10 +29,15 @@ def fixture_file():
     return path
 
 
+def load_tool(state):
+    return next(tool for tool in AssistantToolBuilder(GuiRuntime(), settings=get_settings()).build(state)[0]
+                if tool.name == 'gui_load_layer')
+
+
 async def register(db, **overrides):
     _, state = service.state_for(db, 'c', 'case-w')
-    tool = artifact_tools(state)[0]
-    assert tool.risk == ToolRisk.write
+    tool = load_tool(state)
+    assert tool.risk == ToolRisk.gui
     # Close this test's lookup snapshot, as the shared invocation pipeline does.
     db.commit()
     return await tool.execute(ToolExecutionContext(call_id='register'), {
@@ -113,7 +120,7 @@ async def test_registration_requires_membership_and_explicit_lut(database):
         db.query(WorkspaceMembership).filter_by(workspace_id='w', user_id='u').delete()
         db.commit()
         with pytest.raises(HTTPException):
-            await artifact_tools(state)[0].execute(ToolExecutionContext(call_id='denied'), {
+            await load_tool(state).execute(ToolExecutionContext(call_id='denied'), {
                 'file_path': '/case/results with spaces/ThalamicNuclei.nii.gz',
                 'layer_type': 'segmentation', 'lut': 'freesurfer',
             })
@@ -137,7 +144,7 @@ async def test_mcp_read_only_client_cannot_register(database):
         db.get(McpClient, 'c').access = 'read'
         db.commit()
         with pytest.raises(HTTPException) as exc:
-            await service.invoke(db, 'c', 'register_case_file', {
+            await service.invoke(db, 'c', 'gui_load_layer', {
                 'case_id': 'case-w', 'arguments': {'file_path': '/case/results with spaces/ThalamicNuclei.nii.gz',
                                                  'layer_type': 'segmentation', 'lut': 'freesurfer'},
                 'idempotency_key': 'denied',
@@ -146,22 +153,76 @@ async def test_mcp_read_only_client_cannot_register(database):
 
 
 @pytest.mark.asyncio
-async def test_shared_invocation_registers_without_run_and_checks_approval(database):
+async def test_shared_load_registers_and_queues_without_separate_approval_or_run(database):
     from backend_common.db import Run
 
     fixture_file()
-    payload = {'case_id': 'case-w', 'arguments': {
+    key = build_gui_state_session_key(user_id='u', workspace_id='w', case_id='case-w', gui_session_id='registration-viewer')
+    gui_runtime.sync_gui_state({'workspace_id': 'w', 'case_id': 'case-w'}, gui_state_key=key)
+    payload = {'case_id': 'case-w', 'gui_session_id': 'registration-viewer', 'arguments': {
         'file_path': '/case/results with spaces/ThalamicNuclei.nii.gz',
-        'layer_type': 'segmentation', 'lut': 'freesurfer'}, 'idempotency_key': 'register-once'}
+        'layer_type': 'segmentation', 'lut': 'freesurfer'}}
     with database() as db:
-        pending = await service.invoke(db, 'c', 'register_case_file', payload)
-        assert pending['status'] == 'awaiting_approval', pending
-        assert db.query(Artifact).count() == 0
-        db.get(McpClient, 'c').require_approval = False
-        db.commit()
-        result = await service.invoke(db, 'c', 'register_case_file', {**payload, 'idempotency_key': 'register-authorized'})
+        result = await service.invoke(db, 'c', 'gui_load_layer', payload)
         assert result['status'] == 'succeeded', result
+        assert not result['result']['is_error'], result
         assert db.query(Artifact).count() == 1
         assert db.query(Run).count() == 0
+        commands = gui_runtime.gui_state_store.state_for_key(key)['commands']
+        assert commands[-1]['type'] == 'load_layer'
+        assert commands[-1]['payload']['type'] == 'segmentation'
+        assert commands[-1]['payload']['lut'] == 'freesurfer'
         with pytest.raises(HTTPException):
-            await service.invoke(db, 'c', 'register_case_file', {**payload, 'case_id': 'case-other', 'idempotency_key': 'wrong-case'})
+            await service.invoke(db, 'c', 'gui_load_layer', {**payload, 'case_id': 'case-other'})
+
+
+@pytest.mark.asyncio
+async def test_existing_segmentation_metadata_survives_plain_load(database):
+    fixture_file()
+    with database() as db:
+        first = await register(db)
+        _, state = service.state_for(db, 'c', 'case-w')
+        db.commit()
+        result = await load_tool(state).execute(ToolExecutionContext(call_id='load'), {
+            'file_path': '/case/results with spaces/ThalamicNuclei.nii.gz',
+        })
+        assert result.details['artifact']['id'] == first.details['artifact']['id']
+        assert result.details['artifact']['metadata']['volume_role'] == 'segmentation'
+        assert result.details['artifact']['metadata']['lut'] == 'freesurfer'
+
+
+@pytest.mark.asyncio
+async def test_untracked_volume_without_type_does_not_register_or_queue(database):
+    fixture_file()
+    runtime = GuiRuntime()
+    with database() as db:
+        _, state = service.state_for(db, 'c', 'case-w')
+        db.commit()
+        builder = AssistantToolBuilder(runtime, settings=get_settings())
+        definitions = {tool.name: tool for tool in builder.build(state)[0]}
+        assert 'register_case_file' not in definitions
+        with pytest.raises(HTTPException, match='supply layer_type'):
+            await definitions['gui_load_layer'].execute(ToolExecutionContext(call_id='bad'), {
+                'file_path': '/case/results with spaces/ThalamicNuclei.nii.gz',
+            })
+        assert db.query(Artifact).count() == 0
+        assert not runtime.gui_state_store.state_for_key(builder.gui_state_session_key(state)).get('commands')
+
+
+@pytest.mark.asyncio
+async def test_registration_success_does_not_hide_gui_queue_failure(database, monkeypatch):
+    fixture_file()
+    runtime = GuiRuntime()
+    monkeypatch.setattr(runtime, 'call_tool', lambda *args, **kwargs: 'Error: viewer unavailable')
+    with database() as db:
+        _, state = service.state_for(db, 'c', 'case-w')
+        db.commit()
+        tool = next(t for t in AssistantToolBuilder(runtime, settings=get_settings()).build(state)[0] if t.name == 'gui_load_layer')
+        result = await tool.execute(ToolExecutionContext(call_id='load'), {
+            'file_path': '/case/results with spaces/ThalamicNuclei.nii.gz',
+            'layer_type': 'segmentation', 'lut': 'freesurfer',
+        })
+        assert result.is_error
+        assert result.details['status'] == 'registered'
+        assert result.details['loaded'] is False
+        assert db.query(Artifact).count() == 1
