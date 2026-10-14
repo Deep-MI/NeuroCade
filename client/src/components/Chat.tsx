@@ -435,7 +435,9 @@ export function Chat({ externalMessages = [], style, hideHeader = false, current
 
             {pendingApproval && !isTurnActive && (
                 <div className="chat-approval" role="group" aria-label="Confirm assistant action">
-                    <ChatApprovalContent approval={pendingApproval} />
+                    <div className="chat-approval-body">
+                        <ChatApprovalContent approval={pendingApproval} />
+                    </div>
                     <div className="chat-approval-actions flex items-center gap-2">
                         <button
                             type="button"

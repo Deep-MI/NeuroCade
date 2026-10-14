@@ -2573,10 +2573,11 @@ input[type="range"]::-moz-focus-outer {
 
 .chat-approval {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 65%;
   gap: 12px;
-  flex-wrap: wrap;
   padding: 10px;
   border-top: 1px solid var(--nc-warning-border);
   background: rgba(241, 194, 27, 0.08);
@@ -2584,7 +2585,14 @@ input[type="range"]::-moz-focus-outer {
   font-size: var(--nc-fs-sm);
 }
 
+.chat-approval-body {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
 .chat-approval-actions {
+  flex-shrink: 0;
   margin-left: auto;
 }
 
