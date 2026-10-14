@@ -41,3 +41,29 @@ def test_segmentbs_stages_subject_without_recursive_case_copy(tmp_path, select_p
     assert not (output / "brainstem").exists()
     assert (source / "scripts/IsRunningBSsubst").read_text() == "original"
     assert (source / "mri/norm.mgz").read_text() == "original"
+
+
+@pytest.mark.parametrize("folder", ["brainstem", ""])
+def test_approval_paths_match_actual_case_output_locations(monkeypatch, folder):
+    from api_service.assistant import approval_presentations as presentations
+
+    from backend_common.settings import get_settings
+
+    definition = yaml.safe_load((Path(__file__).parent / "fixtures/workflows/freesurfer_segmentbs.yaml").read_text())
+    definition["case_output_folder"] = folder or None
+    definition["script"] = 'echo ready'
+    workflow = NeuroimagingWorkflow.model_validate(definition)
+    monkeypatch.setattr(presentations, "resolve_workflow", lambda *args, **kwargs: workflow)
+    monkeypatch.setattr(presentations, "validate_catalog_image", lambda *args, **kwargs: None)
+    settings = get_settings()
+    run = presentations.workflow_approval_presentation(
+        {}, {"tool_id": workflow.id, "input_files": []}, settings=settings,
+    )
+    save = presentations.config_upsert_approval_presentation(
+        {}, {"definition": definition}, settings=settings,
+    )
+    expected = f"{folder}/mri/brainstemSsLabels.v13.mgz" if folder else "mri/brainstemSsLabels.v13.mgz"
+    assert run is not None and save is not None
+    assert run.outputs[0].path == expected
+    section = next(s for s in save.sections if s.label == "Declared outputs")
+    assert section.rows[0].value.endswith(" — " + expected)

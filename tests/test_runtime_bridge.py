@@ -476,6 +476,18 @@ def test_docker_builder_is_hardened_and_has_no_nested_privilege(
     assert "--privileged" not in argv and "/dev/fuse" not in rendered
 
 
+@pytest.mark.parametrize("isolated", [False, True])
+def test_docker_tmp_supports_runtime_libraries_but_keeps_probes_noexec(tmp_path: Path, isolated: bool) -> None:
+    request = RuntimeContainerRunRequest(
+        image=RuntimeImageSpec("example/tool:1"), command=["tool"], isolated=isolated,
+    )
+    argv = build_docker_argv(request, data_root=tmp_path, platform="linux/amd64")
+    options = argv[argv.index("--tmpfs") + 1].split(",")
+    assert ("exec" in options) is not isolated
+    assert ("noexec" in options) is isolated
+    assert "nosuid" in options and "nodev" in options
+
+
 def test_docker_builder_propagates_resolved_tool_platform(tmp_path: Path) -> None:
     request = RuntimeContainerRunRequest(
         image=RuntimeImageSpec("vnmd/freesurfer_8.2.0:20260818"),

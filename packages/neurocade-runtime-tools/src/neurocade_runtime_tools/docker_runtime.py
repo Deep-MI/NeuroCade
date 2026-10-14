@@ -71,7 +71,8 @@ def build_docker_argv(
             "--security-opt",
             "no-new-privileges",
             "--tmpfs",
-            "/tmp:rw,nosuid,nodev",
+            # MATLAB Runtime extracts shared libraries here and needs executable mappings.
+            "/tmp:rw,nosuid,nodev," + ("noexec" if request.isolated else "exec"),
         ]
     )
     if launch_id:

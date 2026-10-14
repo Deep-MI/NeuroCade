@@ -20,6 +20,7 @@ from api_service.runtime_tools.workflow_catalog import (
     load_user_workflow_catalog,
     load_workflow_catalog,
     resolve_workflow,
+    workflow_output_path,
     workflow_source,
 )
 from backend_common.db import AssistantScope, Run
@@ -114,7 +115,7 @@ def workflow_approval_presentation(
                 {
                     "name": output.name,
                     "description": output.description,
-                    "path": output.path,
+                    "path": workflow_output_path(workflow, output.path),
                 }
                 for output in workflow.outputs
             ],
@@ -155,7 +156,7 @@ def config_upsert_approval_presentation(
     scheduling = "Background" if workflow.execution.mode == "background" else "Synchronous"
     compute = "GPU enabled" if workflow.execution.gpu else "CPU only"
     output_rows = [
-        _row(output.name, f"{output.description} — {output.path}", code=True)
+        _row(output.name, f"{output.description} — {workflow_output_path(workflow, output.path)}", code=True)
         for output in workflow.outputs
     ]
     sections: list[dict[str, Any]] = [
