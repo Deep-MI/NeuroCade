@@ -354,3 +354,27 @@ void test('reordering pane layers only reorders real NiiVue volumes', async () =
   assert.equal(volumes[0], fixedReference);
   assert.equal(coordinateSourceId, 'orig.mgz');
 });
+
+
+void test('loading a larger input after a segmentation expands the reference only once', async () => {
+  const segmentation = source('brainstem', 'segmentation', true);
+  const input = source('input', 'intensity', true);
+  const volumes = [loadedVolume(segmentation.id, 0)];
+  const nv = mockNiivue(volumes);
+  await ensureFixedNiivueReference(nv as never, [segmentation]);
+  const croppedReference = volumes[0];
+  const fullInput = loadedVolume(input.id, 0);
+  fullInput.extentsMin = [-100, -120, -130];
+  fullInput.extentsMax = [100, 120, 130];
+  volumes.push(fullInput);
+  await Promise.all([
+    ensureFixedNiivueReference(nv as never, [segmentation, input]),
+    ensureFixedNiivueReference(nv as never, [segmentation, input]),
+  ]);
+  const expandedReference = volumes[0];
+  assert.notEqual(expandedReference, croppedReference);
+  assert.equal(volumes.filter(v => v.__neurocadeFixedReference).length, 1);
+  assert.equal(expandedReference.__neurocadeCoordinateSourceId, input.id);
+  await ensureFixedNiivueReference(nv as never, [segmentation, input]);
+  assert.equal(volumes[0], expandedReference);
+});

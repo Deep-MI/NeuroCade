@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createFixedReferenceGrid } from '../src/neurocadeViewer/fixedReference.js';
+import { createFixedReferenceGrid, referenceContainsVolumes } from '../src/neurocadeViewer/fixedReference.js';
 import type { NiivueVolumeInterop } from '../src/utils/niivueInterop.js';
 
 function loaded(
@@ -60,4 +60,16 @@ void test('fixed reference grid requires finite three-dimensional bounds', () =>
     } as NiivueVolumeInterop]),
     /finite volume bounds/,
   );
+});
+
+
+void test('a brainstem-only reference must expand when the full input is loaded', () => {
+  const brainstem = loaded('brainstem', [-20, -40, -60], [20, 20, 10], [0.5, 0.5, 0.5]);
+  const input = loaded('input', [-90, -128, -128], [90, 128, 128], [0.8, 0.8, 0.8]);
+  const initial = createFixedReferenceGrid([brainstem]);
+  assert.equal(referenceContainsVolumes(initial.bounds, [brainstem]), true);
+  assert.equal(referenceContainsVolumes(initial.bounds, [brainstem, input]), false);
+  const expanded = createFixedReferenceGrid([brainstem, input], input);
+  assert.equal(referenceContainsVolumes(expanded.bounds, [brainstem, input]), true);
+  assert.equal(referenceContainsVolumes(expanded.bounds, [brainstem]), true);
 });
