@@ -33,6 +33,7 @@ from api_service.runtime_tools.workflow_catalog import (
     resolve_workflow,
     search_workflows,
     upsert_user_workflow,
+    workflow_output_path,
     workflow_source,
 )
 from backend_common.db import AssistantScope
@@ -160,8 +161,18 @@ class AssistantCatalogTools:
                     parallel_safe=True,
                 ),
                 ToolRegistration(
+                    "tool_config_validate",
+                    "Review a draft workflow without saving or executing it. Validate its schema and Bash syntax, "
+                    "show resolved output paths and mount aliases, and flag validation gaps. "
+                    "Use before tool_config_upsert; this does not prove staging or scientific correctness.",
+                    _catalog_config_upsert_schema(),
+                    self.config_validate,
+                    parallel_safe=True,
+                ),
+                ToolRegistration(
                     "tool_config_upsert",
-                    "Create or replace one workflow in the authenticated user's private catalog overlay.",
+                    "Create or replace one workflow in the authenticated user's private catalog overlay. "
+                    "First review the draft with tool_config_validate and address its warnings.",
                     _catalog_config_upsert_schema(),
                     self.config_upsert,
                     ToolRisk.write,
@@ -361,6 +372,45 @@ class AssistantCatalogTools:
             return ToolResult.structured(payload)
         except Exception as exc:
             return ToolResult.error(f"Error reading workflow configuration: {exc}")
+
+    def config_validate(self, _state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        """Return concrete authoring feedback without mutating the catalog or running a script."""
+        try:
+            parsed = CatalogConfigUpsertArgs.model_validate(arguments)
+            tool = NeuroimagingWorkflow.model_validate(parsed.definition)
+            warnings: list[dict[str, str]] = []
+            if not any(output.required for output in tool.outputs):
+                warnings.append({
+                    "code": "no_required_output",
+                    "message": "Every output is optional. Mark the main requested result required so a missing result fails the run.",
+                })
+            directory_staging = bool(tool.case_output_folder and any(item.kind == "directory" for item in tool.inputs))
+            if directory_staging:
+                warnings.append({
+                    "code": "directory_output_alias",
+                    "message": "OUTPUT_ROOT aliases CASE_ROOT/case_output_folder. Copy only explicitly required subject directories, "
+                    "not every case entry. realpath and literal path comparisons cannot identify bind-mount aliases. "
+                    "A symlink-only probe does not reproduce this mount layout.",
+                })
+            return ToolResult.structured({
+                "status": "schema_valid",
+                "saved": False,
+                "executed": False,
+                "outputs": [
+                    {"name": output.name, "case_relative_path": workflow_output_path(tool, output.path), "required": output.required}
+                    for output in tool.outputs
+                ],
+                "output_mount": {
+                    "container_path": "/workflow_output/output",
+                    "same_directory_as": f"${{CASE_ROOT}}/{tool.case_output_folder}",
+                } if tool.case_output_folder else None,
+                "warnings": warnings,
+                "not_verified": ["script semantics and staging", "real inputs and bind mounts", "CLI compatibility", "scientific output"],
+                "next_step": "Test the exact staging with assertions and a processing stub; save only after addressing warnings. "
+                "A zero exit code is evidence only for assertions actually executed. Reuse a working workflow's staging where applicable.",
+            })
+        except Exception as exc:
+            return ToolResult.error(f"Workflow validation failed: {exc}")
 
     def config_upsert(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         try:

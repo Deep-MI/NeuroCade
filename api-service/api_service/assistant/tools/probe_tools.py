@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
@@ -165,6 +164,12 @@ class AssistantProbeTools:
         payload = {
             "image": parsed.image,
             "return_code": result.returncode,
+            "status": "passed" if result.returncode == 0 else "failed",
+            "validation_scope": "Only the submitted script and its assertions in an isolated container.",
+            "not_verified": ["case inputs", "real bind-mount aliases", "licenses", "full workflow execution", "scientific validity"],
+            "guidance": "A zero exit code does not prove correctness of printed listings. Assert expected results and absence of "
+            "recursive output copies. Symlinks are not substitutes for bind mounts; realpath does not collapse bind aliases. "
+            "Use a processing stub for synthetic tests: /tmp is noexec and resource limits are lower than workflow execution.",
             "stdout": stdout,
             "stderr": stderr,
             "stdout_truncated": stdout_truncated,
@@ -179,4 +184,4 @@ class AssistantProbeTools:
                 "max_virtual_memory_mib": PROBE_MAX_VIRTUAL_MEMORY_KIB // 1024,
             },
         }
-        return ToolResult.success(json.dumps(payload, indent=2), details=payload)
+        return ToolResult.structured(payload, is_error=result.returncode != 0)

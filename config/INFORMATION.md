@@ -63,6 +63,11 @@ searching children. Preserve input files and handle spaces and repeated runs.
 For a subject-based command, a staged subject at `${OUTPUT_ROOT}` can be addressed
 using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory.
 
+Use `tool_config_validate` to review the exact draft without saving or running it.
+It returns resolved output paths, the output mount alias, and warnings such as
+all outputs being optional. Its `schema_valid` status covers schema and Bash syntax
+only; it is not an execution or staging test. Address the warnings before save approval.
+
 Before saving newly generated staging logic, use `tool_probe` with tiny synthetic
 directories in `/tmp` and a stub in place of expensive processing. Exercise the
 actual staging logic with the destination inside the input case, an existing

@@ -10,6 +10,19 @@
 - For new workflow staging logic, test the complete file-handling steps with tiny
   synthetic directories and a processing stub in `tool_probe` before saving.
   Executable discovery and `--help` alone do not validate staging or output paths.
+- Before requesting workflow-save approval, call `tool_config_validate` on the
+  exact draft and address its warnings. Require the main requested output; keep
+  only genuinely optional reports optional. Static validation does not establish
+  execution success.
+- Synthetic probes must assert expected files and absence of recursive copies;
+  printing a directory listing and exiting zero is not a passing assertion.
+  Symlinks do not reproduce bind-mount aliases. Prefer reusing a working workflow's
+  explicit directory-copy staging over inventing path-exclusion heuristics.
+- When a retry fails with the same error, compare its saved workflow snapshot
+  with the intended fix before another run. State the failed assumption and test
+  a different hypothesis; do not call a fix robust until the relevant test passes.
+- If a requested action has no supported tool, report the missing capability.
+  Writing a cleanup script does not execute it; emptying a file does not delete it.
 - Follow the runtime path contract in INFORMATION.md: output paths are relative
   to `case_output_folder` when set, and the output mount aliases that case folder.
   Preserve inputs and never recursively copy an input ancestor into its output.
