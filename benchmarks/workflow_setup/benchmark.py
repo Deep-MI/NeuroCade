@@ -43,7 +43,7 @@ def prepare(root: Path, task: str, subject: Path | None = None) -> Path:
     case = root / 'case with spaces'
     case.mkdir()
     if task == 'mean':
-        data = np.arange(5 * 6 * 7 * 4, dtype=np.float32).reshape(5, 6, 7, 4)
+        data = np.random.default_rng(20261014).integers(-100, 500, size=(5, 6, 7, 4)).astype(np.float32)
         affine = np.array([[0, -2, 0, 20], [1.5, 0, 0, -30], [0, 0, 3, 10], [0, 0, 0, 1]])
         save(Nifti1Image(data, affine), case / 'input series.nii.gz')
     else:
@@ -73,6 +73,33 @@ def prepare(root: Path, task: str, subject: Path | None = None) -> Path:
     (root / 'baseline.json').write_text(json.dumps(snapshot(case, (output.name, '.runs')), indent=2))
     (root / 'task.json').write_text(json.dumps({'task': task, 'output': output.name}))
     return case
+
+
+def valid_volume_report(path: Path) -> bool:
+    """Check numeric report rows, not anatomical accuracy or volume agreement."""
+    if not path.is_file():
+        return False
+    rows = []
+    try:
+        for line in path.read_text().splitlines():
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            fields = line.split()
+            # FreeSurfer volumes text: structure name followed by volume.
+            # FreeSurfer stats: index, segid, voxel count, volume, structure.
+            if path.suffix == '.txt' and len(fields) == 2:
+                name, volume = fields
+            elif path.suffix == '.stats' and len(fields) >= 5:
+                name, volume = fields[4], fields[3]
+            else:
+                return False
+            value = float(volume)
+            if not any(char.isalpha() for char in name) or not np.isfinite(value) or value < 0:
+                return False
+            rows.append(value)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return bool(rows) and any(value > 0 for value in rows)
 
 
 def grade(root: Path, workflow: NeuroimagingWorkflow) -> dict:
@@ -110,13 +137,19 @@ def grade(root: Path, workflow: NeuroimagingWorkflow) -> dict:
                 if image.affine is None or source.affine is None or not np.allclose(image.affine, source.affine, rtol=0, atol=1e-5):
                     failures.append('geometry_changed')
             else:
-                if data.ndim != 3 or not np.isfinite(data).all() or not np.any(data > 0) or not np.equal(data, np.floor(data)).all():
+                labels = np.unique(data)
+                if (data.ndim != 3 or not np.isfinite(data).all() or np.any(data < 0)
+                        or not np.any(data == 0) or np.count_nonzero(labels > 0) < 2
+                        or not np.equal(data, np.floor(data)).all()):
                     failures.append('invalid_label_volume')
                 if item.metadata.get('lut') != 'freesurfer':
                     failures.append('missing_freesurfer_lut')
-                reports = list(output.glob('mri/ThalamicNucleiVolumes*.txt')) + list(output.glob('stats/thalamic-nuclei*.stats'))
-                if not any(path.stat().st_size > 0 for path in reports):
-                    failures.append('missing_volumes_report')
+                reports = [output / entry.path for entry in workflow.outputs
+                           if entry.required and entry.type == 'other'
+                           and (Path(entry.path).match('mri/ThalamicNucleiVolumes*.txt')
+                                or Path(entry.path).match('stats/thalamic-nuclei*.stats'))]
+                if not reports or not all(valid_volume_report(path) for path in reports):
+                    failures.append('missing_or_invalid_required_volumes_report')
         except (OSError, ValueError, ImageFileError) as exc:
             failures.append(f'unreadable_output:{exc}')
     return {'passed': not failures, 'failures': failures,

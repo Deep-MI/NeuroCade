@@ -15,7 +15,7 @@ LLM itself. Keep agent transcripts separately when comparing harness versions.
 > Preserve all inputs and unrelated files. The workflow must work again when
 > its output folder already exists. Return the complete workflow YAML.
 
-The input is deterministic 5×6×7×4 data with nontrivial orientation and spacing.
+The input is seeded pseudorandom 5×6×7×4 data (including negative values) with nontrivial orientation and spacing.
 The grader checks every voxel against the known temporal mean and checks affine
 geometry. An exit code alone is insufficient.
 
@@ -32,8 +32,8 @@ case. The runner copies only subject directories into another disposable case,
 rejects symlinks, and removes old thalamic results from that copy. It tests spaces
 in paths and real overlapping Docker bind mounts (`/case/thalamus` and
 `/workflow_output/output`), not symlink approximations. It checks input hashes,
-existing-output preservation, missing/invalid results, LUT declaration, volumes
-report existence, and accidental copying of unrelated or recursive output folders.
+existing-output preservation, missing/invalid results, LUT declaration, required volumes
+report declarations and finite nonnegative numeric rows, and accidental copying of unrelated or recursive output folders.
 The label check is structural, not a scientific quality assessment.
 
 ## Run
@@ -80,3 +80,21 @@ Do not point existing live tests at your everyday app for this benchmark.
 References: [FSL temporal operations](https://pages.fmrib.ox.ac.uk/fsl/fslpy/_modules/fsl/wrappers/fslmaths.html),
 [FreeSurfer thalamic nuclei](https://freesurfer.net/fswiki/ThalamicNuclei).
 The installed image's CLI and filenames are authoritative when versions differ.
+
+## Benchmark validation findings (2026-10-14)
+
+No live agent success rate or real FSL/FreeSurfer processing result has been
+measured yet. The initial seven tests validated the runner, not agent capability.
+Two new negative controls reproduced false passes in that initial grader:
+
+- A temporal median passed because the linear input made median equal mean.
+  Seeded nonuniform data now distinguishes them while keeping an exact mean.
+- A constant all-ones segmentation plus a junk report passed. The structural
+  check now requires background and multiple positive integer labels; reports
+  must be declared required and contain numeric volume rows. Required reports
+  are removed before rerun, so a stale report cannot satisfy the second attempt.
+
+All 15 offline tests now pass, including these negative controls. This strengthens
+failure detection; it does not establish anatomical accuracy. The grader does not
+validate the exact thalamic label set or reconcile reported volumes with image
+voxels (partial-volume estimates need not equal hard-label voxel counts).

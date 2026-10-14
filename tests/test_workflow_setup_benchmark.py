@@ -19,7 +19,9 @@ def workflow(task='mean'):
         'inputs': [{'name': 'input', 'description': 'Input', 'kind': 'file' if task == 'mean' else 'directory'}],
         'outputs': [{'name': 'result', 'type': 'intensity_volume' if task == 'mean' else 'segmentation_volume',
                      'path': 'result.nii.gz', 'description': 'Result', 'required': True,
-                     'metadata': {'lut': 'freesurfer'} if task != 'mean' else {}}],
+                     'metadata': {'lut': 'freesurfer'} if task != 'mean' else {}}] + ([{
+                         'name': 'volumes', 'type': 'other', 'path': 'stats/thalamic-nuclei.lh.v13.T1.stats',
+                         'description': 'Volumes', 'required': True}] if task != 'mean' else []),
         'case_output_folder': 'mean' if task == 'mean' else 'thalamus', 'script': 'echo candidate',
         'execution': {'gpu': False},
     })
@@ -60,9 +62,9 @@ def test_thalamus_fixture_is_independent_and_rejects_recursive_copy(tmp_path):
     case = benchmark.prepare(root, 'thalamus', source)
     assert not (case / 'mri/ThalamicNuclei.v13.T1.mgz').exists()
     assert benchmark.snapshot(source) == before
-    nib.save(nib.Nifti1Image(np.ones((3, 4, 5), dtype=np.int16), np.eye(4)), case / 'thalamus/result.nii.gz')
+    nib.save(nib.Nifti1Image(np.arange(60, dtype=np.int16).reshape(3, 4, 5) % 3, np.eye(4)), case / 'thalamus/result.nii.gz')
     (case / 'thalamus/stats').mkdir()
-    (case / 'thalamus/stats/thalamic-nuclei.lh.v13.T1.stats').write_text('test report')
+    (case / 'thalamus/stats/thalamic-nuclei.lh.v13.T1.stats').write_text('# ColHeaders Index SegId NVoxels Volume_mm3 StructName\n1 8103 120 120.5 Left-AV\n')
     assert benchmark.grade(root, workflow('thalamus'))['passed']
     (case / 'thalamus/thalamus').mkdir()
     assert 'recursive_or_unrelated_copy' in benchmark.grade(root, workflow('thalamus'))['failures']
@@ -139,3 +141,41 @@ def test_runner_fresh_rerun_and_timeout_cleanup(tmp_path, monkeypatch, timeout):
     assert all(record['passed'] is not timeout for record in records)
     assert len(cleanups) == len(runs)
     assert all(name.startswith('neurocade-benchmark-') for name in cleanups)
+
+
+def test_temporal_median_must_not_pass_as_mean(tmp_path):
+    root = tmp_path / 'fixture'
+    case = benchmark.prepare(root, 'mean')
+    source = nib.load(case / 'input series.nii.gz')
+    nib.save(nib.Nifti1Image(np.median(source.get_fdata(), axis=3), source.affine), case / 'mean/result.nii.gz')
+    assert not benchmark.grade(root, workflow())['passed']
+
+
+def test_dummy_segmentation_and_report_must_not_pass(tmp_path):
+    source = tmp_path / 'source'
+    for relative in benchmark.REQUIRED:
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    root = tmp_path / 'fixture'
+    case = benchmark.prepare(root, 'thalamus', source)
+    nib.save(nib.Nifti1Image(np.ones((3, 4, 5), dtype=np.int16), np.eye(4)), case / 'thalamus/result.nii.gz')
+    (case / 'thalamus/stats').mkdir()
+    (case / 'thalamus/stats/thalamic-nuclei.lh.v13.T1.stats').write_text('garbage')
+    result = benchmark.grade(root, workflow('thalamus'))
+    assert not result['passed']
+    assert 'invalid_label_volume' in result['failures']
+    assert 'missing_or_invalid_required_volumes_report' in result['failures']
+
+
+@pytest.mark.parametrize('text', ['garbage', 'Left-AV nan', 'Left-AV -2', '# comment only', 'Left-AV inf'])
+def test_invalid_volume_reports_rejected(tmp_path, text):
+    report = tmp_path / 'volumes.txt'
+    report.write_text(text)
+    assert not benchmark.valid_volume_report(report)
+
+
+def test_valid_text_report(tmp_path):
+    report = tmp_path / 'volumes.txt'
+    report.write_text('Left-AV 120.5\nRight-AV 100.25\n')
+    assert benchmark.valid_volume_report(report)
