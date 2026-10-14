@@ -188,3 +188,10 @@ choose **Codex** on Connect external agents, run its setup prompt in a local
 Codex task, then start a new task to check plugin skills and MCP tools. CLI install
 tests can use a temporary Codex configuration directory to avoid changing the
 user's installed plugins.
+
+### Isolated workflow setup benchmarks
+
+`pytest tests/test_workflow_setup_benchmark.py -q` checks benchmark fixtures and
+oracles offline. See [workflow setup benchmark](../benchmarks/workflow_setup/README.md)
+for separate opt-in container runs, prerequisites, and the agent scoring protocol.
+These do not use the running application or its database.
