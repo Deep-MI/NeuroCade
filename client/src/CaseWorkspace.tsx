@@ -161,6 +161,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         } else if (command.type === 'load_layer') {
           volumeState.handleLoadLayerCommand({
             downloadPath: String(payload.download_path),
+            artifactId: typeof payload.artifact_id === 'string' ? payload.artifact_id : undefined,
             filename: String(payload.filename),
             name: typeof payload.name === 'string' ? payload.name : undefined,
             type: typeof payload.type === 'string' ? payload.type : undefined,
@@ -186,6 +187,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
           volumeState.handleSetLayerDisplayCommand(
             payload.layer_ids as string[],
             payload.updates as {
+              name?: string;
               opacity?: number;
               brightness?: number;
               contrast?: number;

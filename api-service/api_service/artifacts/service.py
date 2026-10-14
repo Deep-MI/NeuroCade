@@ -78,8 +78,8 @@ def _case_for_output_relative_path(db: Session, output_relative_path: str) -> tu
     return case, workspace
 
 
-def artifact_download_path_for_output(db: Session, context: AuthContext, output_relative_path: str) -> str | None:
-    """Return an authorized artifact download path for a runtime output path."""
+def artifact_for_output(db: Session, context: AuthContext, output_relative_path: str) -> Artifact | None:
+    """Resolve a runtime output to its artifact after enforcing case read access."""
     case, workspace = _case_for_output_relative_path(db, output_relative_path)
     if case is not None and workspace is not None:
         _case, _workspace, role, _case_dir = get_case_for_user(db, case.id, context.user.id)
@@ -91,7 +91,13 @@ def artifact_download_path_for_output(db: Session, context: AuthContext, output_
     artifact = find_artifact_for_relative_path(db, case.id, relative_path)
     if artifact is None:
         return None
-    return artifact_download_path(artifact.id)
+    return artifact
+
+
+def artifact_download_path_for_output(db: Session, context: AuthContext, output_relative_path: str) -> str | None:
+    """Return an authorized artifact download path for a runtime output path."""
+    artifact = artifact_for_output(db, context, output_relative_path)
+    return artifact_download_path(artifact.id) if artifact is not None else None
 
 
 def resolve_artifact_file_for_user(

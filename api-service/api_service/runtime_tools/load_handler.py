@@ -74,9 +74,10 @@ def handle_gui_load_layer(arguments: dict, gui_state: dict) -> list[ToolTextCont
     load_command: dict[str, Any] = {
         "resource": output_resource_descriptor(descriptor_path),
         "filename": filename,
-        "name": display_name,
         "type": layer_type,
     }
+    if name:
+        load_command["name"] = name
     if lut_type:
         load_command["lut"] = lut_type
     if isinstance(visible, bool):
@@ -97,4 +98,4 @@ def handle_gui_load_layer(arguments: dict, gui_state: dict) -> list[ToolTextCont
                 load_command[resource_key] = output_resource_descriptor(output_descriptor_path_from_file(companion_path))
 
     command_id = enqueue_gui_command(gui_state, "load_layer", load_command)
-    return text_response(f"Queued GUI command {command_id} to load {layer_type} layer '{display_name}' ({descriptor_path}).")
+    return text_response(f"Queued GUI command {command_id} to load layer '{display_name}' ({descriptor_path}).")

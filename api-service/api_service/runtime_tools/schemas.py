@@ -63,6 +63,8 @@ def get_gui_tools() -> list[RuntimeToolSpec]:
             name="gui_load_layer",
             description=(
                 "Load or refresh an MRI intensity, segmentation, or FreeSurfer surface layer. "
+                "Registered artifact metadata determines layer type and LUT. "
+                "To rename a loaded layer without reloading, use gui_set_layer_display with name. "
                 "Surface curvature and DKT annotation companions are resolved automatically."
             ),
             input_schema={
@@ -108,7 +110,8 @@ def get_gui_tools() -> list[RuntimeToolSpec]:
             name="gui_set_layer_display",
             description=(
                 "Change display properties for specific loaded layers: opacity, volume "
-                "brightness/contrast, or surface coloring mode."
+                "brightness/contrast, or surface coloring mode. Use name with one layer ID to "
+                "rename it in place without reloading or changing its type or display settings."
             ),
             input_schema={
                 "type": "object",
@@ -118,6 +121,7 @@ def get_gui_tools() -> list[RuntimeToolSpec]:
                         "items": {"type": "string"},
                         "minItems": 1,
                     },
+                    "name": {"type": "string", "minLength": 1, "maxLength": 255},
                     "opacity": {"type": "number", "minimum": 0, "maximum": 1},
                     "brightness": {"type": "number", "minimum": -100, "maximum": 100},
                     "contrast": {"type": "number", "minimum": 0, "maximum": 3},
