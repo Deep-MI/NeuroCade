@@ -52,7 +52,8 @@ class CatalogConfigUpsertArgs(BaseModel):
         ...,
         description=(
             "Complete workflow definition to create or replace. Use only documented CLI flags. "
-            "Output paths are relative (for example mri/segmentation.mgz), never /case/... paths. "
+            "Output paths are relative to case_output_folder when set, otherwise to the case/workspace "
+            "(for example mri/segmentation.mgz). Do not repeat the output-folder prefix or use /case/... paths. "
             "The script must directly double-quote every ${INPUTS[n]} and ${OUTPUTS[n]} reference. "
             "For a FreeSurfer-LUT segmentation, set output metadata.lut to "
             "freesurfer and metadata.visible to true. Do not add optional command flags that "

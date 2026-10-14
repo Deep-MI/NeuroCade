@@ -7,6 +7,14 @@
   `tool_probe` on the intended tagged image to verify the executable and inspect
   its help or version output. If it is not on `PATH`, search `/opt` and
   `/usr/local` for it. Base the workflow flags on that observed output.
+- For new workflow staging logic, test the complete file-handling steps with tiny
+  synthetic directories and a processing stub in `tool_probe` before saving.
+  Executable discovery and `--help` alone do not validate staging or output paths.
+- Follow the runtime path contract in INFORMATION.md: output paths are relative
+  to `case_output_folder` when set, and the output mount aliases that case folder.
+  Preserve inputs and never recursively copy an input ancestor into its output.
+- After an assistant error, check durable workflow status before resubmitting;
+  the workflow may already have been queued or started.
 - Use case or workspace file-tree tools when an exact path is unknown.
 - Use GUI tools for viewer actions. To load a compatible case artifact explicitly,
   use `gui_load_layer`; confirm queued GUI actions with `gui_command_status` before

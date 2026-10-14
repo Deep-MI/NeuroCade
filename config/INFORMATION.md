@@ -44,10 +44,34 @@ ephemeral `/tmp` is writable. It cannot validate real inputs, licenses, mounts,
 or scientific output quality, so the configured workflow must still be run and
 its outputs checked.
 
-Workflow scripts receive only `${INPUTS[n]}`, `${OUTPUTS[n]}`, `${RUN_DIR}`,
-`${CASE_ROOT}`, and `${DEVICE}` from the runtime. Write declared outputs to the
-corresponding `${OUTPUTS[n]}` path. The `{run_id}` placeholder in an output path
-is resolved by the runtime before the script starts; `${RUN_ID}` is not defined.
+Workflow scripts receive `${INPUTS[n]}`, `${OUTPUTS[n]}`, `${RUN_DIR}`,
+`${CASE_ROOT}`, and `${DEVICE}`. When `case_output_folder` is configured, they
+also receive `${OUTPUT_ROOT}`, `${OUTPUT_PARENT}`, and `${OUTPUT_NAME}`.
+Declared output paths are relative to `case_output_folder` when present,
+otherwise to the active case/workspace. For example, `case_output_folder:
+brainstem` and output `mri/labels.mgz` produce `brainstem/mri/labels.mgz` in the
+case. Do not repeat `brainstem/` in the declared output path. Write files to
+`${OUTPUTS[n]}` or the corresponding location beneath `${OUTPUT_ROOT}`.
+`${OUTPUT_ROOT}` is `/workflow_output/output`, `${OUTPUT_PARENT}` is
+`/workflow_output`, and `${OUTPUT_NAME}` is `output`. The output root is another
+mount of the same case output folder, not storage outside the case.
+
+When staging an existing subject, copy only the required subject directories;
+never copy the whole case into a folder inside that case. Identify the selected
+subject before examining child subjects, and exclude the destination when
+searching children. Preserve input files and handle spaces and repeated runs.
+For a subject-based command, a staged subject at `${OUTPUT_ROOT}` can be addressed
+using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory.
+
+Before saving newly generated staging logic, use `tool_probe` with tiny synthetic
+directories in `/tmp` and a stub in place of expensive processing. Exercise the
+actual staging logic with the destination inside the input case, an existing
+output folder, and paths containing spaces. Check that produced file locations
+match the declared outputs. This checks file handling, not real mount behavior,
+licensing, segmentation success, or scientific validity; report those limits.
+
+The `{run_id}` placeholder in an output path is resolved before the script starts;
+`${RUN_ID}` is not defined. Directly double-quote runtime path references.
 Use only CLI flags documented for the selected program. Every workflow in the
 effective per-user catalog is available through Run Analysis; use `ui.label` only
 when a custom display name is useful. Run Analysis schedules even synchronous

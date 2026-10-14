@@ -66,8 +66,9 @@ class WorkflowOutput(StrictWorkflowModel):
     type: Literal["intensity_volume", "segmentation_volume", "surface", "other"]
     path: str = Field(
         description=(
-            "Normalized relative path beneath the active case/workspace, for example "
-            "mri/segmentation.mgz. Never prefix it with /case, /workspace, or a slash."
+            "Normalized path relative to case_output_folder when configured, otherwise "
+            "relative to the active case/workspace; for example mri/segmentation.mgz. "
+            "Do not repeat the case_output_folder prefix or use /case, /workspace, or a leading slash."
         )
     )
     description: str
