@@ -18,6 +18,61 @@ The Gaussian-blur task replaces temporal mean for future agent trials. The
 standalone runner below still grades the historical temporal-mean task; its
 numeric grader must not be used to score Gaussian blur.
 
+## Reproducible real-data preparation
+
+From the repository root, use the locked project environment:
+
+```bash
+uv sync --locked --extra test
+uv run python benchmarks/workflow_setup/prepare_fixtures.py \
+  --cache "$HOME/.cache/neurocade/workflow-benchmark" \
+  --output /tmp/neurocade-benchmark-fixtures-001
+```
+
+Choose a **new output directory** on each run. The command downloads two pinned
+archives, checks their published checksums (also on cache reuse), and creates:
+
+- `blur/001.nii.gz`: the release sample's `mri/001.mgz` converted with NiBabel,
+  without resampling. Values, shape, voxel spacing and affine are verified after
+  saving. This is a temporary benchmark convenience, not a harness capability.
+- `thalamus/`: one complete prepared FreeSurfer subject from the processed
+  Rhineland archive. Subject directories are copied without unrelated pipelines;
+  old thalamus products and running markers are excluded. Required volumes must
+  be readable and share geometry; the Talairach transform must be present.
+- `manifest.json`: source URLs/checksums, archive subject path, conversion details,
+  dependency versions, exact prompts, and SHA-256 hashes of every prepared file.
+
+Sources are the NeuroCade `v2026.6.7` sample release and
+[Zenodo record 19133592](https://zenodo.org/records/19133592), specifically
+`sub_rs_mri_proc.zip`, whose prepared subject is under
+`sub_rs_mri_proc/freesurfer6_pipeline/` (6.6 GB download, published MD5
+`5a300bc10b8cf09b7799a2e3087c3220`). Allow at least 15 GB free for downloads,
+extraction and trial copies. No raw MRI archive is needed. Interrupted downloads
+are not published as cached archives; retry the command. Downloads are performed
+only by this preparation command, never by the agent or live application.
+An offline developer can place the exact archives in `--cache`; checksums still
+apply. The archive URLs and checksums are constants in `prepare_fixtures.py`.
+
+For each agent trial, copy the selected `blur/` or `thalamus/` fixture into a fresh
+case in an **isolated benchmark database/data root**, register the copied files
+using normal artifact classification, and send the corresponding `prompts.json`
+entry unchanged. Never point the benchmark at the production app/bridge or import
+fixtures into an everyday case. The staging tool will make its own disposable
+copy, as it does in normal use. Preserve the fixture manifest with the transcript.
+The preparation command itself does not start an agent, Docker, or the app.
+
+Compare trials using the same manifest and model settings. Report schema validity,
+startup-test outcome, approval request, and full processing separately. A startup
+timeout is not a segmentation pass. The published subject was processed with
+FreeSurfer 6; running the latest segmentation on it still requires verification.
+The older temporal-mean numeric grader below does not grade Gaussian blur.
+
+Offline regression checks:
+
+```bash
+uv run pytest tests/test_workflow_benchmark_fixtures.py -q
+```
+
 ## Historical tasks and prompts
 
 **Easy — FSL temporal mean**

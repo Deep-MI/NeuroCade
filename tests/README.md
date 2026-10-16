@@ -225,3 +225,11 @@ covered by this Docker-only smoke test.
 ### Installer reliability
 
 `pytest tests/test_installer_reliability.py tests/test_install_scripts.py tests/test_update_installer.py tests/test_release_publication.py` exercises generated version-bound installers against temporary release assets and fake Docker/download commands. It does not install software or touch a running application. Terminal-menu checks use a Unix pseudo-terminal (Linux/macOS); Python's standard library provides the rest. Release CI additionally downloads the uploaded installer and manifest while the release is a draft, verifies the checksum and embedded tag, and runs its syntax/help checks before publication.
+
+### Downloadable workflow benchmark fixtures
+
+`tests/test_workflow_benchmark_fixtures.py` uses tiny local archives and needs no
+network, Docker, or running app. For real benchmark data, follow
+[workflow benchmark preparation](../benchmarks/workflow_setup/README.md#reproducible-real-data-preparation).
+The separate preparation command downloads pinned public archives into a cache
+and creates disposable NIfTI/FreeSurfer fixtures; it never modifies app data.
