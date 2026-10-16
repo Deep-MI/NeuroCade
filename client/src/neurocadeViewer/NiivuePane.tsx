@@ -16,7 +16,7 @@ import {
 } from './niivueLayers';
 import {
   moveCrosshairInReferenceVox,
-  referenceVoxelToWorld,
+  externalCoordinateToWorld,
 } from './loadedVolumeDisplay';
 import {
   layerReconcileKeyOf,
@@ -52,6 +52,7 @@ interface NiivuePaneProps {
   manualWindowingIds: React.MutableRefObject<Set<string>>;
   dragMode: ViewerDragMode;
   externalCoordinate?: [number, number, number] | null;
+  externalCoordinateSpace?: 'voxel' | 'world';
   reportLocation?: boolean;
   showOrientationLabels?: boolean;
   className?: string;
@@ -103,6 +104,7 @@ export function NiivuePane({
   manualWindowingIds,
   dragMode,
   externalCoordinate,
+  externalCoordinateSpace = 'voxel',
   reportLocation,
   showOrientationLabels = true,
   className,
@@ -270,13 +272,14 @@ export function NiivuePane({
     if (!externalCoordinate) return;
     const nv = nvRef.current;
     if (!nv) return;
-    const worldCoordinate = referenceVoxelToWorld(
+    const worldCoordinate = externalCoordinateToWorld(
       nv,
       externalCoordinate,
+      externalCoordinateSpace,
       coordinateSourceIdRef.current,
     );
     if (worldCoordinate) nv.setCrosshairPos(worldCoordinate);
-  }, [externalCoordinate, layerReconcileKey]);
+  }, [externalCoordinate, externalCoordinateSpace, layerReconcileKey]);
 
   // This effect is intentionally declared before layer reconciliation so a
   // case transition cannot reuse bytes fetched for the previous case.

@@ -83,6 +83,9 @@ class AssistantToolBuilder:
                 *,
                 tool_name: str = name,
             ) -> ToolResult:
+                if tool_name == "gui_focus_label":
+                    from api_service.assistant.tools.focus_tools import resolve_focus_arguments
+                    arguments = resolve_focus_arguments(state, arguments, self.load_gui_state(state))
                 registration = None
                 if tool_name == "gui_load_layer":
                     from api_service.artifacts.registration import ensure_layer_registered
@@ -100,6 +103,8 @@ class AssistantToolBuilder:
                     gui_state_override=gui_state_override,
                     gui_state_key=gui_state_key,
                 )
+                if tool_name == "gui_focus_label" and content.startswith("Error:"):
+                    return ToolResult.error(content)
                 if registration and content.startswith("Error:"):
                     return ToolResult.error(content, details={"status": "registered", "loaded": False,
                                                               "artifact": registration["artifact"]})

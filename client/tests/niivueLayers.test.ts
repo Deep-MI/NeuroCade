@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   referenceWorldToVoxel,
   referenceVoxelToWorld,
+  externalCoordinateToWorld,
   reorderLoadedVolumes,
   setLoadedVolumeOpacity,
   syncLoadedVolumeOpacities,
@@ -377,4 +378,12 @@ void test('loading a larger input after a segmentation expands the reference onl
   assert.equal(expandedReference.__neurocadeCoordinateSourceId, input.id);
   await ensureFixedNiivueReference(nv as never, [segmentation, input]);
   assert.equal(volumes[0], expandedReference);
+});
+
+
+void test('external world cursor bypasses cropped/reference voxel transforms', () => {
+  const nv = { volumes: [{ matRAS: [2, 0, 0, 100, 0, 3, 0, -50, 0, 0, 4, 20, 0, 0, 0, 1] }] };
+  assert.deepEqual(externalCoordinateToWorld(nv as never, [12.5, -20, 7], 'world'), [12.5, -20, 7]);
+  assert.deepEqual(externalCoordinateToWorld(nv as never, [1, 2, 3]), [102, -44, 32]);
+  assert.equal(externalCoordinateToWorld(nv as never, [NaN, 0, 0], 'world'), null);
 });

@@ -36,6 +36,9 @@
   that same call. Omit those fields to preserve a tracked file's metadata; provide
   them to correct it. Do not rerun processing just to register/load an existing result.
   Verify the loaded layer type/LUT with `gui_list_layers`.
+- For `gui_focus_label`, use the segmentation `layer_id` from `gui_list_layers` or
+  its exact `/case/...` path, including nested workflow output folders. If a nucleus
+  is absent, report that failure; do not silently focus a parent structure instead.
 - Use GUI tools for viewer actions. To load a compatible case artifact explicitly,
   use `gui_load_layer`; confirm queued GUI actions with `gui_command_status` before
   claiming they happened.

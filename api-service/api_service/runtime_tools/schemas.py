@@ -223,13 +223,17 @@ def get_gui_tools() -> list[RuntimeToolSpec]:
         RuntimeToolSpec(
             name="gui_focus_label",
             description=(
-                "Find an anatomical segmentation label centroid and move the viewer cursor there."
+                "Focus a label in a specific segmentation. Prefer layer_id from gui_list_layers to preserve "
+                "nested output paths; alternatively use exact /case/... segmentation_file. "
+                "Bare filenames resolve registered artifacts when unique. Without a target, uses the default "
+                "whole-brain segmentation. Never substitute a parent structure when a requested nucleus is absent."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "label_query": {"type": "string"},
-                    "segmentation_file": {"type": "string"},
+                    "layer_id": {"type": "string", "description": "Loaded segmentation ID from gui_list_layers; mutually exclusive with segmentation_file."},
+                    "segmentation_file": {"type": "string", "description": "Exact case path, e.g. /case/thalamus/mri/ThalamicNuclei.v13.T1.mgz."},
                 },
                 "required": ["label_query"],
             },

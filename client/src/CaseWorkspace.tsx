@@ -70,6 +70,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
   const [volumes, setVolumes] = useState<Volume[]>([]);
   const [showCaseManager, setShowCaseManager] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<LocationInfo | null>(null);
+  const [requestedCursorSpace, setRequestedCursorSpace] = useState<'voxel' | 'world'>('voxel');
   const [requestedCursor, setRequestedCursor] = useState<[number, number, number] | null>(null);
   const [rightPanel, setRightPanel] = useState<WorkspaceRightPanel>('chat');
   const [chatClearRequestToken, setChatClearRequestToken] = useState(0);
@@ -156,6 +157,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
         const payload = command.payload;
         if (command.type === 'move_cursor') {
           const position = payload.position as [number, number, number];
+          setRequestedCursorSpace(payload.coordinate_space === 'world' ? 'world' : 'voxel');
           setRequestedCursor(position);
           setTimeout(() => setRequestedCursor(null), 500);
         } else if (command.type === 'load_layer') {
@@ -357,6 +359,7 @@ function CaseWorkspace({ initialCaseId = null, initialWorkspaceId = null }: Case
               canAddLayers={Boolean(controller.activeCaseId ?? initialCaseId ?? controller.uploadState.caseId)}
               onLocationChange={setCurrentLocation}
               externalCoordinate={requestedCursor}
+              externalCoordinateSpace={requestedCursorSpace}
               onBackendChange={handleViewerBackendChange}
             />
           </Suspense>
