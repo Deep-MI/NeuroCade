@@ -57,7 +57,21 @@ never copy the whole case into a folder inside that case. Identify the selected
 subject before examining child subjects, and exclude the destination when
 searching children. Preserve input files and handle spaces and repeated runs.
 For a subject-based command, a staged subject at `${OUTPUT_ROOT}` can be addressed
-using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory.
+using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory:
+
+```bash
+# These are supplied by NeuroCade when case_output_folder is configured:
+# OUTPUT_PARENT=/workflow_output
+# OUTPUT_NAME=output
+# OUTPUT_ROOT=/workflow_output/output
+# Stage required subject contents directly beneath OUTPUT_ROOT, e.g. mri/.
+subject_command "${OUTPUT_NAME}" "${OUTPUT_PARENT}"
+```
+
+Here `subject_command` stands for a CLI accepting subject name then parent directory;
+confirm its argument order with inspection. Do not pass `OUTPUT_ROOT` as the parent
+or append `OUTPUT_NAME` to it again: that would refer to `output/output`. Use this
+space-free mount instead of deriving subject paths from the case name or `RUN_DIR`.
 
 `tool_workflow_test` supports:
 - `mode: validate`: schema/Bash validation and output-path warnings; no execution.
@@ -66,8 +80,11 @@ using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects director
   case is never mounted, network and GPU are disabled, and outputs are not registered.
   Default timeout_s is 10; ask the user before exceeding 60 seconds unless already
   explicitly authorized. The execution clock starts after copying and image preparation.
-- `mode: status`, test_id: retrieve a pending or completed test, its last 15 stdout/
-  stderr lines and required-output checks. Longer tests return a test_id while running.
+- `mode: status`, test_id, wait_s: retrieve a pending or completed test, its last 15
+  stdout/stderr lines and required-output checks. `wait_s` defaults to 0 and accepts
+  0–30 seconds. Use 30 for pending tests to avoid repeated immediate polls; return
+  early when the test finishes. Waiting neither extends execution timeout nor
+  cancels/restarts processing. Longer tests return a test_id while running.
 - `mode: logs`, test_id, stream, offset_bytes, max_bytes: page through retained output
   (10 MiB text per stream, explicit truncation). Logs are private to the initiating user/case.
 Completed means exit zero with required nonempty readable files, not scientific

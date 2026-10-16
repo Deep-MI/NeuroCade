@@ -18,7 +18,8 @@
   selections. Only independent disposable copies are mounted; the current case
   is never mounted. Default timeout is 10 seconds. Ask before exceeding 60 seconds
   unless the user already explicitly authorized that duration. A timeout is
-  incomplete execution, not a pass. Use mode `status` for a running test and mode
+  incomplete execution, not a pass. For a running test, use mode `status` with
+  `wait_s: 30` instead of repeated immediate polls; it returns early on completion. Use mode
   `logs` with byte offsets for full retained stdout/stderr; immediate results show
   the last 15 lines. Do not save a separate diagnostic workflow. Honor draft-only
   requests: return the actual draft without requesting save approval.
@@ -43,6 +44,10 @@
 - Follow the runtime path contract in INFORMATION.md: output paths are relative
   to `case_output_folder` when set, and the output mount aliases that case folder.
   Preserve inputs and never recursively copy an input ancestor into its output.
+  For commands taking subject name plus parent directory, stage the subject
+  contents directly in `OUTPUT_ROOT`, then pass `OUTPUT_NAME` and `OUTPUT_PARENT`.
+  Do not append the subject name to `OUTPUT_ROOT` again or derive these arguments
+  from the case name or `RUN_DIR`; the output mount provides a space-free path.
 - After an assistant error, check durable workflow status before resubmitting;
   the workflow may already have been queued or started.
 - Use case or workspace file-tree tools when an exact path is unknown.

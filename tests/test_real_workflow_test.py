@@ -307,3 +307,80 @@ def test_validation_failure_gives_retry_guidance_without_case_access(monkeypatch
     assert 'undeclared input' in result.details['errors'][0]['message']
     assert 'resubmit tool_workflow_test' in result.details['next_step']
     assert 'Do not create or edit scripts' in result.details['next_step']
+
+
+@pytest.mark.parametrize('wait_s', [-1, 31])
+def test_status_wait_bounds(wait_s):
+    with pytest.raises(ValueError):
+        module.WorkflowTestArgs(mode='status', test_id='a' * 32, wait_s=wait_s)
+
+
+def test_wait_only_supported_for_status():
+    with pytest.raises(ValueError, match='only supported for status'):
+        module.WorkflowTestArgs(definition=draft(), wait_s=30)
+    assert module.WorkflowTestArgs(mode='status', test_id='a' * 32).wait_s == 0
+
+
+@pytest.mark.parametrize('outcome', ['completed', 'failed', 'startup_timeout'])
+def test_status_wait_returns_when_task_finishes(tmp_path, monkeypatch, outcome):
+    tools = module.AssistantWorkflowTestTools(settings=None)
+    test_id = 'a' * 32
+    module.write_json(tmp_path / 'result.json', {'status': 'running', 'test_id': test_id})
+    monkeypatch.setattr(tools, 'read_owned', lambda state, identity: tmp_path)
+
+    async def trial():
+        async def complete():
+            await asyncio.sleep(0.01)
+            module.write_json(tmp_path / 'result.json', {'status': outcome, 'test_id': test_id})
+        task = asyncio.create_task(complete())
+        module._TASKS[test_id] = task
+        try:
+            result = await asyncio.wait_for(tools.test({}, ToolExecutionContext('wait'),
+                {'mode': 'status', 'test_id': test_id, 'wait_s': 30}), timeout=1)
+            assert task.done() and not task.cancelled()
+            assert result.details['status'] == outcome
+            assert result.is_error == (outcome == 'failed')
+        finally:
+            module._TASKS.pop(test_id, None)
+    asyncio.run(trial())
+
+
+def test_status_wait_timeout_keeps_processing_task_alive(tmp_path, monkeypatch):
+    tools = module.AssistantWorkflowTestTools(settings=None)
+    test_id = 'b' * 32
+    module.write_json(tmp_path / 'result.json', {'status': 'running', 'test_id': test_id})
+    monkeypatch.setattr(tools, 'read_owned', lambda state, identity: tmp_path)
+    real_wait = asyncio.wait
+
+    async def short_wait(tasks, timeout):
+        assert timeout == 30
+        return await real_wait(tasks, timeout=0.01)
+    monkeypatch.setattr(module.asyncio, 'wait', short_wait)
+
+    async def trial():
+        release = asyncio.Event()
+        task = asyncio.create_task(release.wait())
+        module._TASKS[test_id] = task
+        try:
+            result = await tools.test({}, ToolExecutionContext('wait'),
+                {'mode': 'status', 'test_id': test_id, 'wait_s': 30})
+            assert result.details['status'] == 'running'
+            assert not task.done()
+        finally:
+            release.set()
+            await task
+            module._TASKS.pop(test_id, None)
+    asyncio.run(trial())
+
+
+def test_status_authorization_precedes_wait(tmp_path, monkeypatch):
+    tools = module.AssistantWorkflowTestTools(settings=None)
+    def denied(*args):
+        raise ValueError('Test is not accessible')
+    async def must_not_wait(*args, **kwargs):
+        pytest.fail('Unauthorized status request must not wait')
+    monkeypatch.setattr(tools, 'read_owned', denied)
+    monkeypatch.setattr(module.asyncio, 'wait', must_not_wait)
+    result = asyncio.run(tools.test({}, ToolExecutionContext('wait'),
+        {'mode': 'status', 'test_id': 'c' * 32, 'wait_s': 30}))
+    assert result.is_error

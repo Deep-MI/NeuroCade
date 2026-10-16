@@ -38,12 +38,15 @@ class WorkflowTestArgs(BaseModel):
     inputs: list[str] = Field(default_factory=list, description='Ordered input selections relative to the active case, or /case/...; copied independently before execution.')
     timeout_s: int = Field(default=10, ge=1, le=86400, description='Execution timeout, excluding input copying and image preparation. For more than 60 seconds ask the user first unless already explicitly authorized. No extra approval is needed when already authorized.')
     test_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+    wait_s: int = Field(default=0, ge=0, le=30, description='Status only: wait up to this many seconds for a pending test to finish. Use 30 instead of repeated immediate polls. Does not extend execution timeout or start another test.')
     stream: Literal['stdout', 'stderr'] = 'stdout'
     offset_bytes: int = Field(default=0, ge=0)
     max_bytes: int = Field(default=20000, ge=1, le=50000)
 
     @model_validator(mode='after')
     def validate_operation(self):
+        if self.wait_s and self.mode != 'status':
+            raise ValueError('wait_s is only supported for status')
         if self.mode in {'status', 'logs'}:
             if not self.test_id or self.definition is not None or self.inputs:
                 raise ValueError('status/logs require test_id and no definition or inputs')
@@ -124,7 +127,8 @@ class AssistantWorkflowTestTools:
             'Default mode=staging runs a 10-second startup check. Set timeout_s explicitly when useful; for timeouts over '
             '60 seconds ask the user first unless already explicitly authorized. Timeout means incomplete, never passed. '
             'Returns last 15 lines of stdout/stderr, output checks and a test_id. Longer preparation/execution returns '
-            'running; use mode=status with test_id later. mode=logs retrieves full retained stdout/stderr in byte pages '
+            'running; use mode=status with test_id and wait_s=30 to wait for completion instead of repeated immediate polls. '
+            'Waiting does not extend the execution timeout. mode=logs retrieves full retained stdout/stderr in byte pages '
             '(offset_bytes/max_bytes, capped at 10 MiB text per stream). mode=validate checks schema only. '
             'No command stubs, no automatic rerun, no output registration, no network or GPU. '
             'On validation failure, correct definition and resubmit this tool; do not create or edit case scripts. '
@@ -174,6 +178,14 @@ class AssistantWorkflowTestTools:
                 assert parsed.test_id is not None
                 root = self.read_owned(state, parsed.test_id)
                 if parsed.mode == 'status':
+                    task = _TASKS.get(parsed.test_id)
+                    if parsed.wait_s and task is not None and not task.done():
+                        # Authorization is complete; do not hold a DB transaction while waiting.
+                        db = state.get('db')
+                        if isinstance(db, Session) and db.in_transaction():
+                            db.commit()
+                        # asyncio.wait never cancels the processing task on timeout/caller cancellation.
+                        await asyncio.wait({task}, timeout=parsed.wait_s)
                     result = self.status(root)
                     return ToolResult.structured(result, is_error=result['status'] in {'failed', 'interrupted'})
                 path = root / 'logs' / f'{parsed.stream}.log'
