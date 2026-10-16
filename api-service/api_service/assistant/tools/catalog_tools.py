@@ -386,9 +386,9 @@ class AssistantCatalogTools:
                 } if tool.case_output_folder else None,
                 "warnings": warnings,
                 "not_verified": ["script semantics and staging", "real inputs and bind mounts", "CLI compatibility", "scientific output"],
-                "next_step": "Address warnings. For supported directory workflows use tool_workflow_test mode=staging. "
-                "If the fixture is unsupported, return the validated draft and report execution as unverified. "
-                "Do not save or launch a separate probe workflow as a substitute for an unavailable test.",
+                "next_step": "Address warnings. Use tool_workflow_test mode=staging with ordered input selections to test the actual "
+                "command on disposable copies (10 seconds by default). Ask before timeout_s exceeds 60 unless "
+                "already authorized. A timeout is incomplete, not a pass. Do not save a separate probe workflow.",
             })
         except Exception as exc:
             return ToolResult.error(f"Workflow validation failed: {exc}")

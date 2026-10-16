@@ -50,7 +50,7 @@ def _assert_rootless(request: RuntimeContainerRunRequest) -> None:
         value = str(token)
         if value in {"--fakeroot", "--writable", "--writable-tmpfs", "sudo"} or value.startswith("--fakeroot"):
             raise ValueError(f"Disallowed privilege escalation in tool command: {value}")
-    if request.isolated and ((request.binds and not request.synthetic_fixture) or request.gpu_enabled):
+    if request.isolated and ((request.binds and not (request.synthetic_fixture or request.workflow_test)) or request.gpu_enabled):
         raise ValueError("Isolated Apptainer runs cannot use binds or a GPU")
 
 

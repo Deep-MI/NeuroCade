@@ -153,7 +153,8 @@ class AssistantToolExecutor:
                 )
             arguments = planned.get("arguments", {})
             fingerprint = self.fingerprint(tool.name, arguments)
-            if fingerprint == state.get("last_tool_call_fingerprint"):
+            polling_test = tool.name == "tool_workflow_test" and arguments.get("mode") == "status"
+            if fingerprint == state.get("last_tool_call_fingerprint") and not polling_test:
                 reason = f"Stopped repeated identical request to {tool.name}; the previous result is unchanged."
                 for skipped in pending_calls[pending_index:]:
                     conversation.append({

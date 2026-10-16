@@ -204,11 +204,16 @@ or processing container is required.
 ### Isolated authoring tools
 
 `pytest tests/test_isolated_authoring_tools.py tests/test_workflow_authoring_feedback.py`
-covers the two authoring tool schemas, staging assertions, and synthetic mount
-boundary on Docker and Apptainer. `tool_inspect` replaces the advertised shell
+covers the two authoring tool schemas and isolated mount boundaries on Docker and
+Apptainer. `pytest tests/test_real_workflow_test.py` covers independent input copies,
+symlink rejection, timeout outcomes and private paginated logs. `tool_inspect` replaces the advertised shell
 probe and also retains configured-workflow inspection by `tool_id`.
-`tool_workflow_test` combines static validation and the prepared-subject staging
-fixture; processing is stubbed and no scientific output is claimed.
+`tool_workflow_test` runs real commands against disposable copies of selected inputs.
+The default timeout is 10 seconds; over 60 seconds requires conversational user
+authorization, not an approval gate. Results include 15-line stdout/stderr tails.
+The same tool retrieves status and retained logs (10 MiB text per stream).
+Only disposable copies are mounted; outputs are never registered in the case.
+Schema validation remains available without execution.
 
 With the FSL and FreeSurfer benchmark images already cached, run
 `RUN_AUTHORING_SANDBOX=1 pytest tests/evaluations/eval_authoring_sandbox.py -q`.

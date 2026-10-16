@@ -8,14 +8,14 @@
 - Review a minimal draft early with `tool_workflow_test` mode `validate`, before
   spending rounds on elaborate tests. Require the main output; address warnings
   before asking to save. Schema validation does not establish execution success.
-- For supported directory staging, use `tool_workflow_test` mode `staging` with the
-  processing executable basename. Its prepared-subject fixture uses real mount
-  aliases, spaces, existing output, and two runs. The harness supplies the stub
-  and grades the filesystem. Do not construct your own stub/probe scripts.
-  The current stub contract is COMMAND SUBJECT_NAME SUBJECTS_DIR; other workflows
-  can be schema-validated, but must be reported as untested for execution.
-  Do not save or launch a separate probe workflow to work around a missing test.
-  Honor draft-only requests: return the draft without requesting save approval.
+- Test real commands with `tool_workflow_test` mode `staging` and ordered input
+  selections. Only independent disposable copies are mounted; the current case
+  is never mounted. Default timeout is 10 seconds. Ask before exceeding 60 seconds
+  unless the user already explicitly authorized that duration. A timeout is
+  incomplete execution, not a pass. Use mode `status` for a running test and mode
+  `logs` with byte offsets for full retained stdout/stderr; immediate results show
+  the last 15 lines. Do not save a separate diagnostic workflow. Honor draft-only
+  requests: return the actual draft without requesting save approval.
 - After two failures with the same cause, stop repeating equivalent inspections.
   Read the diagnostics and test a different hypothesis, or return the validated
   draft with explicit limits. Preserve useful progress before the round budget

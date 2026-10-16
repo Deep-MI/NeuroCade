@@ -45,7 +45,7 @@ def build_docker_argv(
     launch_id: str | None = None,
 ) -> list[str]:
     validate_synthetic_fixture(request, data_root)
-    if request.isolated and request.binds and not request.synthetic_fixture:
+    if request.isolated and request.binds and not (request.synthetic_fixture or request.workflow_test):
         raise ValueError("Isolated container execution cannot use bind mounts")
     command = [str(part) for part in request.command]
     if not command:
@@ -73,7 +73,7 @@ def build_docker_argv(
             "no-new-privileges",
             "--tmpfs",
             # MATLAB Runtime extracts shared libraries here and needs executable mappings.
-            "/tmp:rw,nosuid,nodev," + ("noexec" if request.isolated else "exec"),
+            "/tmp:rw,nosuid,nodev," + ("noexec" if request.isolated and not request.workflow_test else "exec"),
         ]
     )
     if launch_id:
@@ -82,7 +82,9 @@ def build_docker_argv(
         argv.extend(["--network", "none"])
     if request.gpu_enabled:
         argv.extend(["--gpus", "all"])
-    if request.isolated:
+    if request.workflow_test:
+        argv.extend(["--pids-limit", "256", "--cpus", "2", "--memory", "8g", "--memory-swap", "8g"])
+    elif request.isolated:
         argv.extend(["--pids-limit", "64", "--memory", "512m", "--memory-swap", "512m"])
     for path in request.scratch_paths:
         # Docker Desktop reports bind roots as root-owned even when the macOS

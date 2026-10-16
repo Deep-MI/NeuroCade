@@ -1,6 +1,5 @@
 """Authoring boundaries: the model cannot supply case mounts or shell inspection."""
 import asyncio
-import shlex
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -113,50 +112,6 @@ def test_synthetic_backends_keep_sandbox(tmp_path):
     assert 'hostfs,cwd' in apptainer and 'none' in apptainer
 
 
-@pytest.mark.parametrize('broken', [False, True])
-def test_workflow_grading_uses_own_fixture_and_two_runs(tmp_path, monkeypatch, broken):
-    calls = []
-    async def execute(request, **kwargs):
-        run = request.container_run
-        calls.append(run)
-        assert run.isolated and run.synthetic_fixture and run.network_disabled
-        case = Path(run.binds[0].host_path)
-        output = Path(run.binds[1].host_path)
-        assert case.parent.parent == tmp_path
-        assert case.parent.name.startswith('.workflow-test-')
-        assert output.parent == case and len(run.binds) == 2
-        # Unit test the exact shell without Docker. Real aliases are covered by
-        # the opt-in integration run; host paths here intentionally share a directory.
-        script = run.command[-1].replace('/case with spaces', str(case)).replace('/workflow_output/output', str(output)).replace('/workflow_output', str(case))
-        script = script.replace('readonly OUTPUT_NAME=output', 'readonly OUTPUT_NAME=thalamus')
-        lines = []
-        for line in script.splitlines():
-            if line.startswith('ulimit '):
-                continue
-            if line.startswith('readonly OUTPUT_ROOT='):
-                line = 'readonly OUTPUT_ROOT=' + shlex.quote(str(output))
-            if line.startswith('readonly OUTPUT_PARENT='):
-                line = 'readonly OUTPUT_PARENT=' + shlex.quote(str(case))
-            if line.startswith('readonly -a OUTPUTS='):
-                line = 'readonly -a OUTPUTS=()'
-            if line.startswith('mkdir -p -- '):
-                continue
-            lines.append(line)
-        script = '\n'.join(lines)
-        result = subprocess.run(['bash', '-c', script], capture_output=True, text=True)
-        return SimpleNamespace(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
-    monkeypatch.setattr(workflow_test_tools, 'execute_runtime_request_async', execute)
-    value = draft()
-    if broken:
-        value['script'] = 'true'
-    result = asyncio.run(workflow_test_tools.AssistantWorkflowTestTools(settings=SimpleNamespace(fs_data_root=tmp_path)).test(
-        {'case_id': 'live'}, ToolExecutionContext('test'), {'definition': value, 'mode': 'staging', 'processing_command': 'segmentBS.sh'}))
-    assert result.is_error == broken, result.content
-    assert len(calls) == (1 if broken else 2)
-    assert result.details['case_mounted'] is False
-    assert not list(tmp_path.glob('.workflow-test-*'))
-
-
 def test_validate_mode_never_starts_container(monkeypatch):
     async def forbidden(*args, **kwargs):
         raise AssertionError('Validation must not start a container')
@@ -166,25 +121,6 @@ def test_validate_mode_never_starts_container(monkeypatch):
     assert not result.is_error
     assert result.details['status'] == 'schema_valid'
     assert result.details['saved'] is False and result.details['executed'] is False
-
-
-def test_replaced_fixture_root_cannot_redirect_host_grading(tmp_path, monkeypatch):
-    outside = tmp_path / 'current-case'
-    outside.mkdir()
-    sentinel = outside / 'keep.txt'
-    sentinel.write_text('protected')
-    async def execute(request, **kwargs):
-        output = Path(request.container_run.binds[1].host_path)
-        (output / 'keep.txt').unlink()
-        output.rmdir()
-        output.symlink_to(outside, target_is_directory=True)
-        return SimpleNamespace(returncode=0, stdout='', stderr='')
-    monkeypatch.setattr(workflow_test_tools, 'execute_runtime_request_async', execute)
-    result = asyncio.run(workflow_test_tools.AssistantWorkflowTestTools(settings=SimpleNamespace(fs_data_root=tmp_path)).test(
-        {}, ToolExecutionContext('test'), {'definition': draft(), 'mode': 'staging', 'processing_command': 'segmentBS.sh'}))
-    assert result.is_error
-    assert result.details['attempts'][0]['failures'] == ['fixture_root_replaced']
-    assert sentinel.read_text() == 'protected'
 
 
 def test_configured_workflow_inspection_remains_available(monkeypatch):

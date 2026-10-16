@@ -92,15 +92,19 @@ class RuntimeContainerRunRequest:
     gpu_enabled: bool = False
     isolated: bool = False
     synthetic_fixture: bool = False
+    workflow_test: bool = False
     run_id: str | None = None
 
 
 def validate_synthetic_fixture(request: RuntimeContainerRunRequest, data_root: Path) -> None:
     """Only two mounts of one fresh fixture subtree; never a case/data-root mount."""
-    if not request.synthetic_fixture:
+    if not (request.synthetic_fixture or request.workflow_test):
         return
     if not request.isolated or not request.network_disabled or request.gpu_enabled:
         raise ValueError("Synthetic tests require isolation, no network, and no GPU")
+    if request.workflow_test:
+        validate_workflow_test(request, data_root)
+        return
     if tuple(request.scratch_paths) != ("/workflow_output",) or len(request.binds) != 2:
         raise ValueError("Synthetic tests require exactly the fixture and output-alias mounts")
     case, output = request.binds
@@ -120,6 +124,33 @@ def validate_synthetic_fixture(request: RuntimeContainerRunRequest, data_root: P
         lexical = root / bind.source_relative
         if lexical.resolve(strict=True) != lexical or not lexical.is_dir():
             raise ValueError("Synthetic fixture paths must be directories without symlink aliases")
+
+
+def validate_workflow_test(request: RuntimeContainerRunRequest, data_root: Path) -> None:
+    """Accept only a private copied case and its output alias, never original data."""
+    if request.synthetic_fixture or len(request.binds) not in {1, 2}:
+        raise ValueError("Workflow tests require one copied case and optional output alias")
+    if tuple(request.scratch_paths) != ("/workflow_output",):
+        raise ValueError("Invalid workflow-test scratch paths")
+    root = data_root.resolve(strict=True)
+    first = request.binds[0]
+    if not isinstance(first, BridgeBind):
+        raise ValueError("Workflow tests require bridge binds")
+    relative = Path(first.source_relative)
+    if (len(relative.parts) != 2 or not relative.parts[0].startswith(".workflow-test-")
+            or relative.parts[1] != "case with spaces"):
+        raise ValueError("Workflow tests require a private copied case")
+    for index, bind in enumerate(request.binds):
+        if not isinstance(bind, BridgeBind) or bind.host_path is not None or bind.mode != "rw":
+            raise ValueError("Workflow tests cannot mount host or linked paths")
+        path = root / bind.source_relative
+        if path.resolve(strict=True) != path or not path.is_dir():
+            raise ValueError("Workflow test mounts cannot use symlink aliases")
+        target = "/case with spaces" if index == 0 else "/workflow_output/output"
+        if bind.container_path != target:
+            raise ValueError("Invalid workflow-test mount target")
+        if index and (path == root / relative or not path.is_relative_to(root / relative)):
+            raise ValueError("Output must be inside the copied case")
 
 
 @dataclass(slots=True)
@@ -173,6 +204,7 @@ def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) ->
         "gpu_enabled": request.gpu_enabled,
         "isolated": request.isolated,
         "synthetic_fixture": request.synthetic_fixture,
+        "workflow_test": request.workflow_test,
         "run_id": request.run_id,
     }
 

@@ -93,13 +93,23 @@ class RunRecord:
 class _CaptureBuffer:
     """Keep bounded head/tail text while continuously draining a pipe."""
 
-    def __init__(self, limit: int = MAX_CAPTURE_BYTES) -> None:
+    def __init__(self, limit: int = MAX_CAPTURE_BYTES, log: Any = None) -> None:
         self.limit = limit
+        self.log = log
+        self.log_chars = 0
         self.head = ""
         self.tail = ""
         self.total = 0
 
     def append(self, value: str) -> None:
+        if self.log is not None and self.log_chars < 10 * 1024 * 1024:
+            remaining = 10 * 1024 * 1024 - self.log_chars
+            encoded = value.encode("utf-8", errors="replace")
+            self.log.write(encoded[:remaining].decode("utf-8", errors="ignore"))
+            self.log_chars += min(len(encoded), remaining)
+            if len(encoded) >= remaining:
+                self.log.write("\n[log truncated at 10 MiB of text]\n")
+            self.log.flush()
         self.total += len(value)
         half = self.limit // 2
         if len(self.head) < half:
@@ -357,6 +367,7 @@ class BridgeRuntime:
             raise ValueError("Container command must be a non-empty argument array")
         isolated = bool(container.get("isolated", False))
         synthetic_fixture = bool(container.get("synthetic_fixture", False))
+        workflow_test = bool(container.get("workflow_test", False))
         binds: list[BridgeBind] = []
         for value in container.get("binds", []):
             if not isinstance(value, dict) or value.get("mode") not in {"ro", "rw"}:
@@ -388,7 +399,7 @@ class BridgeRuntime:
         )
         if len(set(scratch_paths)) != len(scratch_paths) or "/" in scratch_paths:
             raise ValueError("Scratch paths must be unique non-root container paths")
-        if isolated and ((binds and not synthetic_fixture) or container.get("gpu_enabled")):
+        if isolated and ((binds and not (synthetic_fixture or workflow_test)) or container.get("gpu_enabled")):
             raise ValueError("Isolated runs cannot use binds or GPUs")
         request = RuntimeContainerRunRequest(
             image=spec,
@@ -401,15 +412,31 @@ class BridgeRuntime:
             gpu_enabled=bool(container.get("gpu_enabled", False)),
             isolated=isolated,
             synthetic_fixture=synthetic_fixture,
+            workflow_test=workflow_test,
             run_id=run_id,
         )
         from .execution import validate_synthetic_fixture
         validate_synthetic_fixture(request, self.data_root)
         if synthetic_fixture and any(payload.get(key) is not None for key in ("stdout_relative", "stderr_relative", "workdir_relative")):
             raise ValueError("Synthetic tests cannot select host log files or working directories")
+        if workflow_test:
+            if payload.get("workdir_relative") is not None:
+                raise ValueError("Workflow tests cannot select host working directories")
+            first_bind = request.binds[0]
+            assert isinstance(first_bind, BridgeBind)
+            test_root = Path(first_bind.source_relative).parent
+            for key, filename in (("stdout_relative", "stdout.log"), ("stderr_relative", "stderr.log")):
+                expected = test_root / "logs" / filename
+                if payload.get(key) != expected.as_posix():
+                    raise ValueError("Workflow-test logs must stay outside the mounted copied case")
+                lexical = self.data_root / expected
+                if lexical.resolve() != lexical:
+                    raise ValueError("Workflow-test logs cannot use symlinks")
         timeout = float(payload["timeout_s"]) if payload.get("timeout_s") is not None else None
         if synthetic_fixture and (timeout is None or timeout > 30):
             raise ValueError("Synthetic tests require a timeout of at most 30 seconds")
+        if workflow_test and (timeout is None or not 0 < timeout <= 86400):
+            raise ValueError("Workflow tests require a bounded timeout (1 second to 24 hours)")
         if timeout is not None and (timeout <= 0 or timeout > 7 * 24 * 3600):
             raise ValueError("Runtime timeout is outside the allowed range")
         paths = PreparedRunPaths(
@@ -513,6 +540,8 @@ class BridgeRuntime:
                 paths.stderr.parent.mkdir(parents=True, exist_ok=True)
                 stderr_handle = paths.stderr.open("w", encoding="utf-8")
                 stderr_target = stderr_handle
+            if request.workflow_test:
+                stdout_target = stderr_target = subprocess.PIPE
             process = subprocess.Popen(
                 argv, cwd=paths.cwd, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
                 stdout=stdout_target, stderr=stderr_target, start_new_session=True,
@@ -524,8 +553,8 @@ class BridgeRuntime:
                     record.state = RunState.canceled
                     record.finished_at = time.monotonic()
                 return
-            stdout_capture = _CaptureBuffer() if process.stdout is not None else None
-            stderr_capture = _CaptureBuffer() if process.stderr is not None else None
+            stdout_capture = _CaptureBuffer(log=stdout_handle if request.workflow_test else None) if process.stdout is not None else None
+            stderr_capture = _CaptureBuffer(log=stderr_handle if request.workflow_test else None) if process.stderr is not None else None
             capture_threads = []
             for stream, capture in ((process.stdout, stdout_capture), (process.stderr, stderr_capture)):
                 if stream is not None and capture is not None:

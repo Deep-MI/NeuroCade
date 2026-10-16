@@ -216,7 +216,7 @@ class AssistantLoop:
             if entry.get("name") == "tool_workflow_test"
             and isinstance(entry.get("arguments", {}).get("definition"), dict)
         ]
-        validated = [entry for entry in drafts if entry.get("details", {}).get("status") in {"schema_valid", "staging_passed"}]
+        validated = [entry for entry in drafts if entry.get("details", {}).get("status") in {"schema_valid", "staging_passed", "completed", "startup_timeout"}]
         draft = (validated or drafts or [None])[-1]
         fallback = f"{reason} No further tools were executed."
         if drafts:

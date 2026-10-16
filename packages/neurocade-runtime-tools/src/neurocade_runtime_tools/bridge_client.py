@@ -29,6 +29,11 @@ class BridgeError(RuntimeError):
 class RuntimeStoppedTimeout(TimeoutError):
     """The bridge reported a timeout after confirming the container stopped."""
 
+    def __init__(self, message: str, *, stdout: str = "", stderr: str = "") -> None:
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
+
 
 class RuntimeGpuUnavailableError(RuntimeError):
     pass
@@ -223,6 +228,7 @@ class BridgeClient:
                 "network_disabled": run.network_disabled, "gpu_enabled": run.gpu_enabled,
                 "isolated": run.isolated,
                 "synthetic_fixture": run.synthetic_fixture,
+                "workflow_test": run.workflow_test,
             },
             "timeout_s": request.timeout_s,
             "workdir_relative": relative_to_data_root(request.cwd, self.data_root, label="Working directory") if request.cwd else None,
@@ -294,7 +300,8 @@ class BridgeClient:
                         raise BridgeError("Runtime bridge has not confirmed that the output writer stopped")
                     terminal = True
                     if run_state == RunState.timed_out:
-                        raise RuntimeStoppedTimeout(f"Runtime command timed out after {request.timeout_s}s")
+                        raise RuntimeStoppedTimeout(f"Runtime command timed out after {request.timeout_s}s",
+                                                    stdout=str(state.get("stdout") or ""), stderr=str(state.get("stderr") or ""))
                     result = RuntimeExecutionResult(
                         request=request, returncode=int(state.get("returncode") or 0),
                         stdout=str(state.get("stdout") or ""), stderr=str(state.get("stderr") or ""),

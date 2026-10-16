@@ -59,19 +59,21 @@ searching children. Preserve input files and handle spaces and repeated runs.
 For a subject-based command, a staged subject at `${OUTPUT_ROOT}` can be addressed
 using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory.
 
-`tool_workflow_test` combines two authoring checks:
-- `mode: validate`: schema/Bash validation, resolved output paths, mount aliases,
-  and warnings; nothing is saved or executed.
-- `mode: staging`: test the exact draft in a disposable prepared-subject fixture.
-  Requires one directory input, a dedicated single-component case_output_folder,
-  and processing_command with the positional contract SUBJECT_NAME SUBJECTS_DIR.
-  The harness supplies a Bash-function stub, tests actual output mount aliases,
-  paths with spaces, input preservation, existing output and rerun, and checks
-  declared results. This is synthetic file handling, not scientific processing.
-  No current case is read or mounted. Only generated scratch data is writable;
-  the bridge rejects case/linked mounts, symlink aliases, network and GPU access.
-Use mode validate for unsupported fixture contracts. Report CLI compatibility,
-real-input execution and scientific correctness as unverified until actually run.
+`tool_workflow_test` supports:
+- `mode: validate`: schema/Bash validation and output-path warnings; no execution.
+- `mode: staging` (default): execute the actual workflow on independent copies of
+  ordered input selections from the active case. No command is stubbed. The original
+  case is never mounted, network and GPU are disabled, and outputs are not registered.
+  Default timeout_s is 10; ask the user before exceeding 60 seconds unless already
+  explicitly authorized. The execution clock starts after copying and image preparation.
+- `mode: status`, test_id: retrieve a pending or completed test, its last 15 stdout/
+  stderr lines and required-output checks. Longer tests return a test_id while running.
+- `mode: logs`, test_id, stream, offset_bytes, max_bytes: page through retained output
+  (10 MiB text per stream, explicit truncation). Logs are private to the initiating user/case.
+Completed means exit zero with required nonempty readable files, not scientific
+correctness. startup_timeout means execution was terminated before completion and
+is never a pass. No automatic rerun. Copied inputs/outputs are removed after the
+bridge confirms the writer stopped; logs and results remain for inspection.
 
 Workflow outputs declared as intensity volumes, segmentation volumes, or surfaces
 are registered for the viewer as they appear. Other outputs remain accessible as
