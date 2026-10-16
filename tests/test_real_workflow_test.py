@@ -71,6 +71,10 @@ def test_real_execution_copy_and_logs(setup, monkeypatch, outcome):
     async def trial():
         result = await tools.test({}, ToolExecutionContext("test"), {"definition": draft(), "inputs": ["input.txt"]})
         assert result.details["status"] == outcome
+        if outcome == "failed":
+            assert "do not invent prerequisites" in result.details["next_step"]
+        elif outcome == "startup_timeout":
+            assert "incomplete, not passed" in result.details["next_step"]
         assert result.details["stdout_tail"].splitlines() == [str(i) for i in range(25, 40)]
         test_id = result.details["test_id"]
         logs = await tools.test({}, ToolExecutionContext("log"), {"mode": "logs", "test_id": test_id, "max_bytes": 50000})

@@ -32,6 +32,9 @@
   Read the diagnostics and test a different hypothesis, or return the validated
   draft with explicit limits. Preserve useful progress before the round budget
   is exhausted; never claim a partial test proves real processing.
+- For command failures, correct only what the returned error and logs support.
+  If the cause remains uncertain, preserve the latest draft and report uncertainty;
+  do not invent missing prerequisites. A timeout alone does not establish failure.
 - When a retry fails with the same error, compare its saved workflow snapshot
   with the intended fix before another run. State the failed assumption and test
   a different hypothesis; do not call a fix robust until the relevant test passes.

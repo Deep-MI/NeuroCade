@@ -289,6 +289,9 @@ class AssistantWorkflowTestTools:
                           not_verified=['scientific correctness', 'viewer registration', 'repeat runs'])
             if result['status'] == 'startup_timeout':
                 result['not_verified'].append('completion and output correctness')
+                result['next_step'] = 'Execution is incomplete, not passed. Review the captured output; ask before a longer test over 60 seconds unless already authorized.'
+            elif result['status'] == 'failed':
+                result['next_step'] = 'Review the error and command output (mode=logs for full output). Correct only what the evidence supports and resubmit the definition. If the cause is uncertain, preserve the draft and report uncertainty; do not invent prerequisites.'
             write_json(root / 'result.json', result)
             # Never delete a workspace while the bridge may still have a writer.
             if not canceled and (stopped or not submitted):

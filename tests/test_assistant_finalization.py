@@ -107,15 +107,16 @@ def test_duplicate_stop_finalizes_before_round_limit(monkeypatch, tmp_path):
     assert "```yaml" in result["final_response"]
 
 
-def test_fallback_prefers_validated_draft_over_later_invalid_draft(monkeypatch, tmp_path):
+def test_fallback_preserves_latest_draft_even_when_validation_fails(monkeypatch, tmp_path):
     def fail(**kwargs):
         raise RuntimeError("offline")
     monkeypatch.setattr(provider_registry, "build_chat_model", fail)
     current = state()
     current["tool_calls_log"].append(dict(name="tool_workflow_test", arguments=dict(definition={"id": "broken"}), is_error=True))
     result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
-    assert "id: mean" in result["final_response"]
-    assert "id: broken" not in result["final_response"]
+    assert "id: mean" not in result["final_response"]
+    assert "id: broken" in result["final_response"]
+    assert "Latest workflow test: validation_failed" in result["final_response"]
 
 
 def test_no_draft_failure_returns_honest_summary(monkeypatch, tmp_path):
@@ -126,3 +127,18 @@ def test_no_draft_failure_returns_honest_summary(monkeypatch, tmp_path):
     current["tool_calls_log"] = []
     result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
     assert "No workflow draft is available" in result["final_response"]
+
+
+def test_fallback_preserves_latest_execution_failure(monkeypatch, tmp_path):
+    def fail(**kwargs):
+        raise RuntimeError("offline")
+    monkeypatch.setattr(provider_registry, "build_chat_model", fail)
+    current = state()
+    current["tool_calls_log"].append(dict(name="tool_workflow_test",
+        arguments=dict(definition=workflow('echo "newest correction"')),
+        details=dict(status="failed"), is_error=True, result="Required output missing"))
+    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    assert 'newest correction' in result['final_response']
+    assert 'Latest workflow test: failed' in result['final_response']
+    assert 'Required output missing' in result['final_response']
+    assert 'Latest validated draft' not in result['final_response']
