@@ -3,7 +3,7 @@
 from api_service.pacs.compatibility import validate_input
 
 
-def validate_workflow_input(requirement, path, *, db=None):
+def validate_workflow_input(requirement, path, *, db=None, source_path=None):
     """Validate one resolved path against its catalog input declaration."""
     if requirement.kind == "directory":
         if not path.is_dir():
@@ -11,7 +11,7 @@ def validate_workflow_input(requirement, path, *, db=None):
         return
     if not path.is_file():
         raise ValueError("Workflow input must be an existing regular file")
-    validate_input(path, requirement, db=db)
+    validate_input(path, requirement, db=db, source_path=source_path)
 
 
 def validate_workflow_inputs(workflow, paths, *, db=None):

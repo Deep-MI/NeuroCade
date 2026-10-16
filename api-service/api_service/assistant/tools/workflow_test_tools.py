@@ -232,7 +232,7 @@ class AssistantWorkflowTestTools:
             await asyncio.to_thread(copy_inputs, source, case, selections)
             inputs = ['/case with spaces' + ('/' + str(path) if path.parts else '') for path in selections]
             prepared = prepare_workflow(tool.id, inputs, RuntimeBind(case, '/case with spaces', 'rw'),
-                                        workflow=tool, run_id=test_id, gpu_enabled=False)
+                                        workflow=tool, run_id=test_id, gpu_enabled=False, validation_source_root=source)
             binds = [prepared.bind]
             if prepared.host_output_root is not None:
                 prepared.host_output_root.mkdir(parents=True, exist_ok=True)

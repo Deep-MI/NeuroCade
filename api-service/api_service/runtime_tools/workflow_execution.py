@@ -103,6 +103,7 @@ def prepare_workflow(
     gpu_enabled: bool | None = None,
     db: Session | None = None,
     linked_bind: LinkedRuntimeBind | None = None,
+    validation_source_root: Path | None = None,
 ) -> PreparedWorkflow:
     """Resolve one workflow invocation and validate all model-supplied paths."""
     tool = workflow or resolve_workflow(tool_id)
@@ -130,7 +131,11 @@ def prepare_workflow(
                 raise
             _path_under_container_root(path, linked_root, allow_root=requirement.kind == "directory")
         else:
-            validate_workflow_input(requirement, host_path, db=db)
+            source_path = (
+                validation_source_root / host_path.relative_to(host_root)
+                if validation_source_root is not None else None
+            )
+            validate_workflow_input(requirement, host_path, db=db, source_path=source_path)
 
     resolved_run_id = run_id or str(uuid4())
     host_run_dir = (host_root / ".runs" / resolved_run_id).resolve()
