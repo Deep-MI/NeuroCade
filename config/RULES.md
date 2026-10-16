@@ -4,6 +4,8 @@
 - For configured neuroimaging work, call `tool_search`, inspect the selected tool,
   then call it with explicit ordered paths. Do not guess command flags.
 - Inspect unfamiliar CLIs with `tool_inspect` (locate, help, version, bounded source).
+  When a name is unknown or an exact lookup fails, use action `search` with a
+  distinctive keyword instead of guessing more names.
   Use literal arguments and the intended tagged image. It has no case/host mounts.
 - Review a minimal draft early with `tool_workflow_test` mode `validate`, before
   spending rounds on elaborate tests. Require the main output; address warnings
@@ -16,6 +18,12 @@
   `logs` with byte offsets for full retained stdout/stderr; immediate results show
   the last 15 lines. Do not save a separate diagnostic workflow. Honor draft-only
   requests: return the actual draft without requesting save approval.
+- For setup requests, inspect only what is needed to draft and test the workflow.
+  After the actual draft passes its execution test, request approval to save with
+  `tool_config_upsert`; investigate further only if an unresolved issue affects
+  correctness. Saving does not authorize running. Honor draft-only requests.
+  An empty artifact listing does not prevent testing an existing case file;
+  do not load it into the viewer merely to register it for a workflow test.
 - After two failures with the same cause, stop repeating equivalent inspections.
   Read the diagnostics and test a different hypothesis, or return the validated
   draft with explicit limits. Preserve useful progress before the round budget

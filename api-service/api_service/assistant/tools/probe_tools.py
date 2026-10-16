@@ -61,7 +61,9 @@ class ToolInspectArgs(BaseModel):
     tool_id: str | None = Field(default=None, min_length=1, description="Inspect a configured workflow by ID instead of a CLI.")
     image: str | None = None
     executable: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_./+-]+$")
-    action: Literal["locate", "help", "version", "source"] = "help"
+    action: Literal["search", "locate", "help", "version", "source"] = "help"
+    query: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.+-]+$",
+        description="Case-insensitive literal executable-name substring for search; scans absolute PATH directories, returns at most 50 matches.")
     arguments: list[str] | None = Field(default=None, max_length=8,
         description="Optional literal help/version arguments, e.g. ['-h']. Never shell syntax.")
     start_line: int = Field(default=1, ge=1, le=100000)
@@ -82,17 +84,42 @@ class ToolInspectArgs(BaseModel):
     @model_validator(mode="after")
     def validate_target(self):
         if self.tool_id:
-            if self.image is not None or self.executable is not None or self.arguments is not None:
+            if self.image is not None or self.executable is not None or self.arguments is not None or self.query is not None or self.action != "help":
                 raise ValueError("Use tool_id alone, or image and executable for CLI inspection")
+        elif self.action == "search":
+            if not self.image or not self.query or self.executable is not None or self.arguments is not None:
+                raise ValueError("Search requires image and query only")
+        elif self.query is not None:
+            raise ValueError("query is only supported for search")
         elif not self.image or not self.executable:
             raise ValueError("CLI inspection requires image and executable")
         return self
 
 
 def inspection_script(parsed: ToolInspectArgs) -> str:
+    if parsed.action == "search":
+        assert parsed.query is not None
+        return (
+            f"query={shlex.quote(parsed.query)}\n"
+            'shopt -s nullglob nocasematch\n'
+            'IFS=: read -r -a dirs <<< "$PATH"\n'
+            'count=0\n'
+            'for dir in "${dirs[@]}"; do\n'
+            '  [[ "$dir" == /* && -d "$dir" ]] || continue\n'
+            '  for file in "$dir"/*; do\n'
+            '    [[ -f "$file" && -x "$file" ]] || continue\n'
+            '    name=${file##*/}\n'
+            '    [[ "$name" == *"$query"* ]] || continue\n'
+            '    if (( count == 50 )); then echo "Results truncated at 50 matches; narrow query."; exit 0; fi\n'
+            '    printf "%s\\n" "$file"\n'
+            '    count=$((count + 1))\n'
+            '  done\n'
+            'done\n'
+            'if (( count == 0 )); then echo "No executable names matched in absolute PATH directories."; fi\n'
+        )
     assert parsed.executable is not None
     executable = shlex.quote(parsed.executable)
-    locate = f'EXE=$(command -v -- {executable}) || {{ echo "Executable not on PATH; supply its absolute image path." >&2; exit 127; }}\n'
+    locate = f'EXE=$(command -v -- {executable}) || {{ echo "Executable not on PATH; use action=search with a distinctive query, or supply its absolute image path." >&2; exit 127; }}\n'
     if parsed.action == "locate":
         return locate + 'printf "%s\\n" "$EXE"'
     if parsed.action == "source":
@@ -138,7 +165,9 @@ class AssistantProbeTools:
 
         registration = ToolRegistration(
             "tool_inspect",
-            "Inspect a configured workflow with tool_id, OR a CLI with image and executable: locate/help/version/source. "
+            "Inspect a configured workflow with tool_id, search executable names with image/action=search/query, "
+            "OR inspect a CLI with image and executable: locate/help/version/source. "
+            "Search uses a case-insensitive literal substring in absolute PATH directories (maximum 50 matches); it never executes matches. "
             "No current case, workspace, host files or credentials are mounted. Network disabled. "
             "Arguments are literal CLI arguments, not shell. Nonzero help exit codes may be normal; read evidence. "
             "Use tool_workflow_test for supported staging tests, not hand-written probe scripts.",
@@ -158,7 +187,7 @@ class AssistantProbeTools:
                 state, execution, {"tool_id": parsed.tool_id})
         result = await self.probe(state, execution, {"image": parsed.image, "script": inspection_script(parsed)})
         if result.details:
-            payload = {**result.details, "action": parsed.action, "executable": parsed.executable,
+            payload = {**result.details, "action": parsed.action, "executable": parsed.executable, "query": parsed.query,
                        "status": "completed" if not result.is_error else "command_failed",
                        "assertions": "not_run", "validation_scope": "CLI inspection only; no workflow was tested.",
                        "guidance": "Read stdout, stderr and return_code. A help command may use a nonzero exit code. "

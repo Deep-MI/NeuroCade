@@ -158,3 +158,42 @@ def test_source_inspection_rejects_binary_before_emitting_bytes():
     assert result.returncode == 65
     assert not result.stdout
     assert 'compiled binary' in result.stderr
+
+
+def test_search_finds_executables_without_running_them(tmp_path):
+    directory = tmp_path / 'bin with spaces'
+    directory.mkdir()
+    marker = tmp_path / 'executed'
+    for name in ('segmentThalamicNuclei.sh', 'unrelated', 'thalam-not-executable'):
+        path = directory / name
+        path.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+        path.chmod(0o644 if name.endswith('not-executable') else 0o755)
+    (directory / 'thalam-directory').mkdir()
+    args = probe_tools.ToolInspectArgs(image='vnmd/test:1', action='search', query='THALAM')
+    result = subprocess.run(['/bin/bash', '-c', probe_tools.inspection_script(args)],
+                            env={'PATH': f'.:{directory}'}, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [str(directory / 'segmentThalamicNuclei.sh')]
+    assert not marker.exists()
+
+
+def test_search_bounds_results_and_handles_no_matches(tmp_path):
+    for index in range(51):
+        path = tmp_path / f'match-{index}'
+        path.touch(mode=0o755)
+    for query, expected_lines in [('match', 51), ('absent', 1)]:
+        args = probe_tools.ToolInspectArgs(image='vnmd/test:1', action='search', query=query)
+        result = subprocess.run(['/bin/bash', '-c', probe_tools.inspection_script(args)],
+                                env={'PATH': str(tmp_path)}, capture_output=True, text=True)
+        assert result.returncode == 0
+        assert len(result.stdout.splitlines()) == expected_lines
+        assert ('truncated' if query == 'match' else 'No executable') in result.stdout
+
+
+@pytest.mark.parametrize('fields', [
+    {'query': '$(touch x)'}, {'query': '*'}, {'query': 'thalam', 'executable': 'ls'},
+    {'query': 'thalam', 'arguments': ['-h']}, {'query': None},
+])
+def test_search_rejects_shell_and_ambiguous_targets(fields):
+    with pytest.raises(ValidationError):
+        probe_tools.ToolInspectArgs(image='vnmd/test:1', action='search', **fields)

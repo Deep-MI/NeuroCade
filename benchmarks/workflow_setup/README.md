@@ -6,7 +6,19 @@ outputs, or changes the live catalog. Each execution creates a fresh temporary
 case. It accepts a workflow YAML produced by the agent; it does **not** drive an
 LLM itself. Keep agent transcripts separately when comparing harness versions.
 
-## Tasks and prompts
+## Current agent prompts
+
+Use `prompts.json` verbatim, without appending benchmark guidance:
+
+> Set up FSL-Maths Gaussian blur with kernel size 5 millimeters.
+
+> Set up segment thalamic nuclei from the latest FreeSurfer version.
+
+The Gaussian-blur task replaces temporal mean for future agent trials. The
+standalone runner below still grades the historical temporal-mean task; its
+numeric grader must not be used to score Gaussian blur.
+
+## Historical tasks and prompts
 
 **Easy — FSL temporal mean**
 
