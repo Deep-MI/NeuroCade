@@ -14,7 +14,7 @@ from uuid import uuid4
 from neurocade_runtime_tools.bridge_client import RuntimeStoppedTimeout
 from neurocade_runtime_tools.container_request import build_container_request
 from neurocade_runtime_tools.execution import RuntimeBind, RuntimeExecutionRequest, execute_runtime_request_async
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy.orm import Session
 
 from api_service.assistant.tools.catalog_tools import AssistantCatalogTools, _inline_schema
@@ -127,6 +127,7 @@ class AssistantWorkflowTestTools:
             'running; use mode=status with test_id later. mode=logs retrieves full retained stdout/stderr in byte pages '
             '(offset_bytes/max_bytes, capped at 10 MiB text per stream). mode=validate checks schema only. '
             'No command stubs, no automatic rerun, no output registration, no network or GPU. '
+            'On validation failure, correct definition and resubmit this tool; do not create or edit case scripts. '
             'Do not create/save a separate diagnostic workflow; test the actual draft.',
             _inline_schema(WorkflowTestArgs.model_json_schema()), self.test, parallel_safe=False,
         ).bind(state)]
@@ -216,6 +217,14 @@ class AssistantWorkflowTestTools:
             await asyncio.wait({task}, timeout=min(parsed.timeout_s + 5, 15))
             result = self.status(root)
             return ToolResult.structured(result, is_error=result['status'] == 'failed')
+        except ValidationError as exc:
+            return ToolResult.structured({
+                'status': 'validation_failed',
+                'errors': [{'field': '.'.join(str(part) for part in error['loc']), 'message': error['msg']}
+                           for error in exc.errors(include_url=False, include_input=False)],
+                'next_step': 'Correct the supplied definition or tool arguments and resubmit tool_workflow_test. '
+                             'No workflow command ran. Do not create or edit scripts in the case directory to repair this draft.',
+            }, is_error=True)
         except Exception as exc:
             return ToolResult.error(f'Workflow test failed: {exc}')
 

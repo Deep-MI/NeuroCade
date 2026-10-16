@@ -1,5 +1,6 @@
 """Regression tests for delivery at budget/duplicate stops and Bash validation."""
 import asyncio
+import subprocess
 
 import pytest
 from api_service.assistant.loop import AssistantLoop
@@ -38,9 +39,16 @@ def test_unquoted_paths_still_rejected(script):
         NeuroimagingWorkflow.model_validate(workflow(script))
 
 
-def test_unknown_runtime_variable_still_rejected():
-    with pytest.raises(ValueError, match="unsupported runtime variable"):
-        NeuroimagingWorkflow.model_validate(workflow('echo "${RUN_ID}"'))
+@pytest.mark.parametrize("name", ["FREESURFER_HOME", "FSLDIR", "ANTSPATH", "RUN_ID"])
+def test_image_variables_are_checked_at_execution(name):
+    script = 'set -u\nprintf "%s" "${' + name + '}"'
+    NeuroimagingWorkflow.model_validate(workflow(script))
+    present = subprocess.run(['/bin/bash', '-c', script], env={name: '/image/tool'}, capture_output=True, text=True)
+    assert present.returncode == 0
+    assert present.stdout == '/image/tool'
+    missing = subprocess.run(['/bin/bash', '-c', script], env={}, capture_output=True, text=True)
+    assert missing.returncode != 0
+    assert name in missing.stderr
 
 
 def state():

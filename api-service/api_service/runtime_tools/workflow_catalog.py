@@ -24,10 +24,6 @@ _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 _RUN_ID_TOKEN = "{run_id}"
 _RUNTIME_VARIABLE_PATTERN = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(?:\[(\d+)\])?\}")
-_RUNTIME_VARIABLES = {
-    "CASE_ROOT", "DEVICE", "INPUTS", "OUTPUTS", "RUN_DIR",
-    "OUTPUT_PARENT", "OUTPUT_NAME", "OUTPUT_ROOT",
-}
 _VALID_RETURN_FIELDS = ("return_code", "stdout", "stderr", "outputs")
 _USER_CATALOG_DIRECTORY = ".user-tool-configs"
 _USER_CATALOG_LOCK = threading.Lock()
@@ -154,7 +150,10 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
             "${OUTPUTS[n]} paths. Every runtime path reference must be directly enclosed in "
             "double quotes, for example command \"${INPUTS[0]}\" \"${OUTPUTS[0]}\". "
             "Output {run_id} templates are resolved before execution; "
-            "${RUN_ID} is not available. When staging a subject, copy only required subject "
+            "${RUN_ID} is not supplied by NeuroCade. Other shell variables may be supplied by the "
+            "image or script; their availability is checked during execution, not schema validation. "
+            "Use set -u or an explicit required-variable check to fail early when missing. "
+            "When staging a subject, copy only required subject "
             "directories into ${OUTPUT_ROOT}; never recursively copy the whole ${CASE_ROOT} "
             "or a selected ancestor of the output directory. ${OUTPUT_ROOT} is a second mount "
             "of the case output folder, not storage outside the case."
@@ -238,21 +237,6 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
             ]
             if unquoted:
                 raise ValueError(f"script must double-quote runtime path reference {unquoted[0]}")
-        # Locally assigned shell variables are not harness placeholders.
-        local_variables = set(re.findall(
-            r"(?:^|[;\n])\s*(?:(?:export|readonly|local)\s+)?([A-Z][A-Z0-9_]*)=", self.script
-        ))
-        local_variables.update(re.findall(r"\bfor\s+([A-Z][A-Z0-9_]*)\s+in\b", self.script))
-        unsupported_runtime_variables = sorted(
-            {
-                name
-                for name, _index in _RUNTIME_VARIABLE_PATTERN.findall(self.script)
-                if name not in _RUNTIME_VARIABLES | local_variables
-            }
-        )
-        if unsupported_runtime_variables:
-            rendered = ", ".join(f"${{{name}}}" for name in unsupported_runtime_variables)
-            raise ValueError(f"script references unsupported runtime variable(s): {rendered}")
         output_variables = {"OUTPUT_PARENT", "OUTPUT_NAME", "OUTPUT_ROOT"}
         referenced_variables = {name for name, _index in _RUNTIME_VARIABLE_PATTERN.findall(self.script)}
         if self.case_output_folder is None and referenced_variables & output_variables:

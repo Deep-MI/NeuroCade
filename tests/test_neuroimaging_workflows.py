@@ -332,18 +332,6 @@ tools:
             """
 version: 1
 tools:
-  - id: unsupported_runtime_variable
-    image: freesurfer_8.1.0:20260311
-    description: reject unavailable runtime variables
-    details: reject unavailable runtime variables
-    script: echo "${RUN_ID}"
-""",
-            "unsupported runtime variable.*RUN_ID",
-        ),
-        (
-            """
-version: 1
-tools:
   - id: unquoted_runtime_path
     image: freesurfer_8.1.0:20260311
     description: reject unquoted paths

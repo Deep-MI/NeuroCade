@@ -91,3 +91,8 @@ before queueing their viewer load. Supply `layer_type` for an untracked volume a
 `lut` for segmentation. Tracked files retain their metadata unless explicitly
 overridden. This updates artifact metadata only, without copying files, rerunning
 processing or changing run history. Linked sources are not supported by this path.
+
+Workflow scripts may also use shell variables supplied by the container image or
+defined in the script. Schema validation does not verify their availability; use
+`set -u` or explicit required-variable checks and test the actual command. This
+does not forward additional host environment variables into the container.

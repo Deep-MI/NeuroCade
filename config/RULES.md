@@ -10,6 +10,10 @@
 - Review a minimal draft early with `tool_workflow_test` mode `validate`, before
   spending rounds on elaborate tests. Require the main output; address warnings
   before asking to save. Schema validation does not establish execution success.
+  On validation failure, correct the supplied workflow definition and resubmit
+  `tool_workflow_test`; do not create or edit case scripts to repair a draft.
+  Image-provided and locally defined shell variables are allowed. Use `set -u`
+  or explicit required-variable checks so missing variables fail during staging.
 - Test real commands with `tool_workflow_test` mode `staging` and ordered input
   selections. Only independent disposable copies are mounted; the current case
   is never mounted. Default timeout is 10 seconds. Ask before exceeding 60 seconds

@@ -289,3 +289,17 @@ def test_long_test_returns_id_and_keeps_running(setup, monkeypatch):
         assert result.details["stdout_tail"] == "finished"
 
     asyncio.run(scenario())
+
+
+def test_validation_failure_gives_retry_guidance_without_case_access(monkeypatch):
+    tools = module.AssistantWorkflowTestTools(settings=None)
+    def unexpected_access(state):
+        pytest.fail("Invalid draft must not access the case")
+    monkeypatch.setattr(tools, 'identity', unexpected_access)
+    result = asyncio.run(tools.test({}, ToolExecutionContext('test'),
+        {'mode': 'staging', 'definition': draft('echo "${INPUTS[9]}"')}))
+    assert result.is_error
+    assert result.details['status'] == 'validation_failed'
+    assert 'undeclared input' in result.details['errors'][0]['message']
+    assert 'resubmit tool_workflow_test' in result.details['next_step']
+    assert 'Do not create or edit scripts' in result.details['next_step']
