@@ -2331,6 +2331,7 @@ input[type="range"]::-moz-focus-outer {
 }
 
 .chat-message {
+  min-width: 0;
   max-width: 84%;
   border: 1px solid var(--nc-border);
   border-radius: 5px;
@@ -2556,6 +2557,37 @@ input[type="range"]::-moz-focus-outer {
   margin: 8px 0;
   overflow: hidden;
   border-radius: 4px;
+}
+
+.chat-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.chat-table-scroll:focus-visible {
+  outline: 2px solid var(--nc-interactive);
+  outline-offset: 2px;
+}
+
+.chat-table-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.chat-table-scroll th,
+.chat-table-scroll td {
+  min-width: 7rem;
+  border: 1px solid var(--nc-border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.chat-table-scroll th {
+  background: var(--nc-bg-panel);
+  font-weight: 600;
 }
 
 .chat-message a {
