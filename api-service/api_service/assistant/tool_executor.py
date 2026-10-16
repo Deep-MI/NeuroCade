@@ -154,16 +154,19 @@ class AssistantToolExecutor:
             arguments = planned.get("arguments", {})
             fingerprint = self.fingerprint(tool.name, arguments)
             if fingerprint == state.get("last_tool_call_fingerprint"):
+                reason = f"Stopped repeated identical request to {tool.name}; the previous result is unchanged."
+                for skipped in pending_calls[pending_index:]:
+                    conversation.append({
+                        "role": "tool", "name": skipped.get("name"),
+                        "call_id": skipped.get("call_id"), "content": reason + " This request was not executed.",
+                    })
                 return {
                     "conversation": conversation,
-                    "pending_tool_calls": pending_calls[pending_index:],
+                    "pending_tool_calls": [],
                     "tool_calls_log": tool_logs,
                     "result": result,
-                    "final_response": (
-                        f"I stopped because `{tool.name}` was requested again with identical arguments "
-                        "and no new evidence or state change. Try a narrower read, a text search, or different arguments."
-                    ),
-                    "status": "completed",
+                    "finalization_reason": reason,
+                    "status": "running",
                 }
             presentation = None
             if tool.risk.requires_confirmation and state.get("require_tool_approval", True):

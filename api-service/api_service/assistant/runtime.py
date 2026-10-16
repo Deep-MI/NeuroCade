@@ -83,6 +83,7 @@ def _checkpoint_state(state: dict[str, Any]) -> dict[str, Any]:
         "assistant_messages": list(state.get("assistant_messages", [])),
         "round_count": int(state.get("round_count", 0)),
         "last_tool_call_fingerprint": state.get("last_tool_call_fingerprint"),
+        "finalization_reason": state.get("finalization_reason"),
     }
 
 
@@ -284,6 +285,7 @@ class AssistantRuntime:
             "reasoning_entries": list(resume_checkpoint.get("reasoning_entries", [])),
             "assistant_messages": list(resume_checkpoint.get("assistant_messages", [])),
             "last_tool_call_fingerprint": resume_checkpoint.get("last_tool_call_fingerprint"),
+            "finalization_reason": resume_checkpoint.get("finalization_reason"),
         }
         if turn is None and persist and db is not None and context is not None and thread is not None:
             turn = self.turns.start(

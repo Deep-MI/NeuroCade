@@ -238,11 +238,16 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
             ]
             if unquoted:
                 raise ValueError(f"script must double-quote runtime path reference {unquoted[0]}")
+        # Locally assigned shell variables are not harness placeholders.
+        local_variables = set(re.findall(
+            r"(?:^|[;\n])\s*(?:(?:export|readonly|local)\s+)?([A-Z][A-Z0-9_]*)=", self.script
+        ))
+        local_variables.update(re.findall(r"\bfor\s+([A-Z][A-Z0-9_]*)\s+in\b", self.script))
         unsupported_runtime_variables = sorted(
             {
                 name
                 for name, _index in _RUNTIME_VARIABLE_PATTERN.findall(self.script)
-                if name not in _RUNTIME_VARIABLES
+                if name not in _RUNTIME_VARIABLES | local_variables
             }
         )
         if unsupported_runtime_variables:
@@ -310,7 +315,34 @@ def _match_is_in_comment(script: str, start: int) -> bool:
 
 
 def _match_is_double_quoted(script: str, start: int, end: int) -> bool:
-    return start > 0 and end < len(script) and script[start - 1] == '"' and script[end] == '"'
+    # Track shell quoting, including the independent quoting context inside $().
+    quote = None
+    stack: list[str | None] = []
+    i = 0
+    while i < start:
+        char = script[i]
+        if char == "\\" and quote != "'":
+            i += 2
+            continue
+        if script.startswith("$(", i) and quote != "'":
+            stack.append(quote)
+            quote = None
+            i += 2
+            continue
+        if char == ")" and quote is None and stack:
+            quote = stack.pop()
+        elif char in {"'", '"'}:
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        elif char == "#" and quote is None and (i == 0 or script[i - 1].isspace()):
+            newline = script.find("\n", i)
+            if newline < 0 or newline >= start:
+                return False
+            i = newline
+        i += 1
+    return quote == '"'
 
 
 def _tokens(text: str) -> set[str]:
