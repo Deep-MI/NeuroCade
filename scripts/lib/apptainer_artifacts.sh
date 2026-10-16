@@ -9,7 +9,7 @@ download_release_file() {
   temporary="${target}.download"
   mkdir -p "$(dirname "$target")"
   rm -f "$temporary"
-  if ! curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$temporary"; then
+  if ! curl -fsSL --connect-timeout 15 --speed-limit 1 --speed-time 60 --retry 3 --retry-delay 2 "$url" -o "$temporary"; then
     rm -f "$temporary"
     return 1
   fi
@@ -42,7 +42,11 @@ install_latest_apptainer_release() {
   command -v curl >/dev/null 2>&1 || { echo "curl is required to download the NeuroCade release." >&2; return 1; }
   command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required to verify the NeuroCade release." >&2; return 1; }
   mkdir -p "$release_dir" "$root/.runtime/images"
-  if [[ "$selector" == "stable" ]] && download_release_file "$NEUROCADE_RELEASE_MANIFEST_URL" "$manifest" 2>/dev/null; then
+  if [[ -n "${NEUROCADE_INSTALL_VERSION:-}" && -f "$manifest" ]] &&
+    [[ "$("$python_bin" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("tag",""))' "$manifest" 2>/dev/null)" == "v$NEUROCADE_INSTALL_VERSION" ]]; then
+    # The standalone installer has already resolved and verified this source release.
+    selector="v$NEUROCADE_INSTALL_VERSION"
+  elif [[ "$selector" == "stable" ]] && download_release_file "$NEUROCADE_RELEASE_MANIFEST_URL" "$manifest" 2>/dev/null; then
     :
   elif [[ "$selector" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]; then
     download_release_file \
@@ -67,9 +71,6 @@ install_latest_apptainer_release() {
     }
     resolved_tag="${resolved[0]}"
     prerelease="${resolved[1]}"
-    if [[ "$selector" == "stable" && "$prerelease" == "true" ]]; then
-      echo "No compatible stable Apptainer release was found; using $resolved_tag instead." >&2
-    fi
     download_release_file \
       "https://github.com/Deep-MI/NeuroCade/releases/download/$resolved_tag/neurocade-release.json" "$manifest" || return 1
   else
@@ -79,6 +80,8 @@ install_latest_apptainer_release() {
   while IFS= read -r value; do values+=("$value"); done < <("$python_bin" "$root/scripts/release/release_manifest.py" read "$manifest")
   [[ "${#values[@]}" -eq 6 ]] || { echo "The latest NeuroCade release manifest is invalid." >&2; return 1; }
   tag="${values[0]}"
+  [[ "$selector" != v* || "$tag" == "$selector" ]] || { echo "Application manifest does not match selected release $selector." >&2; return 1; }
+  [[ "$selector" != stable || "$tag" != *-beta.* ]] || { echo "Stable cannot select a beta release. Use --version beta explicitly." >&2; return 1; }
   version="${values[1]}"
   sif_name="${values[2]}"
   sif_checksum_name="${values[3]}"

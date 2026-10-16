@@ -221,3 +221,7 @@ This starts its own temporary bridge and data directory, exercises real mount
 aliases and a host-write sentinel, and shuts down only that bridge. It never
 connects to the running app or its bridge. Apptainer execution itself is not
 covered by this Docker-only smoke test.
+
+### Installer reliability
+
+`pytest tests/test_installer_reliability.py tests/test_install_scripts.py tests/test_update_installer.py tests/test_release_publication.py` exercises generated version-bound installers against temporary release assets and fake Docker/download commands. It does not install software or touch a running application. Terminal-menu checks use a Unix pseudo-terminal (Linux/macOS); Python's standard library provides the rest. Release CI additionally downloads the uploaded installer and manifest while the release is a draft, verifies the checksum and embedded tag, and runs its syntax/help checks before publication.

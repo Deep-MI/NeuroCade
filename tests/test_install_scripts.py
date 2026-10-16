@@ -572,11 +572,11 @@ def test_release_resolver_selects_only_compatible_channel_assets(tmp_path: Path)
     releases.write_text(json.dumps(payload), encoding="utf-8")
     fallback = subprocess.run(
         [str(script), "resolve", str(releases), "--channel", "stable"],
-        check=True,
         text=True,
         capture_output=True,
     )
-    assert fallback.stdout.splitlines() == ["v2026.9.9-beta.1", "true"]
+    assert fallback.returncode != 0
+    assert "No compatible NeuroCade stable release" in fallback.stderr
 
 
 def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path) -> None:
@@ -621,7 +621,7 @@ def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path
                 {
                     "tag_name": "v2026.8.30",
                     "draft": False,
-                    "prerelease": True,
+                    "prerelease": False,
                     "assets": [{"name": "neurocade-release.json"}],
                 }
             ]
@@ -663,7 +663,7 @@ def test_release_artifact_installer_downloads_and_verifies_assets(tmp_path: Path
     )
 
     assert result.returncode == 0, result.stderr
-    assert "No compatible stable Apptainer release was found; using v2026.8.30 instead." in result.stderr
+    assert "using" not in result.stderr
     assert (checkout / ".runtime/images/neurocade-app-amd64.sif").read_bytes() == b"test-sif"
     assert result.stdout.splitlines()[-2:] == [
         str(checkout / ".runtime/release" / bridge_name),

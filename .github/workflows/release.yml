@@ -244,7 +244,17 @@ jobs:
           chmod 0444 "$app_sif"
           echo "APP_SIF=$app_sif" >> "$GITHUB_ENV"
 
-      - name: Create and validate Apptainer release manifest
+      - name: Build version-bound installer and run installer regression tests
+        if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          python3 scripts/release/build_installer.py --tag "$RELEASE_TAG"
+          bash -n neurocade-install.sh
+          bash neurocade-install.sh --help
+          uv run --locked --extra test pytest tests/test_installer_reliability.py tests/test_install_scripts.py tests/test_update_installer.py tests/test_release_publication.py -q
+
+      - name: Create and validate release manifest
         if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
@@ -263,6 +273,7 @@ jobs:
             --source-revision "$(git rev-parse HEAD)" \
             --output neurocade-release.json
           ./scripts/release/release_manifest.py read neurocade-release.json
+          python3 scripts/release/verify_installer.py . "$RELEASE_TAG"
 
       - name: Smoke-test application SIF as non-root
         if: steps.release.outputs.should_release == 'true' && steps.release.outputs.published != 'true'
@@ -316,6 +327,7 @@ jobs:
             echo "- Commit: \`${{ steps.release.outputs.head_sha }}\`"
             echo "- Docker image: \`docker.io/deepmi/neurocade:${{ steps.release.outputs.tag }}\`"
             echo "- Application SIF: \`neurocade-app-${{ steps.release.outputs.version }}-amd64.sif\`"
+            echo "- Installer: \`neurocade-install.sh\` (bound to ${{ steps.release.outputs.tag }})"
             echo "- Release manifest: \`neurocade-release.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -160,3 +160,26 @@ def test_no_change_plan_stays_skipped(state, tmp_path):
     publication.prepare(plan)
     assert "should_release=false" in (tmp_path / "outputs").read_text()
     assert not any(a[0] == "gh" for a in data["calls"])
+
+
+def test_installer_download_verification_precedes_publication(state):
+    plan, data = state
+    publication.publish(plan)
+    calls = data['calls']
+    upload = next(i for i, a in enumerate(calls) if a[:3] == ('gh', 'release', 'upload'))
+    download = next(i for i, a in enumerate(calls) if a[:3] == ('gh', 'release', 'download'))
+    verify = next(i for i, a in enumerate(calls) if a[:2] == ('python3', 'scripts/release/verify_installer.py'))
+    expose = next(i for i, a in enumerate(calls) if a[:3] == ('gh', 'release', 'edit'))
+    assert upload < download < verify < expose
+    assert 'neurocade-install.sh' in calls[upload]
+    assert 'neurocade-install.sh.sha256' in calls[upload]
+
+
+def test_failed_installer_verification_keeps_release_draft(state):
+    plan, data = state
+    data['fail'] = lambda args: args[:2] == ('python3', 'scripts/release/verify_installer.py')
+    with pytest.raises(RuntimeError, match='interruption'):
+        publication.publish(plan)
+    assert data['releases'][0]['draft']
+    assert not data['tag']
+    assert not any(a[0] == 'docker' for a in data['calls'])
