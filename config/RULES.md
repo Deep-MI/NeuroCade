@@ -23,6 +23,9 @@
   `logs` with byte offsets for full retained stdout/stderr; immediate results show
   the last 15 lines. Do not save a separate diagnostic workflow. Honor draft-only
   requests: return the actual draft without requesting save approval.
+  During diagnostics, preserve the failing workflow's input/output declarations,
+  input selections, and `case_output_folder` so staging conditions stay equivalent.
+  Write diagnostic messages to stdout/stderr instead of replacing declared outputs.
 - For setup requests, inspect only what is needed to draft and test the workflow.
   After the actual draft passes its execution test, request approval to save with
   `tool_config_upsert`; investigate further only if an unresolved issue affects
@@ -44,6 +47,9 @@
 - Follow the runtime path contract in INFORMATION.md: output paths are relative
   to `case_output_folder` when set, and the output mount aliases that case folder.
   Preserve inputs and never recursively copy an input ancestor into its output.
+  Declared output parent directories already exist when scripts start. Create
+  staging destinations explicitly and copy directory contents with `cp -a "${INPUTS[0]}/." "${OUTPUT_ROOT}/mri/"`,
+  not the directory itself, to avoid nesting it when the destination exists.
   For commands taking subject name plus parent directory, stage the subject
   contents directly in `OUTPUT_ROOT`, then pass `OUTPUT_NAME` and `OUTPUT_PARENT`.
   Do not append the subject name to `OUTPUT_ROOT` again or derive these arguments

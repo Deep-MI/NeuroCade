@@ -56,6 +56,19 @@ When staging an existing subject, copy only the required subject directories;
 never copy the whole case into a folder inside that case. Identify the selected
 subject before examining child subjects, and exclude the destination when
 searching children. Preserve input files and handle spaces and repeated runs.
+Declared output parent directories are created before your script starts. Copy
+contents into an explicitly created destination, rather than copying the source
+directory itself (which can create an unintended nested directory):
+
+```bash
+mkdir -p "${OUTPUT_ROOT}/mri"
+cp -a "${INPUTS[0]}/." "${OUTPUT_ROOT}/mri/"
+```
+
+During diagnostics, preserve the failing workflow's input/output declarations,
+input selections, and `case_output_folder`; changing them changes staging conditions.
+Add diagnostic messages to stdout/stderr and retrieve them with `mode: logs`.
+
 For a subject-based command, a staged subject at `${OUTPUT_ROOT}` can be addressed
 using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory:
 
