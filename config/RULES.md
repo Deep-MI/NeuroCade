@@ -37,6 +37,9 @@
   Do not extend a test merely to qualify for save approval. Ask before testing
   longer than 60 seconds unless already authorized. Saving does not authorize
   running. Honor draft-only requests.
+  To request save approval, call `tool_config_upsert` with the workflow definition;
+  the tool opens the approval UI before saving. Do not merely ask "May I save?"
+  in chat or ask for separate permission to call it. For draft-only requests, do not call it.
   An empty artifact listing does not prevent testing an existing case file;
   do not load it into the viewer merely to register it for a workflow test.
 - After two failures with the same cause, stop repeating equivalent inspections.
