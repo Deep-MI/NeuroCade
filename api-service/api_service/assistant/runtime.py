@@ -263,7 +263,7 @@ class AssistantRuntime:
             if not persist or db is None or thread is None:
                 raise HTTPException(status_code=400, detail="Tool approvals require a persisted private chat")
             turn, approved_tools, resume_checkpoint = self.turns.consume_approvals(db, thread, tool_approvals)
-        max_rounds = max(int(settings.assistant_max_rounds), 1)
+        max_rounds = settings.assistant_max_rounds
         state: dict[str, Any] = {
             "db": db,
             "context": context,
@@ -389,7 +389,7 @@ class AssistantRuntime:
         if final_state.get("error"):
             detail = (
                 _assistant_round_limit_message(max_rounds)
-                if "without finishing" in str(final_state["error"])
+                if max_rounds > 0 and "without finishing" in str(final_state["error"])
                 else final_state["error"]
             )
             if persist and db is not None and context is not None and thread is not None:

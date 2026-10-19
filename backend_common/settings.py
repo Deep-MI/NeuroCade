@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     assistant_turn_timeout_seconds: int = Field(default=600, alias="ASSISTANT_TURN_TIMEOUT_SECONDS", description="Maximum seconds without assistant or image preparation progress")
     assistant_workflow_wait_seconds: float = Field(default=300, gt=0, alias="ASSISTANT_WORKFLOW_WAIT_SECONDS")
     assistant_gui_ack_wait_seconds: float = Field(default=10, gt=0, alias="ASSISTANT_GUI_ACK_WAIT_SECONDS")
-    assistant_max_rounds: int = Field(default=18, alias="ASSISTANT_MAX_ROUNDS")
+    assistant_max_rounds: int = Field(default=0, ge=0, alias="ASSISTANT_MAX_ROUNDS", description="Maximum model/tool rounds; 0 disables the round limit.")
     assistant_history_max_messages: int = Field(default=40, ge=1, alias="ASSISTANT_HISTORY_MAX_MESSAGES")
     assistant_history_max_characters: int = Field(default=120_000, ge=1000, alias="ASSISTANT_HISTORY_MAX_CHARACTERS")
     assistant_history_max_tokens: int = Field(default=30_000, ge=256, alias="ASSISTANT_HISTORY_MAX_TOKENS")

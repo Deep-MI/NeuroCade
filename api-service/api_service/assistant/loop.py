@@ -107,7 +107,7 @@ class AssistantLoop:
 
     async def _model_turn(self, state: AssistantState) -> dict[str, Any]:
         """Call a model that supports native provider tool calls."""
-        if state.get("finalization_reason") or state["round_count"] >= state["max_rounds"]:
+        if state.get("finalization_reason") or (state["max_rounds"] > 0 and state["round_count"] >= state["max_rounds"]):
             return await self._finalize(state)
         if state.get("event_sink") is not None:
             await state["event_sink"](

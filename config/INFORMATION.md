@@ -102,7 +102,11 @@ space-free mount instead of deriving subject paths from the case name or `RUN_DI
   (10 MiB text per stream, explicit truncation). Logs are private to the initiating user/case.
 Completed means exit zero with required nonempty readable files, not scientific
 correctness. startup_timeout means execution was terminated before completion and
-is never a pass. No automatic rerun. Copied inputs/outputs are removed after the
+is never a pass. For setup, logs showing prerequisites passed and actual processing
+progress without a known error are sufficient to request save approval with
+"Startup checked; full completion and outputs unverified" in the explanation and
+workflow details. A timeout alone or silent process does not establish healthy
+startup. Saving does not authorize execution or a longer test. No automatic rerun. Copied inputs/outputs are removed after the
 bridge confirms the writer stopped; logs and results remain for inspection.
 
 Workflow outputs declared as intensity volumes, segmentation volumes, or surfaces

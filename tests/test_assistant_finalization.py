@@ -142,3 +142,34 @@ def test_fallback_preserves_latest_execution_failure(monkeypatch, tmp_path):
     assert 'Latest workflow test: failed' in result['final_response']
     assert 'Required output missing' in result['final_response']
     assert 'Latest validated draft' not in result['final_response']
+
+
+@pytest.mark.parametrize("round_count", [18, 25, 100])
+def test_unlimited_rounds_continue_tool_calls(monkeypatch, tmp_path, round_count):
+    class Model:
+        def bind_tools(self, tools):
+            return self
+
+        async def ainvoke(self, messages):
+            return AIMessage(content="", tool_calls=[dict(id="next", name="read", args={})])
+
+    monkeypatch.setattr(provider_registry, "build_chat_model", lambda **kwargs: Model())
+    current = state()
+    current.update(max_rounds=0, round_count=round_count, tool_specs=[])
+    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    assert result["status"] == "running"
+    assert result["round_count"] == round_count + 1
+    assert result["pending_tool_calls"][0]["name"] == "read"
+
+
+def test_unlimited_rounds_still_honor_explicit_finalization(monkeypatch, tmp_path):
+    class Model:
+        async def ainvoke(self, messages):
+            return AIMessage(content="Stopped after repeated identical calls.")
+
+    monkeypatch.setattr(provider_registry, "build_chat_model", lambda **kwargs: Model())
+    current = state()
+    current.update(max_rounds=0, finalization_reason="Repeated identical call.")
+    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    assert result["status"] == "completed"
+    assert result["pending_tool_calls"] == []

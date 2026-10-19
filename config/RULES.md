@@ -27,9 +27,16 @@
   input selections, and `case_output_folder` so staging conditions stay equivalent.
   Write diagnostic messages to stdout/stderr instead of replacing declared outputs.
 - For setup requests, inspect only what is needed to draft and test the workflow.
-  After the actual draft passes its execution test, request approval to save with
-  `tool_config_upsert`; investigate further only if an unresolved issue affects
-  correctness. Saving does not authorize running. Honor draft-only requests.
+  Request approval to save with `tool_config_upsert` after a completed execution
+  test, or after a startup timeout whose logs show prerequisites passed and the
+  actual processing command making progress without a known error. For the latter,
+  state "Startup checked; full completion and outputs unverified" in the approval
+  explanation and workflow details. A timeout alone or silence is insufficient;
+  never label it a passed execution test. If startup evidence is unclear or shows
+  an error, correct the draft or ask for further verification before saving.
+  Do not extend a test merely to qualify for save approval. Ask before testing
+  longer than 60 seconds unless already authorized. Saving does not authorize
+  running. Honor draft-only requests.
   An empty artifact listing does not prevent testing an existing case file;
   do not load it into the viewer merely to register it for a workflow test.
 - After two failures with the same cause, stop repeating equivalent inspections.

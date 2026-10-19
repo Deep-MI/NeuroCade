@@ -301,7 +301,7 @@ class AssistantWorkflowTestTools:
                           not_verified=['scientific correctness', 'viewer registration', 'repeat runs'])
             if result['status'] == 'startup_timeout':
                 result['not_verified'].append('completion and output correctness')
-                result['next_step'] = 'Execution is incomplete, not passed. Review the captured output; ask before a longer test over 60 seconds unless already authorized.'
+                result['next_step'] = 'Execution is incomplete, not passed. If logs show prerequisites passed and actual processing progress without a known error, you may request save approval with explicit limits in the explanation and workflow details: Startup checked; full completion and outputs unverified. Timeout alone or silence is insufficient. Ask before a longer test over 60 seconds unless already authorized; saving does not authorize running.'
             elif result['status'] == 'failed':
                 result['next_step'] = 'Review the error and command output (mode=logs for full output). Correct only what the evidence supports and resubmit the definition. If the cause is uncertain, preserve the draft and report uncertainty; do not invent prerequisites.'
             write_json(root / 'result.json', result)
