@@ -36,7 +36,6 @@ def archives(tmp_path, monkeypatch):
 
 
 def test_prepare_download_convert_extract_and_reuse_cache(archives, tmp_path, monkeypatch):
-    sample, processed = archives
     before = [prepare.digest(p) for p in archives]
     cache = tmp_path / "cache"
     output = prepare.prepare(cache, tmp_path / "first")

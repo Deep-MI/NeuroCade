@@ -240,7 +240,7 @@ def test_subjects_directory_creates_one_case_per_subject_with_scoped_roots(tmp_p
     monkeypatch.setattr(operations_module.settings, "fs_data_root", data_root)
     monkeypatch.setattr(storage_module.settings, "fs_data_root", data_root)
     ensure_workspace_storage_layout(operations_module.settings, workspace)
-    monkeypatch.setattr(operations_module.BridgeClient, "from_environment", lambda: SubjectsBridge())
+    monkeypatch.setattr(operations_module.BridgeClient, "from_environment", SubjectsBridge)
 
     response = create_case_from_linked_source(
         db, context, request=LinkedCaseCreateRequest(workspace_id=workspace.id, source_id="source-1")
@@ -293,7 +293,7 @@ def test_subjects_directory_can_be_linked_as_one_case(tmp_path, monkeypatch):
     monkeypatch.setattr(operations_module.settings, "fs_data_root", data_root)
     monkeypatch.setattr(storage_module.settings, "fs_data_root", data_root)
     ensure_workspace_storage_layout(operations_module.settings, workspace)
-    monkeypatch.setattr(operations_module.BridgeClient, "from_environment", lambda: SubjectsBridge())
+    monkeypatch.setattr(operations_module.BridgeClient, "from_environment", SubjectsBridge)
 
     response = create_case_from_linked_source(
         db,
@@ -326,7 +326,7 @@ def test_linked_batch_preflights_all_case_name_conflicts(tmp_path, monkeypatch):
     monkeypatch.setattr(operations_module.settings, "fs_data_root", data_root)
     monkeypatch.setattr(storage_module.settings, "fs_data_root", data_root)
     ensure_workspace_storage_layout(operations_module.settings, workspace)
-    monkeypatch.setattr(operations_module.BridgeClient, "from_environment", lambda: SubjectsBridge())
+    monkeypatch.setattr(operations_module.BridgeClient, "from_environment", SubjectsBridge)
 
     with pytest.raises(Exception) as caught:
         create_case_from_linked_source(

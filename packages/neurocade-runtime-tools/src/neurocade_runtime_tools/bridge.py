@@ -26,7 +26,6 @@ from .execution import (
 )
 from .images import prepare_image
 from .linked_sources import MAX_SOURCE_READ_BYTES, LinkedSourceRegistry
-from .linked_sources import MAX_SOURCE_SCAN_DEPTH as MAX_SOURCE_SCAN_DEPTH
 from .protocol import (
     ACTIVE_RUN_STATES,
     BUILD_VERSION,

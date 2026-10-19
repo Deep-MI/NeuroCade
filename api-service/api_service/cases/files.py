@@ -63,7 +63,7 @@ class ResolvedCaseFile:
             if current_size != expected:
                 raise RuntimeError("Linked source changed while it was being read")
             if not content:
-                if offset < current_size and (end is None or offset <= end):
+                if offset < current_size:
                     raise RuntimeError("Linked source ended before its recorded size")
                 return
             yield content
