@@ -3,13 +3,14 @@
 import pytest
 from api_service.assistant.model_protocols import NativeToolProtocol
 from langchain_core.messages import AIMessageChunk
+from pydantic import SecretStr
 
 from backend_common.reasoning_model import ReasoningChatOpenAI
 
 
 @pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
 def test_streaming_reasoning_survives_aggregation_and_protocol(field):
-    model = ReasoningChatOpenAI(model="test", api_key="test")
+    model = ReasoningChatOpenAI(model="test", api_key=SecretStr("test"))
     chunks = []
     for delta in [
         {"role": "assistant", field: "Check "},
@@ -29,7 +30,7 @@ def test_streaming_reasoning_survives_aggregation_and_protocol(field):
 
 @pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
 def test_nonstreaming_reasoning_preserved(field):
-    model = ReasoningChatOpenAI(model="test", api_key="test")
+    model = ReasoningChatOpenAI(model="test", api_key=SecretStr("test"))
     result = model._create_chat_result({"choices": [{"message": {"role": "assistant", "content": "Ready", field: "Check inputs."}, "finish_reason": "stop"}]})
     parsed = NativeToolProtocol.parse(result.generations[0].message)
     assert parsed.reasoning == "Check inputs."
@@ -37,7 +38,7 @@ def test_nonstreaming_reasoning_preserved(field):
 
 
 def test_plain_and_usage_only_chunks_do_not_invent_reasoning():
-    model = ReasoningChatOpenAI(model="test", api_key="test")
+    model = ReasoningChatOpenAI(model="test", api_key=SecretStr("test"))
     for payload in [{"choices": [{"delta": {"content": "Ready"}}]}, {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}]:
         chunk = model._convert_chunk_to_generation_chunk(payload, AIMessageChunk, None)
         assert chunk is not None

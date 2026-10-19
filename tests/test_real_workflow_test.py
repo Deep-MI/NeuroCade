@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from api_service.assistant.tools import workflow_test_tools as module
@@ -15,7 +16,7 @@ from neurocade_runtime_tools.execution import BridgeBind, RuntimeContainerRunReq
 from neurocade_runtime_tools.protocol import RuntimeImageSpec
 
 
-def draft(script="true"):
+def draft(script="true") -> dict[str, Any]:
     return dict(
         id="test",
         image="vnmd/fsl_6.0.7.23:20261013",
@@ -40,8 +41,8 @@ def setup(tmp_path, monkeypatch):
 
 
 def test_defaults_and_advisory_only():
-    assert module.WorkflowTestArgs(definition=draft()).timeout_s == 10
-    assert module.WorkflowTestArgs(definition=draft(), timeout_s=120).timeout_s == 120
+    assert module.WorkflowTestArgs.model_validate({"definition": draft()}).timeout_s == 10
+    assert module.WorkflowTestArgs.model_validate({"definition": draft(), "timeout_s": 120}).timeout_s == 120
     spec = module.AssistantWorkflowTestTools(settings=None).build_tools({})[0]
     assert not spec.risk.requires_confirmation
     assert "60 seconds" in spec.description and "15 lines" in spec.description
@@ -214,7 +215,7 @@ def test_bridge_rejects_original_case_log_paths(tmp_path):
             "workflow_test": True,
             "network_disabled": True,
             "scratch_paths": ["/workflow_output"],
-            "binds": [{"source_relative": b.source_relative, "container_path": b.container_path, "mode": b.mode} for b in r.binds],
+            "binds": [{"source_relative": cast(BridgeBind, b).source_relative, "container_path": b.container_path, "mode": b.mode} for b in r.binds],
         },
     }
     bridge = BridgeRuntime(backend="docker", data_root=tmp_path, image_dir=tmp_path / "images")
@@ -317,7 +318,7 @@ def test_status_wait_bounds(wait_s):
 
 def test_wait_only_supported_for_status():
     with pytest.raises(ValueError, match='only supported for status'):
-        module.WorkflowTestArgs(definition=draft(), wait_s=30)
+        module.WorkflowTestArgs.model_validate({"definition": draft(), "wait_s": 30})
     assert module.WorkflowTestArgs(mode='status', test_id='a' * 32).wait_s == 0
 
 

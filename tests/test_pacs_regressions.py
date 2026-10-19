@@ -1,6 +1,7 @@
 """Regression probes for the PACS code/architecture review findings."""
 # ruff: noqa: F811
 import shutil
+from typing import Any
 
 import numpy as np
 import pytest
@@ -271,7 +272,7 @@ def test_workflow_test_validates_copied_image_using_source_provenance(context, m
         return SimpleNamespace(returncode=0, stdout='', stderr='', writer_stopped=True)
 
     monkeypatch.setattr(workflow_test_tools, "execute_runtime_request_async", execute)
-    definition = dict(id="copy_test", image="vnmd/fsl_6.0.7.23:20261013", description="test", details="test",
+    definition: dict[str, Any] = dict(id="copy_test", image="vnmd/fsl_6.0.7.23:20261013", description="test", details="test",
                       inputs=[dict(name="image", description="4D MR", modalities=["MR"], dimensions=[4], sequences=["T1"])], script="true")
     result = asyncio.run(tools.test({}, ToolExecutionContext("test"), {"definition":definition,"inputs":["scan.nii"]}))
     assert result.details.get('status') == 'completed', result.content

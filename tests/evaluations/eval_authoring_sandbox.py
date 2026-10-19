@@ -5,8 +5,8 @@ import os
 import secrets
 import subprocess
 import threading
+from typing import Any, cast
 
-import nibabel as nib
 import numpy as np
 import pytest
 from api_service.assistant.tools.definition import ToolExecutionContext
@@ -14,6 +14,8 @@ from api_service.assistant.tools.probe_tools import AssistantProbeTools
 from api_service.assistant.tools.workflow_test_tools import AssistantWorkflowTestTools
 from neurocade_runtime_tools.bridge import BridgeRuntime
 from neurocade_runtime_tools.bridge_server import BridgeHTTPServer
+from nibabel.loadsave import save
+from nibabel.nifti1 import Nifti1Image
 
 from backend_common.settings import Settings
 
@@ -39,7 +41,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("NEUROCADE_BRIDGE_URL", f"http://127.0.0.1:{server.server_port}")
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        yield Settings(_env_file=None, HOST_DATA_DIR=tmp_path), tmp_path
+        yield cast(Any, Settings)(_env_file=None, HOST_DATA_DIR=tmp_path), tmp_path
     finally:
         runtime.shutdown()
         server.shutdown()
@@ -53,7 +55,7 @@ def test_inspect_and_real_workflow_cannot_access_host_case(sandbox, monkeypatch)
     current_case.mkdir()
     sentinel = current_case / "sentinel"
     sentinel.write_text("protected")
-    nib.save(nib.Nifti1Image(np.arange(120, dtype=np.float32).reshape(2, 3, 4, 5), np.eye(4)), current_case / "input.nii.gz")
+    save(Nifti1Image(np.arange(120, dtype=np.float32).reshape(2, 3, 4, 5), np.eye(4)), current_case / "input.nii.gz")
     tools = AssistantWorkflowTestTools(settings=settings)
     monkeypatch.setattr(tools, "identity", lambda state: (current_case, {"user_id": "test", "case_id": "test", "workspace_id": "test"}))
     definition = dict(

@@ -4,6 +4,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 import yaml
@@ -76,7 +77,7 @@ def test_synthetic_boundary_rejects_escape_on_both_backends(tmp_path, mutation):
     if mutation == 'case':
         request.binds = (replace(request.binds[0], source_relative=str(live.relative_to(tmp_path))), request.binds[1])
     elif mutation == 'symlink':
-        case = tmp_path / request.binds[0].source_relative
+        case = tmp_path / cast(BridgeBind, request.binds[0]).source_relative
         (case / 'thalamus').rmdir()
         (case / 'thalamus').symlink_to(live, target_is_directory=True)
     elif mutation == 'network':
@@ -142,7 +143,7 @@ def test_bridge_rejects_host_logs_and_unbounded_synthetic_tests(tmp_path, field,
         'container': {'image': request.image.to_dict(), 'command': ['true'], 'isolated': True,
                       'synthetic_fixture': True, 'network_disabled': True,
                       'scratch_paths': ['/workflow_output'],
-                      'binds': [{'source_relative': bind.source_relative, 'container_path': bind.container_path, 'mode': bind.mode}
+                      'binds': [{'source_relative': cast(BridgeBind, bind).source_relative, 'container_path': bind.container_path, 'mode': bind.mode}
                                 for bind in request.binds]},
     }
     runtime = BridgeRuntime(backend='docker', data_root=tmp_path, image_dir=tmp_path / 'images')

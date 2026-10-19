@@ -1,25 +1,24 @@
 """Offline fixtures for the downloadable real-data benchmark preparation."""
-import importlib.util
 import json
 import stat
 import tarfile
 import zipfile
-from pathlib import Path
+from typing import Any, cast
 
-import nibabel as nib
 import numpy as np
 import pytest
+from nibabel.freesurfer.mghformat import MGHImage
+from nibabel.loadsave import save
+from nibabel.nifti1 import Nifti1Image
 
-SPEC = importlib.util.spec_from_file_location("prepare_fixtures", Path(__file__).parents[1] / "benchmarks/workflow_setup/prepare_fixtures.py")
-prepare = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(prepare)
+from benchmarks.workflow_setup import prepare_fixtures as prepare
 
 
 @pytest.fixture
 def archives(tmp_path, monkeypatch):
     image = tmp_path / "source.mgz"
     affine = np.array([[0, -0.8, 0, 20], [0.8, 0, 0, -30], [0, 0, 0.8, 10], [0, 0, 0, 1]])
-    nib.save(nib.MGHImage(np.arange(120, dtype=np.float32).reshape(4, 5, 6), affine), image)
+    save(MGHImage(cast(Any, np.arange(120, dtype=np.float32).reshape(4, 5, 6)), affine), image)
     sample = tmp_path / "sample.tar.gz"
     with tarfile.open(sample, "w:gz") as bundle:
         bundle.add(image, arcname="FastSurfer_Rhineland_0000/mri/001.mgz")
@@ -44,7 +43,7 @@ def test_prepare_download_convert_extract_and_reuse_cache(archives, tmp_path, mo
     manifest = json.loads((output / "manifest.json").read_text())
     assert len(manifest["files_sha256"]) == 5
     assert manifest["conversion"]["shape"] == [4, 5, 6]
-    assert nib.load(output / "blur/001.nii.gz").header.get_xyzt_units()[0] == "mm"
+    assert Nifti1Image.from_filename(output / "blur/001.nii.gz").header.get_xyzt_units()[0] == "mm"
     assert not list(output.rglob("*ThalamicNuclei*"))
     assert not list(output.rglob("*thalamic-nuclei*"))
     for name, expected in manifest["files_sha256"].items():
@@ -53,7 +52,7 @@ def test_prepare_download_convert_extract_and_reuse_cache(archives, tmp_path, mo
         pytest.fail("Verified cache should work offline")
     monkeypatch.setattr(prepare.urllib.request, "urlopen", no_download)
     second = prepare.prepare(cache, tmp_path / "second")
-    assert nib.load(second / "blur/001.nii.gz").shape == (4, 5, 6)
+    assert Nifti1Image.from_filename(second / "blur/001.nii.gz").shape == (4, 5, 6)
     assert json.loads((second / "manifest.json").read_text())["files_sha256"] == manifest["files_sha256"]
     assert [prepare.digest(p) for p in archives] == before
     with pytest.raises(FileExistsError):

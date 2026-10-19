@@ -1,11 +1,14 @@
 """Regression tests for delivery at budget/duplicate stops and Bash validation."""
 import asyncio
 import subprocess
+from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from api_service.assistant.loop import AssistantLoop
 from api_service.assistant.tool_execution_store import AssistantToolExecutionStore
 from api_service.assistant.tool_executor import AssistantToolExecutor
+from api_service.assistant.tools.builder import AssistantToolBuilder
 from api_service.assistant.tools.definition import ToolDefinition
 from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow
 from langchain_core.messages import AIMessage
@@ -51,7 +54,7 @@ def test_image_variables_are_checked_at_execution(name):
     assert name in missing.stderr
 
 
-def state():
+def state() -> dict[str, Any]:
     return dict(provider_config=ModelConfig("test", "openai_compatible", "model"),
                 system_prompt="system", conversation=[], round_count=18, max_rounds=18,
                 tool_calls_log=[dict(name="tool_workflow_test", arguments=dict(definition=workflow('echo "${INPUTS[0]}"')),
@@ -70,7 +73,7 @@ def test_budget_finalization_has_no_tools_and_keeps_draft(monkeypatch, tmp_path,
                 raise response
             return response
     monkeypatch.setattr(provider_registry, "build_chat_model", lambda **kwargs: Model())
-    loop = AssistantLoop(None, config_dir=tmp_path)
+    loop = AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)
     result = asyncio.run(loop._model_turn(state()))
     assert result["status"] == "completed"
     assert result["pending_tool_calls"] == []
@@ -101,7 +104,7 @@ def test_duplicate_stop_finalizes_before_round_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(provider_registry, "build_chat_model", lambda **kwargs: Model())
     current = state()
     current.update(round_count=3, finalization_reason="Repeated identical validation call.")
-    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    result = asyncio.run(AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)._model_turn(current))
     assert result["status"] == "completed"
     assert "validation error" in result["final_response"]
     assert "```yaml" in result["final_response"]
@@ -113,7 +116,7 @@ def test_fallback_preserves_latest_draft_even_when_validation_fails(monkeypatch,
     monkeypatch.setattr(provider_registry, "build_chat_model", fail)
     current = state()
     current["tool_calls_log"].append(dict(name="tool_workflow_test", arguments=dict(definition={"id": "broken"}), is_error=True))
-    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    result = asyncio.run(AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)._model_turn(current))
     assert "id: mean" not in result["final_response"]
     assert "id: broken" in result["final_response"]
     assert "Latest workflow test: validation_failed" in result["final_response"]
@@ -125,7 +128,7 @@ def test_no_draft_failure_returns_honest_summary(monkeypatch, tmp_path):
     monkeypatch.setattr(provider_registry, "build_chat_model", fail)
     current = state()
     current["tool_calls_log"] = []
-    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    result = asyncio.run(AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)._model_turn(current))
     assert "No workflow draft is available" in result["final_response"]
 
 
@@ -137,7 +140,7 @@ def test_fallback_preserves_latest_execution_failure(monkeypatch, tmp_path):
     current["tool_calls_log"].append(dict(name="tool_workflow_test",
         arguments=dict(definition=workflow('echo "newest correction"')),
         details=dict(status="failed"), is_error=True, result="Required output missing"))
-    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    result = asyncio.run(AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)._model_turn(current))
     assert 'newest correction' in result['final_response']
     assert 'Latest workflow test: failed' in result['final_response']
     assert 'Required output missing' in result['final_response']
@@ -156,7 +159,7 @@ def test_unlimited_rounds_continue_tool_calls(monkeypatch, tmp_path, round_count
     monkeypatch.setattr(provider_registry, "build_chat_model", lambda **kwargs: Model())
     current = state()
     current.update(max_rounds=0, round_count=round_count, tool_specs=[])
-    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    result = asyncio.run(AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)._model_turn(current))
     assert result["status"] == "running"
     assert result["round_count"] == round_count + 1
     assert result["pending_tool_calls"][0]["name"] == "read"
@@ -170,7 +173,7 @@ def test_unlimited_rounds_still_honor_explicit_finalization(monkeypatch, tmp_pat
     monkeypatch.setattr(provider_registry, "build_chat_model", lambda **kwargs: Model())
     current = state()
     current.update(max_rounds=0, finalization_reason="Repeated identical call.")
-    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    result = asyncio.run(AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)._model_turn(current))
     assert result["status"] == "completed"
     assert result["pending_tool_calls"] == []
 
@@ -190,6 +193,6 @@ def test_fallback_uses_latest_status_for_same_test(monkeypatch, tmp_path):
         dict(name="tool_workflow_test", arguments=dict(mode="logs"),
              details=dict(test_id="target", content="log output")),
     ])
-    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    result = asyncio.run(AssistantLoop(Mock(spec=AssistantToolBuilder), config_dir=tmp_path)._model_turn(current))
     assert 'Latest workflow test: startup_timeout' in result['final_response']
     assert 'Latest workflow test: running' not in result['final_response']
