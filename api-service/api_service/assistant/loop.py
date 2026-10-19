@@ -310,7 +310,7 @@ class AssistantLoop:
         if not reasoning:
             return None
         entry = {
-            "summary": reasoning[:2000],
+            "summary": reasoning[:20000] + ("\n[Reasoning display truncated]" if len(reasoning) > 20000 else ""),
             "round": round_number,
             "tool_names": [call["name"] for call in planned_calls],
         }

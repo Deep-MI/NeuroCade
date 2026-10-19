@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     llm_backend_api_key: str | None = Field(default="", alias="LLM_BACKEND_API_KEY")
     llm_backend_model: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="LLM_BACKEND_MODEL")
     llm_provider_default: str = Field(default="openai-compatible", alias="LLM_PROVIDER_DEFAULT")
-    llm_disable_thinking: bool = Field(default=True, alias="LLM_DISABLE_THINKING")
+    llm_disable_thinking: bool = Field(default=False, alias="LLM_DISABLE_THINKING")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     anthropic_model: str | None = Field(default=None, alias="ANTHROPIC_MODEL")
     google_api_key: str | None = Field(default=None, alias="GOOGLE_API_KEY")

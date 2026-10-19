@@ -25,17 +25,18 @@ def test_application_image_uses_installed_runtime_tools_package():
     assert "/app/packages/neurocade-runtime-tools/src" not in dockerfile
 
 
-def test_configured_provider_builds_chat_model(monkeypatch):
+@pytest.mark.parametrize("disabled", [True, False])
+def test_configured_provider_builds_chat_model(monkeypatch, disabled):
     monkeypatch.setattr(provider_module.settings, "llm_provider_default", "openai-compatible")
     monkeypatch.setattr(provider_module.settings, "llm_backend_url", "http://127.0.0.1:11434")
     monkeypatch.setattr(provider_module.settings, "llm_backend_api_key", "backend-token")
-    monkeypatch.setattr(provider_module.settings, "llm_disable_thinking", True)
+    monkeypatch.setattr(provider_module.settings, "llm_disable_thinking", disabled)
 
     registry = provider_module.ProviderRegistry()
     model = registry.build_chat_model()
 
-    assert type(model).__name__ == "ChatOpenAI"
-    assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert type(model).__name__ == "ReasoningChatOpenAI"
+    assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": not disabled}}
 
 
 def test_no_llm_provider_is_unconfigured_and_cannot_build(monkeypatch):
