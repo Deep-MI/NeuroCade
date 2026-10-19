@@ -1,10 +1,9 @@
 # Workflow setup benchmark
 
 Two tasks for comparing agent workflow authoring before/after harness changes.
-This standalone runner never connects to the app/bridge, registers
-outputs, or changes the live catalog. Each execution creates a fresh temporary
-case. It accepts a workflow YAML produced by the agent; it does **not** drive an
-LLM itself. Keep agent transcripts separately when comparing harness versions.
+`run_agent.py` drives the real assistant with an isolated database, copied cases,
+and its own host bridge. It never connects to the running app or its bridge.
+`benchmark.py` is the separate historical workflow-output grader described below.
 
 ## Current agent prompts
 
@@ -72,6 +71,43 @@ Offline regression checks:
 ```bash
 uv run pytest tests/test_workflow_benchmark_fixtures.py -q
 ```
+
+## Run the agent benchmark
+
+After preparing the real-data fixtures, run from a checkout with the locked Python
+requirements installed and Docker available:
+
+```bash
+uv run python benchmarks/workflow_setup/run_agent.py \
+  --fixtures /tmp/neurocade-benchmark-fixtures-001 \
+  --output /tmp/neurocade-agent-trial-001 \
+  --env-file .env
+```
+
+By default both prompts run once, sequentially. Use `--task blur` or `--task thalamus`
+for one. The output directory must be new and outside the fixture directory.
+Only `LLM_*` and `ASSISTANT_*` settings are read from `--env-file`; ordinary inherited
+model settings also apply. The runner records the actual model, thinking setting,
+round limit, commit and exact prompts. It verifies every fixture hash before and
+after execution. It never grants approval or saves a workflow. Provider credentials
+are used for requests but are not written to the report. Agent transcripts can
+contain the benchmark's case metadata and provider reasoning; treat them accordingly.
+
+The runner sets its own data directory, SQLite database, random-port authenticated
+Docker bridge and token. Containers share host CPU/memory, but mount only independent
+benchmark copies. Any leftover benchmark test is canceled and this bridge is shut
+down when the runner ends. The default 1200-second wall-clock cap per agent trial
+is a benchmark safeguard, separate from the application round limit and staging
+execution timeout. A stopped leftover test is not a successful execution.
+
+`report.json` records actionable `tool_config_upsert` approval separately from test
+outcomes. A chat-only “May I save?” is **not** a setup pass. For comparison, require
+approval plus unchanged source/case hashes, then inspect the durable test results:
+FSL should complete with its required output; thalamus may qualify through healthy
+startup evidence with explicit limits in the approval's workflow details. A generic
+timeout is not proof of healthy startup. Full segmentation and scientific correctness
+remain separate checks. Each task retains the raw response, event transcript, final
+answer, and copied-case baseline. There are no automatic retries.
 
 ## Historical tasks and prompts
 
@@ -150,8 +186,9 @@ The installed image's CLI and filenames are authoritative when versions differ.
 
 ## Benchmark validation findings (2026-10-14)
 
-No live agent success rate or real FSL/FreeSurfer processing result has been
-measured yet. The initial seven tests validated the runner, not agent capability.
+At initial implementation, the seven tests validated the historical runner, not
+agent capability. Later agent trials should be assessed using the procedure above;
+a single successful trial is not a measured reliability rate.
 Two new negative controls reproduced false passes in that initial grader:
 
 - A temporal median passed because the linear input made median equal mean.

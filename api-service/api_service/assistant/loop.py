@@ -218,8 +218,14 @@ class AssistantLoop:
         ]
         draft = drafts[-1] if drafts else None
         fallback = f"{reason} No further tools were executed."
-        if drafts:
-            latest = drafts[-1]
+        if draft is not None:
+            latest = draft
+            test_id = draft.get("details", {}).get("test_id")
+            if test_id:
+                latest = next((entry for entry in reversed(logs)
+                               if entry.get("name") == "tool_workflow_test"
+                               and entry.get("details", {}).get("test_id") == test_id
+                               and entry.get("details", {}).get("status")), draft)
             status = latest.get("details", {}).get("status", "validation_failed" if latest.get("is_error") else "unknown")
             fallback += f"\n\nLatest workflow test: {status}."
             if latest.get("is_error"):

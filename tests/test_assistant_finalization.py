@@ -173,3 +173,23 @@ def test_unlimited_rounds_still_honor_explicit_finalization(monkeypatch, tmp_pat
     result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
     assert result["status"] == "completed"
     assert result["pending_tool_calls"] == []
+
+
+def test_fallback_uses_latest_status_for_same_test(monkeypatch, tmp_path):
+    def fail(**kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(provider_registry, "build_chat_model", fail)
+    current = state()
+    current['tool_calls_log'][0]['details'] = dict(test_id="target", status="running")
+    current['tool_calls_log'].extend([
+        dict(name="tool_workflow_test", arguments=dict(mode="status"),
+             details=dict(test_id="target", status="startup_timeout")),
+        dict(name="tool_workflow_test", arguments=dict(mode="status"),
+             details=dict(test_id="unrelated", status="completed")),
+        dict(name="tool_workflow_test", arguments=dict(mode="logs"),
+             details=dict(test_id="target", content="log output")),
+    ])
+    result = asyncio.run(AssistantLoop(None, config_dir=tmp_path)._model_turn(current))
+    assert 'Latest workflow test: startup_timeout' in result['final_response']
+    assert 'Latest workflow test: running' not in result['final_response']
