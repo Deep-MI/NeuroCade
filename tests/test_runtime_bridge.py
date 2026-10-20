@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service import main as main_module
 from neurocade_runtime_tools import bridge as bridge_module
+from neurocade_runtime_tools import docker_runtime as docker_runtime_module
 from neurocade_runtime_tools import execution as execution_module
 from neurocade_runtime_tools.apptainer_runtime import NvidiaCapability
 from neurocade_runtime_tools.bridge import BridgeRuntime
@@ -475,6 +476,18 @@ def test_docker_builder_is_hardened_and_has_no_nested_privilege(
     assert "--privileged" not in argv and "/dev/fuse" not in rendered
 
 
+@pytest.mark.parametrize("isolated", [False, True])
+def test_docker_tmp_supports_runtime_libraries_but_keeps_probes_noexec(tmp_path: Path, isolated: bool) -> None:
+    request = RuntimeContainerRunRequest(
+        image=RuntimeImageSpec("example/tool:1"), command=["tool"], isolated=isolated,
+    )
+    argv = build_docker_argv(request, data_root=tmp_path, platform="linux/amd64")
+    options = argv[argv.index("--tmpfs") + 1].split(",")
+    assert ("exec" in options) is not isolated
+    assert ("noexec" in options) is isolated
+    assert "nosuid" in options and "nodev" in options
+
+
 def test_docker_builder_propagates_resolved_tool_platform(tmp_path: Path) -> None:
     request = RuntimeContainerRunRequest(
         image=RuntimeImageSpec("vnmd/freesurfer_8.2.0:20260818"),
@@ -535,6 +548,7 @@ def test_prepare_image_uses_native_platform_for_pull_and_run(
     assert prepared.platform == "linux/arm64/v8"
     assert captured["platform"] == prepared.platform
     assert captured["metadata"] == {
+        "image": "vnmd/freesurfer_8.2.0:20260818",
         "host_platform": "linux/arm64",
         "platform": "linux/arm64/v8",
         "supported_platforms": ["linux/amd64", "linux/arm64/v8"],
@@ -550,6 +564,45 @@ def test_prepare_image_uses_native_platform_for_pull_and_run(
     assert run_argv[2:4] == ["--platform", captured["platform"]]
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+@pytest.mark.parametrize("verbose", [False, True])
+def test_prepare_image_prefetches_selected_manifest_before_registering_original_reference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pinned: bool, verbose: bool,
+) -> None:
+    spec = RuntimeImageSpec("example/tool:1", oci_digest="sha256:" + "f" * 64 if pinned else None)
+    selected_digest = "sha256:" + "a" * 64
+    descriptors = [
+        {"platform": {"os": "linux", "architecture": "amd64"}, "digest": selected_digest},
+        {"platform": {"os": "unknown", "architecture": "unknown"}, "digest": "sha256:" + "b" * 64},
+    ]
+    payload = [{"Descriptor": row} for row in descriptors] if verbose else {"manifests": descriptors}
+    inspected: list[list[str]] = []
+    pulls: list[str] = []
+
+    def command(args, **_kwargs):  # noqa: ANN001, ANN003
+        inspected.append(args)
+        if args[:3] == ["docker", "manifest", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    def pull(reference, **kwargs):  # noqa: ANN001, ANN003
+        pulls.append(reference)
+        assert kwargs["platform"] == "linux/amd64"
+        assert kwargs["metadata"]["image"] == spec.oci_reference
+
+    monkeypatch.setattr("neurocade_runtime_tools.images.detected_docker_host_platform", lambda: "linux/arm64")
+    monkeypatch.setattr("neurocade_runtime_tools.images.run_managed_command", command)
+    monkeypatch.setattr("neurocade_runtime_tools.images._pull_docker_image", pull)
+    monkeypatch.setattr("neurocade_runtime_tools.images._storage_preflight", lambda: {})
+
+    prepared = prepare_image(spec, backend="docker", image_dir=tmp_path)
+
+    assert inspected[0][-1] == spec.docker_reference
+    assert pulls == [spec.docker_reference.split("@", 1)[0] + "@" + selected_digest, spec.docker_reference]
+    assert prepared == spec.docker_reference
+    assert prepared.platform == "linux/amd64"
+
+
 def test_docker_platform_resolution_falls_back_to_amd64(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("neurocade_runtime_tools.images.detected_docker_host_platform", lambda: "linux/arm64")
     monkeypatch.setattr(
@@ -561,9 +614,10 @@ def test_docker_platform_resolution_falls_back_to_amd64(monkeypatch: pytest.Monk
         ),
     )
 
-    resolved, supported = resolve_docker_image_platform("example/tool:1")
+    resolved, supported, reference = resolve_docker_image_platform("example/tool:1")
 
     assert resolved == "linux/amd64"
+    assert reference == "example/tool:1"
     assert supported == {"linux/amd64"}
 
 
@@ -590,6 +644,7 @@ def test_docker_platform_resolution_rejects_unsupported_manifest(monkeypatch: py
 
 def test_docker_pull_failure_preserves_registry_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
+    updates: list[dict] = []
     chunks = iter([b"Error response from daemon: no matching manifest for linux/arm64/v8\r"])
 
     class FakeProcess:
@@ -616,9 +671,11 @@ def test_docker_pull_failure_preserves_registry_diagnostic(monkeypatch: pytest.M
             "vnmd/freesurfer_8.2.0:20260818",
             platform="linux/amd64",
             process_observer=None,
-            progress_observer=None,
+            progress_observer=updates.append,
         )
 
+    assert updates[0]["phase"] == "downloading"
+    assert "progress" not in updates[0]
     assert captured["args"] == [
         "docker",
         "pull",
@@ -666,6 +723,129 @@ def test_bridge_duplicate_run_ids_and_lifecycle(monkeypatch: pytest.MonkeyPatch,
             break
         threading.Event().wait(0.01)
     assert run.public()["stdout"].strip() == "bridge-ok"
+
+
+def test_linked_source_registry_scans_reads_and_builds_read_only_bind(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    (data_root / "case").mkdir()
+    linked = tmp_path / "external" / "subject-01"
+    (linked / "mri").mkdir(parents=True)
+    (linked / "stats").mkdir()
+    (linked / "mri" / "orig.mgz").write_bytes(b"volume-data")
+    (linked / "stats" / "aseg.stats").write_text("stats", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("secret", encoding="utf-8")
+    (linked / "escape").symlink_to(outside, target_is_directory=True)
+
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+    )
+    registered = runtime.register_linked_source(str(linked))
+    assert "path" not in registered
+    assert (tmp_path / "linked-sources.json").stat().st_mode & 0o077 == 0
+    source_id = registered["source_id"]
+    assert runtime.register_linked_source(str(linked))["source_id"] != source_id
+
+    manifest = runtime.linked_source_manifest(source_id)
+    paths = {entry["path"] for entry in manifest["entries"]}
+    assert {"mri/orig.mgz", "stats/aseg.stats"} <= paths
+    assert "escape" not in paths
+    assert manifest["skipped_symlinks"] == 1
+    content, size = runtime.read_linked_source(source_id, "mri/orig.mgz", offset=2, length=4)
+    assert content == b"lume"
+    assert size == len(b"volume-data")
+    with pytest.raises(ValueError, match="symbolic links"):
+        runtime.read_linked_source(source_id, "escape/secret")
+
+    payload = _payload(data_root)
+    payload["container"]["binds"] = [{
+        "linked_source_id": source_id,
+        "linked_relative": ".",
+        "container_path": "/source",
+        "mode": "ro",
+    }]
+    request, _paths = runtime._validated_request(payload)
+    assert request.binds[0].host_path == linked
+    payload["container"]["binds"][0]["mode"] = "rw"
+    with pytest.raises(ValueError, match="read-only"):
+        runtime._validated_request(payload)
+
+    assert runtime.revoke_linked_source(source_id) is True
+    assert runtime.revoke_linked_source(source_id) is False
+    with pytest.raises(ValueError, match="not authorized"):
+        runtime.linked_source_manifest(source_id)
+
+
+def test_linked_source_manifest_enforces_configured_file_limit(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    linked = tmp_path / "external"
+    linked.mkdir()
+    (linked / "one.mgz").write_bytes(b"one")
+    (linked / "two.mgz").write_bytes(b"two")
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+        max_source_files=1,
+    )
+
+    source_id = runtime.register_linked_source(str(linked))["source_id"]
+    manifest = runtime.linked_source_manifest(source_id)
+
+    assert manifest["truncated"] is True
+    assert len([entry for entry in manifest["entries"] if entry["type"] == "file"]) == 1
+
+
+def test_linked_source_manifest_bounds_directory_entries(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    linked = tmp_path / "external"
+    linked.mkdir()
+    for index in range(5):
+        (linked / f"empty-{index}").mkdir()
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+        max_source_files=1,
+    )
+
+    source_id = runtime.register_linked_source(str(linked))["source_id"]
+    manifest = runtime.linked_source_manifest(source_id)
+
+    assert manifest["truncated"] is True
+    assert len(manifest["entries"]) == 4
+
+
+def test_linked_source_manifest_reports_depth_truncation(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    linked = tmp_path / "external"
+    deepest = linked
+    for index in range(34):
+        deepest = deepest / f"level-{index}"
+    deepest.mkdir(parents=True)
+    (deepest / "volume.mgz").write_bytes(b"volume")
+    runtime = BridgeRuntime(
+        backend="docker",
+        data_root=data_root,
+        image_dir=tmp_path / "images",
+        source_registry_path=tmp_path / "linked-sources.json",
+    )
+
+    source_id = runtime.register_linked_source(str(linked))["source_id"]
+    manifest = runtime.linked_source_manifest(source_id)
+
+    assert manifest["truncated"] is True
+    assert not any(entry["path"].endswith("volume.mgz") for entry in manifest["entries"])
 
 
 def test_bridge_writes_image_preparation_failure_to_requested_stderr(
@@ -911,6 +1091,7 @@ def test_http_bridge_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: P
             runtime,
             "x" * 43,
             launch_id="test-launch",
+            source_token="s" * 43,
         )
     except PermissionError:
         pytest.skip("sandbox does not permit loopback listeners")
@@ -933,6 +1114,19 @@ def test_http_bridge_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         assert response.status_code == 200
         assert response.json()["protocol_version"] == PROTOCOL_VERSION
         assert response.json()["launch_id"] == "test-launch"
+        register_url = f"http://127.0.0.1:{server.server_port}/v1/sources/register"
+        body = {"protocol_version": PROTOCOL_VERSION, "host_path": str(data_root)}
+        assert session.post(register_url, headers={
+            "Authorization": f"Bearer {'x' * 43}",
+            "X-NeuroCade-Launch-ID": "test-launch",
+        }, json=body, timeout=2).status_code == 403
+        registered = session.post(register_url, headers={
+            "Authorization": f"Bearer {'x' * 43}",
+            "X-NeuroCade-Launch-ID": "test-launch",
+            "X-NeuroCade-Source-Authorization": "s" * 43,
+        }, json=body, timeout=2)
+        assert registered.status_code == 201
+        assert "path" not in registered.json()
     finally:
         server.shutdown()
         server.server_close()
@@ -954,3 +1148,159 @@ def test_application_startup_fails_when_bridge_is_unavailable(monkeypatch: pytes
 
     with pytest.raises(RuntimeError, match="bridge unavailable"):
         asyncio.run(start())
+
+
+def test_active_writers_reports_containers_the_bridge_no_longer_tracks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A restarted bridge still answers for a container it never launched."""
+    runtime = BridgeRuntime(backend="docker", data_root=tmp_path, image_dir=tmp_path / "images")
+    monkeypatch.setattr(bridge_module, "active_writer_run_ids", lambda **_: {"orphaned-run"})
+
+    payload = runtime.active_writers()
+
+    assert payload["determined"] is True
+    assert payload["run_ids"] == ["orphaned-run"]
+
+
+def test_active_writers_never_reports_a_failed_query_as_idle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Absence and disconnection must not look alike to the caller."""
+    runtime = BridgeRuntime(backend="docker", data_root=tmp_path, image_dir=tmp_path / "images")
+
+    def unreachable(**_: object) -> set[str]:
+        raise RuntimeError("Docker did not report the running tool containers")
+
+    monkeypatch.setattr(bridge_module, "active_writer_run_ids", unreachable)
+
+    payload = runtime.active_writers()
+
+    assert payload["determined"] is False
+    assert payload["run_ids"] == []
+
+
+def test_apptainer_writers_are_undetermined_without_a_daemon(tmp_path: Path) -> None:
+    """Apptainer has no daemon to interrogate, so absence is never provable."""
+    runtime = BridgeRuntime(backend="apptainer", data_root=tmp_path, image_dir=tmp_path / "images")
+
+    assert runtime.active_writers()["determined"] is False
+
+
+def test_active_writer_run_ids_reads_the_run_id_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The daemon query filters on the managed label and returns run IDs."""
+    recorded: list[list[str]] = []
+
+    def fake_run(argv, **_: object) -> SimpleNamespace:
+        recorded.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="run-a\n\nrun-b\n", stderr="")
+
+    monkeypatch.setattr(docker_runtime_module, "run_managed_command", fake_run)
+
+    assert docker_runtime_module.active_writer_run_ids() == {"run-a", "run-b"}
+    assert "label=org.neurocade.runtime=true" in recorded[0]
+    assert '{{.Label "org.neurocade.run-id"}}' in recorded[0]
+
+
+def test_active_writer_run_ids_raises_when_the_daemon_query_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero query must raise rather than report an empty set."""
+    monkeypatch.setattr(
+        docker_runtime_module,
+        "run_managed_command",
+        lambda *_, **__: SimpleNamespace(returncode=1, stdout="", stderr="cannot connect"),
+    )
+
+    with pytest.raises(RuntimeError, match="did not report"):
+        docker_runtime_module.active_writer_run_ids()
+
+def _untimed_client_request() -> RuntimeExecutionRequest:
+    """A workflow the catalog leaves without an execution timeout."""
+    return RuntimeExecutionRequest(
+        timeout_s=None,
+        container_run=RuntimeContainerRunRequest(
+            image=RuntimeImageSpec("example/tool:1.0"),
+            command=["true"],
+            isolated=True,
+            run_id="client-run",
+        ),
+    )
+
+
+def _clock_past_every_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advance the clock past any deadline after the first reading."""
+    readings = {"count": 0}
+
+    def fake_monotonic() -> float:
+        readings["count"] += 1
+        return (readings["count"] - 1) * 100_000.0
+
+    monkeypatch.setattr("neurocade_runtime_tools.bridge_client.time.monotonic", fake_monotonic)
+
+
+def test_untimed_workflow_is_not_abandoned_after_the_preparation_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A workflow without a declared timeout has no execution budget to exceed.
+
+    The image-preparation budget is not one. Treating it as a deadline gave
+    every untimed workflow a fixed two-hour cap and abandoned healthy long
+    runs while their container kept writing to the case.
+    """
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
+    _clock_past_every_budget(monkeypatch)
+    responses: list[dict] = [
+        {},
+        {"state": "running"},
+        {"state": "running"},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "stdout": "ok"},
+    ]
+    monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: responses.pop(0))
+
+    result = client.execute(_untimed_client_request())
+
+    assert result.stdout == "ok"
+    assert responses == []
+
+
+def test_declared_timeout_still_bounds_a_bridge_that_never_finishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
+    _clock_past_every_budget(monkeypatch)
+    monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: {"state": "running"})
+
+    with pytest.raises(TimeoutError, match="terminal result"):
+        client.execute(_client_request(tmp_path))
+
+
+@pytest.mark.parametrize("advancing", [True, False])
+def test_image_preparation_uses_progress_idle_budget(monkeypatch, tmp_path, advancing):
+    client = BridgeClient("http://bridge.test", "x" * 43, tmp_path, launch_id="test-launch", poll_interval_s=0)
+    monkeypatch.setenv("NEUROCADE_BRIDGE_PREPARE_TIMEOUT_SECONDS", "60")
+    clock = iter((0.0, 40.0, 80.0, 120.0, 160.0))
+    monkeypatch.setattr("neurocade_runtime_tools.bridge_client.time.monotonic", lambda: next(clock))
+    statuses = iter([
+        *({"state": "accepted", "progress": {
+            "phase": "downloading", "current_bytes": step if advancing else 0, "updated_at": step,
+        }} for step in range(3)),
+        {"state": "running"},
+        {"state": "completed", "writer_stopped": True, "returncode": 0, "stdout": "ok"},
+    ])
+    cancellations = []
+
+    def request(method, path, **_kwargs):
+        if method == "POST":
+            return {}
+        if method == "DELETE":
+            cancellations.append(path)
+            return {}
+        return next(statuses)
+
+    monkeypatch.setattr(client, "_request", request)
+    if advancing:
+        assert client.execute(_client_request(tmp_path)).stdout == "ok"
+        assert not cancellations
+    else:
+        with pytest.raises(TimeoutError, match="no progress"):
+            client.execute(_client_request(tmp_path))
+        assert cancellations == ["/v1/runs/client-run"]

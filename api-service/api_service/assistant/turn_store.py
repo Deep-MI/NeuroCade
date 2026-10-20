@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from api_service.assistant.tool_execution_store import approval_digest
 from backend_common.auth import AuthContext
-from backend_common.db import AssistantThread, AssistantToolExecution, AssistantTurn
+from backend_common.db import AssistantThread, AssistantToolExecution, AssistantTurn, run_with_sqlite_lock_retry
 
 logger = logging.getLogger(__name__)
 SQLITE_STORAGE_RECOVERY_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
@@ -49,7 +50,8 @@ class AssistantTurnStore:
     def _turn_id(turn: AssistantTurn | str | None) -> str | None:
         if turn is None or isinstance(turn, str):
             return turn
-        return str(turn.id)
+        identity = inspect(turn).identity
+        return str(identity[0]) if identity is not None else str(turn.id)
 
     def start(
         self,
@@ -86,17 +88,16 @@ class AssistantTurnStore:
         turn_id = self._turn_id(turn)
         if turn_id is None:
             return
-        current = db.get(AssistantTurn, turn_id)
-        if current is None:
-            return
-        current.status = status
-        merged_result = dict(current.result_json or {})
-        merged_result.update(result or {})
-        if status in {"completed", "failed", "canceled"}:
-            merged_result.pop("checkpoint", None)
-        current.result_json = merged_result
-        current.error_message = error
-        db.commit()
+        def update(current: AssistantTurn) -> None:
+            current.status = status
+            merged_result = dict(current.result_json or {})
+            merged_result.update(result or {})
+            if status in {"completed", "failed", "canceled"}:
+                merged_result.pop("checkpoint", None)
+            current.result_json = merged_result
+            current.error_message = error
+
+        self._write_turn(db, turn_id, update)
 
     def checkpoint(
         self,
@@ -110,14 +111,30 @@ class AssistantTurnStore:
         turn_id = self._turn_id(turn)
         if turn_id is None:
             return
-        current = db.get(AssistantTurn, turn_id)
-        if current is None:
-            return
-        result = dict(current.result_json or {})
-        result["phase"] = phase
-        result["checkpoint"] = state
-        current.result_json = result
-        db.commit()
+        def update(current: AssistantTurn) -> None:
+            if current.status != "running":
+                return
+            result = dict(current.result_json or {})
+            result["phase"] = phase
+            result["checkpoint"] = state
+            current.result_json = result
+
+        self._write_turn(db, turn_id, update)
+
+    @staticmethod
+    def _write_turn(db: Session, turn_id: str, update: Callable[[AssistantTurn], None]) -> None:
+        """Retry only persistence, never the model/tool work represented by the turn."""
+        def persist() -> None:
+            # End stale read snapshots before acquiring the write lock. Even a
+            # short SELECT-then-UPDATE can race with a UI or worker commit in WAL.
+            db.rollback()
+            db.connection(execution_options={"sqlite_begin_immediate": True})
+            current = db.get(AssistantTurn, turn_id, populate_existing=True)
+            if current is not None:
+                update(current)
+            db.commit()
+
+        run_with_sqlite_lock_retry(db, persist)
 
     def recover_after_storage_error(
         self,

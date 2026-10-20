@@ -57,6 +57,7 @@ def get_label_centroid(segmentation_path: str, label_query: str, lut_path: str |
 
     The returned (x, y, z) are **RAS-canonical voxel indices** — i.e. the same
     coordinate space the web viewer uses after its ``reorient()`` pass.
+    world_position is the centroid in RAS millimetres, independent of the viewer reference grid.
     """
     if not os.path.exists(segmentation_path):
         return {"error": f"Segmentation file not found: {segmentation_path}"}
@@ -71,6 +72,8 @@ def get_label_centroid(segmentation_path: str, label_query: str, lut_path: str |
         nib_module = cast(Any, nib)
         img = nib_module.load(segmentation_path)
         data = img.get_fdata()
+        if data.ndim != 3:
+            return {"error": "Label focus requires a 3D segmentation volume."}
         raw_dims = data.shape          # file-storage dimensions
 
         # Find all voxels matching the label
@@ -88,6 +91,9 @@ def get_label_centroid(segmentation_path: str, label_query: str, lut_path: str |
         #   ras_y = file_axis[order[1]], flipped if flips[1]
         #   ras_z = file_axis[order[2]], flipped if flips[2]
         affine = img.affine
+        world_position = (affine @ np.append(centroid_raw, 1.0))[:3]
+        if not np.isfinite(world_position).all():
+            return {"error": "Segmentation has invalid spatial coordinates."}
         order, flips = _ras_reorientation(affine)
 
         ras_centroid = [0.0, 0.0, 0.0]
@@ -100,6 +106,7 @@ def get_label_centroid(segmentation_path: str, label_query: str, lut_path: str |
 
         return {
             "success": True,
+            "world_position": world_position.tolist(),
             "label_id": label_id,
             "label_name": label_name,
             "x": int(round(ras_centroid[0])),

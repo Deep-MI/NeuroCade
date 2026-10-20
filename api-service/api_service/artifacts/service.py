@@ -30,6 +30,8 @@ def artifact_download_path(artifact_id: str) -> str:
 def serialize_artifact(artifact: Artifact) -> ArtifactSummary:
     """Convert an artifact row into its API summary representation."""
     metadata = dict(artifact.metadata_json or {})
+    for key in ("linked_source_id", "linked_relative_path", "linked_source_relative"):
+        metadata.pop(key, None)
     return ArtifactSummary(
         id=artifact.id,
         case_id=artifact.case_id,
@@ -76,8 +78,8 @@ def _case_for_output_relative_path(db: Session, output_relative_path: str) -> tu
     return case, workspace
 
 
-def artifact_download_path_for_output(db: Session, context: AuthContext, output_relative_path: str) -> str | None:
-    """Return an authorized artifact download path for a runtime output path."""
+def artifact_for_output(db: Session, context: AuthContext, output_relative_path: str) -> Artifact | None:
+    """Resolve a runtime output to its artifact after enforcing case read access."""
     case, workspace = _case_for_output_relative_path(db, output_relative_path)
     if case is not None and workspace is not None:
         _case, _workspace, role, _case_dir = get_case_for_user(db, case.id, context.user.id)
@@ -89,7 +91,13 @@ def artifact_download_path_for_output(db: Session, context: AuthContext, output_
     artifact = find_artifact_for_relative_path(db, case.id, relative_path)
     if artifact is None:
         return None
-    return artifact_download_path(artifact.id)
+    return artifact
+
+
+def artifact_download_path_for_output(db: Session, context: AuthContext, output_relative_path: str) -> str | None:
+    """Return an authorized artifact download path for a runtime output path."""
+    artifact = artifact_for_output(db, context, output_relative_path)
+    return artifact_download_path(artifact.id) if artifact is not None else None
 
 
 def resolve_artifact_file_for_user(
@@ -98,6 +106,15 @@ def resolve_artifact_file_for_user(
     artifact_id: str,
 ) -> tuple[Artifact, str]:
     """Return an authorized artifact and its existing filesystem path."""
+    artifact = authorize_artifact_for_user(db, context, artifact_id)
+    path = resolve_artifact_path(artifact)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file missing on disk")
+    return artifact, str(path)
+
+
+def authorize_artifact_for_user(db: Session, context: AuthContext, artifact_id: str) -> Artifact:
+    """Return an artifact after enforcing its case/workspace read policy."""
     artifact = db.get(Artifact, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -109,7 +126,4 @@ def resolve_artifact_file_for_user(
         require_workspace_read(role)
     else:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    path = resolve_artifact_path(artifact)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact file missing on disk")
-    return artifact, str(path)
+    return artifact

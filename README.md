@@ -8,48 +8,47 @@ Learn more on [NeuroCade.org](https://NeuroCade.org).
 
 ## Quick Start
 
-Install NeuroCade locally:
+Download and run the latest stable release installer:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local
+curl -fL --retry 3 -o neurocade-install.sh https://github.com/Deep-MI/NeuroCade/releases/latest/download/neurocade-install.sh && bash neurocade-install.sh --mode local
 ```
 
-On Linux, the installer prefers rootless Apptainer and downloads the latest
-verified stable release with its matching host bridge. If no compatible stable
-release exists, it uses the newest compatible release and says so. If Apptainer
-is not available it uses Docker; macOS uses Docker. Force a runtime with
-`--runtime docker` or `--runtime apptainer`. Docker installs build the application
-image from the same source revision as the host runtime bridge.
+The download must succeed before setup starts. Each release includes
+`neurocade-install.sh` and its SHA-256 checksum. The installer defaults to the
+exact release it came from, even when a newer release appears during setup.
+For a fixed version, replace `latest/download` with `download/<release-tag>`.
+Stable never silently selects a beta release.
 
-Install the current beta channel explicitly:
+Use `bash neurocade-install.sh --version beta` for the newest beta, or
+`--version <release-tag>` for a specific release. These options work with both
+Docker and Apptainer. Docker builds from the verified source archive; Apptainer
+downloads the matching verified SIF and bridge. Separate rolling Docker images
+are not accepted by the standalone installer.
+
+On macOS, install and start Docker Desktop first. On Linux amd64, install Docker
+or rootless Apptainer; if both are available, setup offers a runtime menu.
+Python 3 and curl are required for the initial release verification.
+The installer manages its own application Python toolchain afterwards.
+
+Interactive setup offers provider and model choices, with manual model entry
+when discovery is unavailable. Use arrow keys and Enter, or the numbered menu
+on basic terminals. Explicit flags take precedence. `--yes` disables all prompts;
+provide required credentials and model names through the environment or existing
+configuration. The default assistant choice is “Configure later.”
+
+If `curl` is unavailable, download the installer using `wget` (install curl before running setup):
 
 ```bash
-# Rootless Apptainer on Linux amd64
-bash <(curl -fsSL https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local --runtime apptainer --version beta
+wget -O neurocade-install.sh https://github.com/Deep-MI/NeuroCade/releases/latest/download/neurocade-install.sh && bash neurocade-install.sh --mode local
 ```
 
-Docker archive installs deliberately build the application and host bridge from
-the same verified source release. Install stable first, then use
-`./scripts/update.sh --channel beta --yes` to move a Docker installation to the
-matched beta source; the remote bootstrap rejects a separately selected rolling
-Docker image because its source revision cannot be proven.
-
-To build a local checkout into an Apptainer SIF (requires Docker):
+From a development checkout:
 
 ```bash
+./scripts/install.sh --runtime docker --mode local
+# Or build a matched Apptainer SIF from this checkout (requires Docker):
 ./scripts/install.sh --runtime apptainer --mode local --build-from-source
-```
-
-If `curl` is unavailable:
-
-```bash
-bash <(wget -qO- https://raw.githubusercontent.com/Deep-MI/NeuroCade/main/scripts/install.sh) --mode local
-```
-
-From an existing checkout:
-
-```bash
-./scripts/install.sh --mode local
 ./scripts/run.sh status
 ```
 

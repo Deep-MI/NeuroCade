@@ -24,10 +24,6 @@ _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 _RUN_ID_TOKEN = "{run_id}"
 _RUNTIME_VARIABLE_PATTERN = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(?:\[(\d+)\])?\}")
-_RUNTIME_VARIABLES = {
-    "CASE_ROOT", "DEVICE", "INPUTS", "OUTPUTS", "RUN_DIR",
-    "OUTPUT_PARENT", "OUTPUT_NAME", "OUTPUT_ROOT",
-}
 _VALID_RETURN_FIELDS = ("return_code", "stdout", "stderr", "outputs")
 _USER_CATALOG_DIRECTORY = ".user-tool-configs"
 _USER_CATALOG_LOCK = threading.Lock()
@@ -40,13 +36,23 @@ class StrictWorkflowModel(BaseModel):
 
 
 class WorkflowInput(StrictWorkflowModel):
-    """One ordered regular-file input accepted by a workflow."""
+    """One ordered file or directory input accepted by a workflow."""
 
     name: str = Field(pattern=_ID_PATTERN)
     description: str
+    kind: Literal["file", "directory"] = "file"
     modalities: list[str] = Field(default_factory=list)
     dimensions: list[int] = Field(default_factory=list)
     sequences: list[str] = Field(default_factory=list)
+    volume_roles: list[Literal["intensity", "segmentation"]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_directory_metadata(self):
+        if self.kind == "directory" and (
+            self.modalities or self.dimensions or self.sequences or self.volume_roles
+        ):
+            raise ValueError("directory inputs cannot declare file imaging constraints")
+        return self
 
 
 class WorkflowOutput(StrictWorkflowModel):
@@ -56,8 +62,9 @@ class WorkflowOutput(StrictWorkflowModel):
     type: Literal["intensity_volume", "segmentation_volume", "surface", "other"]
     path: str = Field(
         description=(
-            "Normalized relative path beneath the active case/workspace, for example "
-            "mri/segmentation.mgz. Never prefix it with /case, /workspace, or a slash."
+            "Normalized path relative to case_output_folder when configured, otherwise "
+            "relative to the active case/workspace; for example mri/segmentation.mgz. "
+            "Do not repeat the case_output_folder prefix or use /case, /workspace, or a leading slash."
         )
     )
     description: str
@@ -134,7 +141,7 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
     outputs: list[WorkflowOutput] = Field(default_factory=list)
     case_output_folder: str | None = Field(
         default=None,
-        description="Optional user-visible case folder containing every declared output.",
+        description="Optional user-visible case folder containing every declared output. Output paths are relative to this folder; do not repeat its prefix.",
     )
     script: str = Field(
         description=(
@@ -143,7 +150,13 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
             "${OUTPUTS[n]} paths. Every runtime path reference must be directly enclosed in "
             "double quotes, for example command \"${INPUTS[0]}\" \"${OUTPUTS[0]}\". "
             "Output {run_id} templates are resolved before execution; "
-            "${RUN_ID} is not available."
+            "${RUN_ID} is not supplied by NeuroCade. Other shell variables may be supplied by the "
+            "image or script; their availability is checked during execution, not schema validation. "
+            "Use set -u or an explicit required-variable check to fail early when missing. "
+            "When staging a subject, copy only required subject "
+            "directories into ${OUTPUT_ROOT}; never recursively copy the whole ${CASE_ROOT} "
+            "or a selected ancestor of the output directory. ${OUTPUT_ROOT} is a second mount "
+            "of the case output folder, not storage outside the case."
         )
     )
     execution: WorkflowExecution = Field(default_factory=WorkflowExecution)
@@ -224,16 +237,6 @@ class NeuroimagingWorkflow(StrictWorkflowModel):
             ]
             if unquoted:
                 raise ValueError(f"script must double-quote runtime path reference {unquoted[0]}")
-        unsupported_runtime_variables = sorted(
-            {
-                name
-                for name, _index in _RUNTIME_VARIABLE_PATTERN.findall(self.script)
-                if name not in _RUNTIME_VARIABLES
-            }
-        )
-        if unsupported_runtime_variables:
-            rendered = ", ".join(f"${{{name}}}" for name in unsupported_runtime_variables)
-            raise ValueError(f"script references unsupported runtime variable(s): {rendered}")
         output_variables = {"OUTPUT_PARENT", "OUTPUT_NAME", "OUTPUT_ROOT"}
         referenced_variables = {name for name, _index in _RUNTIME_VARIABLE_PATTERN.findall(self.script)}
         if self.case_output_folder is None and referenced_variables & output_variables:
@@ -296,7 +299,34 @@ def _match_is_in_comment(script: str, start: int) -> bool:
 
 
 def _match_is_double_quoted(script: str, start: int, end: int) -> bool:
-    return start > 0 and end < len(script) and script[start - 1] == '"' and script[end] == '"'
+    # Track shell quoting, including the independent quoting context inside $().
+    quote = None
+    stack: list[str | None] = []
+    i = 0
+    while i < start:
+        char = script[i]
+        if char == "\\" and quote != "'":
+            i += 2
+            continue
+        if script.startswith("$(", i) and quote != "'":
+            stack.append(quote)
+            quote = None
+            i += 2
+            continue
+        if char == ")" and quote is None and stack:
+            quote = stack.pop()
+        elif char in {"'", '"'}:
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        elif char == "#" and quote is None and (i == 0 or script[i - 1].isspace()):
+            newline = script.find("\n", i)
+            if newline < 0 or newline >= start:
+                return False
+            i = newline
+        i += 1
+    return quote == '"'
 
 
 def _tokens(text: str) -> set[str]:
@@ -521,7 +551,6 @@ def run_analysis_workflows_payload(
                 for item in tool.outputs
             ],
             "execution": tool.execution.model_dump(),
-            "input_artifact_kind": "intensity_volume",
         }
         for tool in workflows(settings=settings, user_id=user_id)
     ]

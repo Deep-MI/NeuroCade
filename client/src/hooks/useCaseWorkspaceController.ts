@@ -6,7 +6,7 @@ import { isRunActive, isRunTerminal } from '../constants';
 import { useCasePolling } from './useCasePolling';
 import { useCaseUploadModal } from './useCaseUploadModal';
 import { useAnalysisRunController } from './useAnalysisRunController';
-import { type AnalysisToolSummary, type CaseSummary, type ChatMessage, type OutputVolume, type UploadState, type Volume } from '../types';
+import { type AnalysisToolSummary, type CaseFileEntry, type CaseSummary, type ChatMessage, type OutputVolume, type UploadState, type Volume } from '../types';
 import { loadClosedCaseVolumes, removeCaseState } from '../utils/caseStorage';
 import * as api from '../utils/api';
 import { dedupeOutputVolumes, mergeOutputVolumesIntoViewerLayers, outputVolumesToViewerLayers, visibleOutputVolumes } from '../utils/caseLayers';
@@ -24,6 +24,7 @@ interface UseCaseWorkspaceControllerArgs {
   navigate: NavigateFunction;
   volumes: Volume[];
   setVolumes: Dispatch<SetStateAction<Volume[]>>;
+  initialNotification?: string | null;
 }
 
 export function useCaseWorkspaceController({
@@ -32,13 +33,18 @@ export function useCaseWorkspaceController({
   navigate,
   volumes,
   setVolumes,
+  initialNotification = null,
 }: UseCaseWorkspaceControllerArgs) {
-  const [runInputOptions, setRunInputOptions] = useState<OutputVolume[]>([]);
+  const [viewerInputOptions, setViewerInputOptions] = useState<OutputVolume[]>([]);
+  const [caseFiles, setCaseFiles] = useState<CaseFileEntry[]>([]);
   const [currentCaseTitle, setCurrentCaseTitle] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string>('');
-  const [chatNotifications, setChatNotifications] = useState<ChatMessage[]>([]);
+  const [chatNotifications, setChatNotifications] = useState<ChatMessage[]>(
+    initialNotification ? [{ role: 'info', content: initialNotification }] : [],
+  );
+  const initialNotificationRef = useRef(initialNotification);
   const [availableCases, setAvailableCases] = useState<CaseSummary[]>([]);
   const [analysisTools, setAnalysisTools] = useState<AnalysisToolSummary[]>([]);
   const [loadingCaseId, setLoadingCaseId] = useState<string | null>(initialCaseId);
@@ -63,15 +69,20 @@ export function useCaseWorkspaceController({
     caseId: currentCaseId,
   };
 
-  const fetchCaseOutputs = useCallback(async (caseId: string, actionId?: number, isCurrent?: IsCurrentRequest) => {
+  const fetchCaseOutputs = useCallback(async (
+    caseId: string,
+    actionId?: number,
+    isCurrent?: IsCurrentRequest,
+    updateViewer = true,
+  ) => {
     const generation = actionId ?? workspaceActionRef.current;
     try {
       const data = await api.fetchOutputsList(caseId);
       if (isStaleWorkspaceAction(generation) || (isCurrent && !isCurrent())) return;
       const dedupedVolumes = dedupeOutputVolumes(data.volumes);
       const inputOptions = dedupedVolumes.filter((volume) => volume.kind === 'volume' && volume.type === 'intensity');
-      setRunInputOptions(inputOptions);
-      if (dedupedVolumes.length === 0) {
+      setViewerInputOptions(inputOptions);
+      if (!updateViewer || dedupedVolumes.length === 0) {
         return;
       }
       const closedFilenames = new Set(loadClosedCaseVolumes(caseId));
@@ -85,6 +96,22 @@ export function useCaseWorkspaceController({
       console.error('Error fetching outputs:', error);
     }
   }, [isStaleWorkspaceAction, setVolumes]);
+
+  const fetchCaseFiles = useCallback(async (caseId: string, actionId?: number, isCurrent?: IsCurrentRequest) => {
+    const generation = actionId ?? workspaceActionRef.current;
+    try {
+      const entries = await api.fetchCaseFiles(caseId);
+      if (isStaleWorkspaceAction(generation) || (isCurrent && !isCurrent())) return;
+      setCaseFiles([...entries].sort((left, right) => (
+        left.type === right.type
+          ? left.path.localeCompare(right.path)
+          : left.type === 'directory' ? -1 : 1
+      )));
+    } catch (error) {
+      if (!isStaleWorkspaceAction(generation) && (!isCurrent || isCurrent())) setCaseFiles([]);
+      console.error('Error fetching case files:', error);
+    }
+  }, [isStaleWorkspaceAction]);
 
   const fetchAvailableCases = useCallback(async () => {
     const requestId = ++caseListRequestRef.current;
@@ -143,13 +170,16 @@ export function useCaseWorkspaceController({
   const loadCase = useCallback(async (caseId: string) => {
     const actionId = startWorkspaceAction();
     setLoadingCaseId(caseId);
-    setRunInputOptions([]);
+    setViewerInputOptions([]);
+    setCaseFiles([]);
     setVolumes([]);
     setLogs('');
     setCurrentRun('idle');
 
     try {
       await fetchCaseOutputs(caseId, actionId);
+      if (isStaleWorkspaceAction(actionId)) return;
+      await fetchCaseFiles(caseId, actionId);
       if (isStaleWorkspaceAction(actionId)) return;
       await fetchLogs(caseId, actionId);
       if (isStaleWorkspaceAction(actionId)) return;
@@ -167,7 +197,12 @@ export function useCaseWorkspaceController({
 
       setActiveCaseId(caseId);
       setCurrentCaseTitle(caseTitlesRef.current[caseId] ?? null);
-      setChatNotifications([{ role: 'info', content: `Loaded case ${caseTitlesRef.current[caseId] ?? caseId}.` }]);
+      const importNotice = initialNotificationRef.current;
+      initialNotificationRef.current = null;
+      setChatNotifications([
+        ...(importNotice ? [{ role: 'info' as const, content: importNotice }] : []),
+        { role: 'info', content: `Loaded case ${caseTitlesRef.current[caseId] ?? caseId}.` },
+      ]);
       if (suppressedRouteCaseRef.current === caseId) {
         suppressedRouteCaseRef.current = null;
       }
@@ -176,7 +211,7 @@ export function useCaseWorkspaceController({
         setLoadingCaseId(null);
       }
     }
-  }, [fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setCurrentRun, setVolumes, startWorkspaceAction]);
+  }, [fetchCaseFiles, fetchCaseOutputs, fetchLogs, isStaleWorkspaceAction, setCurrentRun, setVolumes, startWorkspaceAction]);
 
   const handleRenameCase = useCallback(async (oldId: string, newId: string) => {
     const renamed = await api.updateCase(oldId, { title: newId });
@@ -195,7 +230,8 @@ export function useCaseWorkspaceController({
     removeCaseState(caseId);
     if (currentCaseId === caseId) {
       setActiveCaseId(null);
-      setRunInputOptions([]);
+      setViewerInputOptions([]);
+      setCaseFiles([]);
       setVolumes([]);
       setRunStatus('idle');
       setLogs('');
@@ -213,7 +249,7 @@ export function useCaseWorkspaceController({
 
   const uploadModal = useCaseUploadModal({
     isBusy: isUploading,
-    onCreateNewCaseUpload: async (files, caseName, metadata) => {
+    onCreateNewCaseUpload: async (files, caseName, metadata, importMode) => {
       if (!initialWorkspaceId) {
         throw new Error('No active workspace selected');
       }
@@ -224,12 +260,19 @@ export function useCaseWorkspaceController({
       setRunStatus('idle');
       setLogs('');
       try {
-        const data = await api.createCaseWithUpload(files, initialWorkspaceId, caseName, metadata);
+        const data = await api.createCaseWithUpload(files, initialWorkspaceId, caseName, metadata, importMode);
         if (isStaleWorkspaceAction(actionId)) {
           return;
         }
         setActiveCaseId(data.case_id);
         setCurrentCaseTitle(data.title);
+        const createdCount = data.created_cases?.length ?? data.import_summary?.created_case_count ?? 1;
+        if (createdCount > 1) {
+          setChatNotifications((previous) => [
+            ...previous,
+            { role: 'info', content: `Created ${createdCount} cases. Opened ${data.title}; the other imported subjects are available in the case list.` },
+          ]);
+        }
         suppressedRouteCaseRef.current = data.case_id;
         void navigate(caseViewerPath(data.workspace_id, data.case_id));
       } catch (error) {
@@ -242,13 +285,36 @@ export function useCaseWorkspaceController({
         setIsUploading(false);
       }
     },
+    onCreateNewCaseLink: async (source, caseName, metadata, importMode) => {
+      if (!initialWorkspaceId) throw new Error('No active workspace selected');
+      const actionId = startWorkspaceAction();
+      setIsUploading(true);
+      try {
+        const data = await api.createCaseWithLinkedDirectory(source, initialWorkspaceId, caseName, metadata, importMode);
+        if (isStaleWorkspaceAction(actionId)) return;
+        setActiveCaseId(data.case_id);
+        setCurrentCaseTitle(data.title);
+        const createdCount = data.created_cases?.length ?? data.import_summary?.created_case_count ?? 1;
+        if (createdCount > 1) {
+          setChatNotifications((previous) => [
+            ...previous,
+            { role: 'info', content: `Linked ${createdCount} cases. Opened ${data.title}; the other subjects are available in the case list.` },
+          ]);
+        }
+        suppressedRouteCaseRef.current = data.case_id;
+        void navigate(caseViewerPath(data.workspace_id, data.case_id));
+      } finally {
+        setIsUploading(false);
+      }
+    },
     onAddToCaseUpload: currentCaseId ? async (files) => {
       setIsUploading(true);
       try {
         const data = await api.addUploadToCase(files, currentCaseId);
         setActiveCaseId(data.case_id);
         setCurrentCaseTitle(data.title);
-        await fetchCaseOutputs(data.case_id);
+        await fetchCaseOutputs(data.case_id, undefined, undefined, false);
+        await fetchCaseFiles(data.case_id);
         await fetchLogs(data.case_id);
         try {
           const status = await api.fetchStatus(data.case_id);
@@ -257,10 +323,15 @@ export function useCaseWorkspaceController({
           setCurrentRun('uploaded');
         }
         await fetchAvailableCases();
-        const uploadLabel = files.length > 1 ? `${files.length} files` : files[0].name;
+        const importedFileCount = data.import_summary?.file_count ?? files.length;
+        const uploadLabel = importedFileCount > 1 ? `${importedFileCount} files` : files[0].name;
+        const detectedFormat = data.import_summary?.format;
+        const formatNote = detectedFormat && detectedFormat !== 'generic'
+          ? ` Detected ${detectedFormat === 'bids' ? 'BIDS' : detectedFormat === 'fastsurfer' ? 'FastSurfer' : detectedFormat === 'freesurfer' ? 'FreeSurfer' : detectedFormat}.`
+          : '';
         setChatNotifications((previous) => [
           ...previous,
-          { role: 'info', content: `Added "${uploadLabel}" to case "${data.title}".` },
+          { role: 'info', content: `Added "${uploadLabel}" to case "${data.title}".${formatNote}` },
         ]);
       } finally {
         setIsUploading(false);
@@ -316,11 +387,12 @@ export function useCaseWorkspaceController({
   const onPollingError = useCallback((error: unknown) => console.error('Polling error:', error), []);
   const onTerminalStatus = useCallback((status: string, terminalRunId: string, workflowId?: string) => {
     const workflowName = analysisTools.find((tool) => tool.id === workflowId)?.label ?? workflowId ?? 'Workflow';
+    if (currentCaseId) void fetchCaseFiles(currentCaseId);
     setChatNotifications((previous) => [...previous, {
       notificationId: workflowStatusNotificationId(terminalRunId, status),
       role: 'info', content: `${workflowName} ${status}.`,
     }]);
-  }, [analysisTools]);
+  }, [analysisTools, currentCaseId, fetchCaseFiles]);
 
   useCasePolling({
     activeCaseId: isCaseLoading ? null : currentCaseId,
@@ -352,8 +424,10 @@ export function useCaseWorkspaceController({
   return {
     guiSessionId,
     pendingUploadFiles: uploadModal.pendingUploadFiles,
+    pendingLinkedSource: uploadModal.pendingLinkedSource,
     pendingUploadDefaultName: uploadModal.pendingUploadDefaultName,
-    runInputOptions,
+    viewerInputOptions,
+    caseFiles,
     currentCaseTitle,
     uploadState,
     showUploadModal: uploadModal.showUploadModal,
@@ -384,6 +458,8 @@ export function useCaseWorkspaceController({
     handleUpload: uploadModal.requestUploadFile,
     closeUploadModal: uploadModal.closeUploadModal,
     selectUploadFiles: uploadModal.selectUploadFiles,
+    clearPendingSelection: uploadModal.clearPendingSelection,
+    selectLinkedDirectory: uploadModal.selectLinkedDirectory,
     confirmCreateNewCaseUpload: uploadModal.confirmCreateNewCaseUpload,
     confirmAddToCaseUpload: uploadModal.confirmAddToCaseUpload,
   };

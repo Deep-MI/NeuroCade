@@ -285,3 +285,52 @@ def test_freesurfer_lut_filters_results_to_labels_present_in_volume(runtime_case
     assert "251\tCC_Posterior" in result
     assert "192\tCorpus_Callosum" not in result
     assert "1004\tctx-lh-corpuscallosum" not in result
+
+
+def test_static_tool_discovery_does_not_read_gui_state():
+    from types import SimpleNamespace
+    from typing import cast
+
+    from api_service.runtime.gui_state import GuiStateStore
+    from api_service.runtime.tool_dispatcher import RuntimeToolDispatcher
+
+    def unavailable(_key):
+        raise AssertionError("Tool discovery must not read session state")
+    dispatcher = RuntimeToolDispatcher(cast(GuiStateStore, SimpleNamespace(state_for_key=unavailable)))
+    tools = dispatcher.available_tools(gui_state_key="unused", gui_state_override={"case_id": "unused"})
+    assert "gui_move_cursor" in {tool["function"]["name"] for tool in tools}
+
+
+def test_gui_rename_changes_only_name(runtime_case):
+    service, state = runtime_case
+    result = service.call_tool("gui_set_layer_display", {"layer_ids": ["orig.mgz"], "name": "Brainstem review"}, gui_state_override=state, gui_state_key="rename")
+    assert "Queued" in result
+    command = service.sync_gui_state(state, gui_state_key="rename")["commands"][0]
+    assert command["type"] == "set_layer_display"
+    assert command["payload"] == {"layer_ids": ["orig.mgz"], "updates": {"name": "Brainstem review"}}
+
+
+@pytest.mark.parametrize("name,ids", [(" ", ["orig.mgz"]), ("x", ["orig.mgz", "lh.pial"])])
+def test_gui_rename_rejects_empty_or_multiple_targets(runtime_case, name, ids):
+    service, state = runtime_case
+    result = service.call_tool("gui_set_layer_display", {"layer_ids": ids, "name": name}, gui_state_override=state, gui_state_key="bad-rename")
+    assert result.startswith("Error:")
+
+
+def test_registered_segmentation_metadata_overrides_filename_guess(monkeypatch):
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from api_service import viewer_resources
+
+    artifact = SimpleNamespace(id="brainstem-id", metadata_json={"volume_role": "segmentation", "lut": "freesurfer"})
+    monkeypatch.setattr(viewer_resources, "artifact_for_output", lambda *args: artifact)
+    result = viewer_resources.resolve_load_layer_command(cast(Any, None), cast(Any, None), {
+        "resource": {"kind": "output", "path": "outputs/workspaces/w/cases/c/brainstem/mri/brainstemSsLabels.v13.mgz"},
+        "type": "intensity", "name": "Brainstem",
+    })
+    assert result["type"] == "segmentation"
+    assert result["lut"] == "freesurfer"
+    assert result["artifact_id"] == "brainstem-id"
+    assert result["download_path"] == "/artifacts/brainstem-id/download"
+    assert result["name"] == "Brainstem"

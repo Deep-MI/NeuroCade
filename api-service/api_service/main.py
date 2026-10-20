@@ -1,5 +1,6 @@
 """Provide API service main behavior for NeuroCade."""
 
+import asyncio
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -75,6 +76,7 @@ async def lifespan(_app: FastAPI):
     contention. Run ``uvicorn`` with the default single worker (no ``--workers``,
     no ``WEB_CONCURRENCY``); see ``docker/backend.Dockerfile``.
     """
+    update_checker = None
     startup_logger.info("Starting NeuroCade backend (single-process model: one worker, in-process jobs + SQLite).")
     try:
         load_workflow_catalog()
@@ -122,7 +124,7 @@ async def lifespan(_app: FastAPI):
             startup_db.commit()
         if not skip_host_services:
             startup_logger.info("Starting update checker.")
-            start_update_checker()
+            update_checker = start_update_checker()
         if allow_local_auth():
             logger.warning("Local auth fallback is enabled; do not use this configuration outside local deployments.")
         browser_url = (
@@ -132,6 +134,8 @@ async def lifespan(_app: FastAPI):
         startup_logger.info("%s", browser_startup_message(browser_url))
         startup_logger.info("NeuroCade backend startup checks complete.")
     except Exception:
+        if update_checker is not None:
+            await asyncio.to_thread(update_checker.stop)
         job_manager.configure_persistence(None)
         startup_logger.exception("NeuroCade backend startup failed.")
         raise
@@ -142,6 +146,8 @@ async def lifespan(_app: FastAPI):
                 await stack.enter_async_context(manager.run())
             yield
     finally:
+        if update_checker is not None:
+            await asyncio.to_thread(update_checker.stop)
         await assistant_turn_manager.shutdown()
         job_manager.shutdown(wait=False)
         job_manager.configure_persistence(None)

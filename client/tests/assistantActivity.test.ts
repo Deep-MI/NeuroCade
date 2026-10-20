@@ -72,3 +72,10 @@ void test('uses indeterminate progress for preparation and reports a live heartb
     );
     assert.equal(assistantActivityProgress(activity), null);
 });
+
+
+void test('describes platform resolution without claiming a download percentage', () => {
+    const activity = { kind: 'image' as const, label: 'FreeSurfer', blocking: true, phase: 'resolving_platform' as const };
+    assert.equal(assistantActivityMessage(activity, true, ''), 'Checking available image platforms for FreeSurfer…');
+    assert.equal(assistantActivityProgress(activity), null);
+});

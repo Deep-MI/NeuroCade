@@ -9,9 +9,9 @@ from importlib import import_module
 from typing import Any
 
 import requests
-from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from backend_common.reasoning_model import ReasoningChatOpenAI
 from backend_common.settings import get_settings
 
 settings = get_settings()
@@ -137,8 +137,8 @@ class ProviderRegistry:
         if not config.configured:
             raise ValueError(config.configuration_reason or f"Provider {config.provider} is not configured")
         if config.provider_family == "openai_compatible":
-            extra_body = {} if not settings.llm_disable_thinking else {"chat_template_kwargs": {"enable_thinking": False}}
-            return ChatOpenAI(
+            extra_body = {"chat_template_kwargs": {"enable_thinking": not settings.llm_disable_thinking}}
+            return ReasoningChatOpenAI(
                 model=config.model,
                 api_key=SecretStr(config.api_key or "not-set"),
                 base_url=f"{(config.base_url or '').rstrip('/')}/v1",

@@ -105,7 +105,28 @@ def _manifest_platforms(payload: object) -> set[str]:
     return platforms
 
 
-def resolve_docker_image_platform(reference: str) -> tuple[str, set[str]]:
+def _platform_manifest_reference(payload: object, reference: str, platform: str) -> str:
+    """Resolve only a descriptor belonging to the inspected image and platform."""
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        descriptor = payload.get("Descriptor", payload)
+        if isinstance(descriptor, dict) and _platform_name(descriptor.get("platform")) == platform:
+            digest = descriptor.get("digest")
+            if isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                return reference.split("@", 1)[0] + "@" + digest
+        candidates = payload.get("manifests", [])
+    else:
+        return reference
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            resolved = _platform_manifest_reference(candidate, reference, platform)
+            if resolved != reference:
+                return resolved
+    return reference
+
+
+def resolve_docker_image_platform(reference: str) -> tuple[str, set[str], str]:
     """Prefer the host-native image, with AMD64 as the portable emulation fallback."""
     host = detected_docker_host_platform()
     inspected = run_managed_command(
@@ -120,7 +141,8 @@ def resolve_docker_image_platform(reference: str) -> tuple[str, set[str]]:
             + (f": {detail}" if detail else "")
         )
     try:
-        supported = _manifest_platforms(json.loads(inspected.stdout))
+        payload = json.loads(inspected.stdout)
+        supported = _manifest_platforms(payload)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             f"Docker returned invalid platform metadata for {reference} on detected host {host}"
@@ -129,13 +151,13 @@ def resolve_docker_image_platform(reference: str) -> tuple[str, set[str]]:
     # the corresponding native architecture request.
     native = next((value for value in sorted(supported) if value == host or value.startswith(host + "/")), None)
     if native is not None:
-        return native, supported
+        return native, supported, _platform_manifest_reference(payload, reference, native)
     amd64 = next(
         (value for value in sorted(supported) if value == "linux/amd64" or value.startswith("linux/amd64/")),
         None,
     )
     if amd64 is not None:
-        return amd64, supported
+        return amd64, supported, _platform_manifest_reference(payload, reference, amd64)
     rendered = ", ".join(sorted(supported)) or "none reported"
     raise RuntimeError(
         f"Docker image {reference} cannot run on detected host {host}: "
@@ -328,7 +350,7 @@ def _pull_docker_image(
     metadata: dict[str, object] | None = None,
 ) -> None:
     tracker = _DockerPullProgress(reference, progress_observer, metadata=metadata)
-    tracker.publish(phase="downloading", progress=0.0)
+    tracker.publish(phase="downloading")
     master_fd, slave_fd = pty.openpty()
     process: subprocess.Popen[bytes] | None = None
     output: list[str] = []
@@ -518,7 +540,7 @@ def prepare_image(
                     "phase": "resolving_platform",
                     "host_platform": host_platform,
                 })
-            resolved_platform, supported_platforms = resolve_docker_image_platform(spec.docker_reference)
+            resolved_platform, supported_platforms, pull_reference = resolve_docker_image_platform(spec.docker_reference)
             metadata: dict[str, object] = {
                 "host_platform": host_platform,
                 "platform": resolved_platform,
@@ -537,13 +559,17 @@ def prepare_image(
             )
             if present.returncode != 0 or present.stdout.strip() != resolved_platform:
                 preflight = {**_storage_preflight(), **metadata}
-                _pull_docker_image(
-                    spec.docker_reference,
-                    platform=resolved_platform,
-                    process_observer=process_observer,
-                    progress_observer=progress_observer,
-                    metadata=preflight,
-                )
+                # Docker can suppress all byte updates when pulling an index with
+                # attestations. Fetch the selected manifest first, then register the
+                # original tag/index using the now-cached layers for normal execution.
+                for reference in dict.fromkeys((pull_reference, spec.docker_reference)):
+                    _pull_docker_image(
+                        reference,
+                        platform=resolved_platform,
+                        process_observer=process_observer,
+                        progress_observer=progress_observer,
+                        metadata={**preflight, "image": spec.oci_reference},
+                    )
             else:
                 _DockerPullProgress(spec.oci_reference, progress_observer, metadata=metadata).publish(
                     phase="ready", progress=1.0, cached=True

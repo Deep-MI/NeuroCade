@@ -23,18 +23,16 @@ def _update_run(run_id: str, *, status: RunStatus, result: dict[str, Any], error
             if run is None or run.status == RunStatus.canceled:
                 return False
             cancellation = (run.result_json or {}).get("cancellation")
-            if status == RunStatus.running and cancellation in {"requested", "unresolved"}:
+            if status == RunStatus.running and cancellation == "requested":
                 run.status = RunStatus.canceled
-                run.result_json = {**result, "status": "canceled", "cancellation": "stopped", "output_ownership": "released"}
+                run.result_json = {**result, "status": "canceled", "cancellation": "stopped"}
                 db.commit()
                 return False
             terminal = status in {RunStatus.completed, RunStatus.failed, RunStatus.canceled}
-            confirmed = result.get("writer_stopped") is True
-            ownership = "released" if terminal and confirmed else "unresolved" if terminal else "held"
-            run.status = RunStatus.canceled if terminal and confirmed and cancellation in {"requested", "unresolved"} else status
-            run.result_json = {**result, "status": run.status.value, "output_ownership": ownership}
+            run.status = RunStatus.canceled if terminal and cancellation == "requested" else status
+            run.result_json = {**result, "status": run.status.value}
             if cancellation:
-                run.result_json = {**run.result_json, "cancellation": "stopped" if ownership == "released" else "unresolved" if terminal else "requested"}
+                run.result_json = {**run.result_json, "cancellation": "stopped" if terminal else "requested"}
             run.error_message = error
             db.commit()
             return True
@@ -49,7 +47,7 @@ def _store_canceled_result(run_id: str, result: dict[str, Any]) -> None:
             run = db.get(Run, run_id)
             if run is None or run.status != RunStatus.canceled:
                 return
-            run.result_json = {**result, "cancellation": "stopped", "output_ownership": "released"}
+            run.result_json = {**result, "cancellation": "stopped"}
             db.commit()
 
         run_with_sqlite_lock_retry(db, operation)
@@ -77,9 +75,12 @@ def run_neuroimaging_workflow_task(
     case_id: str | None,
     gpu_enabled: bool,
     workflow_definition: dict[str, Any] | None = None,
+    linked_source_id: str | None = None,
+    linked_source_relative: str = ".",
 ) -> dict[str, Any]:
     """Execute one background workflow and persist its durable run lifecycle."""
     from neurocade_runtime_tools.container_request import RuntimeBind
+    from neurocade_runtime_tools.execution import LinkedRuntimeBind
 
     host_root = Path(bind_host_path).resolve()
     stdout_path, stderr_path = initialize_run_logs(host_root, run_id)
@@ -114,6 +115,10 @@ def run_neuroimaging_workflow_task(
                 stderr_path=stderr_path,
                 artifact_case_id=case_id,
                 db=db,
+                linked_bind=(
+                    LinkedRuntimeBind(linked_source_id, linked_source_relative, "/linked-input", "ro")
+                    if linked_source_id else None
+                ),
             )
             db.commit()
     except Exception as exc:
@@ -123,7 +128,6 @@ def run_neuroimaging_workflow_task(
             "tool_id": tool_id,
             "return_code": None,
             "stderr": str(exc),
-            "writer_stopped": getattr(exc, "writer_stopped", False) is True,
         }
         if code := workflow_error_code(exc):
             result["error_code"] = code
@@ -162,6 +166,8 @@ def submit_neuroimaging_workflow(
     bind_container_path: str,
     job_id: str,
     gpu_enabled: bool,
+    linked_source_id: str | None = None,
+    linked_source_relative: str = ".",
 ) -> str:
     """Submit a pre-persisted Run to the durable in-process worker."""
     resolved_workflow = workflow or resolve_workflow(str(tool_id or ""))
@@ -176,6 +182,8 @@ def submit_neuroimaging_workflow(
             "case_id": run.case_id,
             "gpu_enabled": gpu_enabled,
             "workflow_definition": resolved_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+            "linked_source_id": linked_source_id,
+            "linked_source_relative": linked_source_relative,
         },
         queue=resolved_workflow.execution.queue,
         job_id=job_id,

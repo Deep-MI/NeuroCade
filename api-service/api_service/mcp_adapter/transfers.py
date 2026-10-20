@@ -11,10 +11,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from neurocade_runtime_tools.bridge_client import BridgeClient, BridgeError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from api_service.artifacts.service import resolve_artifact_file_for_user
+from api_service.artifacts.service import authorize_artifact_for_user, resolve_artifact_file_for_user
+from api_service.cases.files import linked_case_file, linked_case_manifest, resolve_case_file
 from api_service.cases.operations import add_upload_to_case, create_case_from_upload
 from api_service.cases.service import ensure_case_not_active, validate_case_name_or_400
 from api_service.deps import get_db
@@ -22,7 +24,7 @@ from api_service.helpers import get_case_for_user, log_event
 from api_service.mcp_adapter.auth import authenticate, resolve_client, validate_local_headers
 from api_service.policies import require_case_read
 from backend_common.case_storage import case_title_from_filename
-from backend_common.db import Artifact, AssistantToolExecution
+from backend_common.db import Artifact, AssistantToolExecution, LinkedCaseSource
 from backend_common.output_activity import OutputBusy, ensure_outputs_idle, reserve_case_files
 from backend_common.settings import get_settings
 from backend_common.submission_lock import submission_lock
@@ -162,23 +164,34 @@ def authorized_artifact(db, paired, artifact_id):
     artifact = db.get(Artifact, artifact_id)
     if artifact is None or artifact.workspace_id != client.workspace_id:
         raise HTTPException(404, "Artifact not found in this connection's workspace")
-    return resolve_artifact_file_for_user(db, context, artifact_id)
+    return authorize_artifact_for_user(db, context, artifact_id)
+
+
+def _copy_artifact_to_snapshot(db: Session, context, artifact: Artifact, destination: Path) -> None:
+    if (artifact.metadata_json or {}).get("source") != "linked" or not artifact.case_id:
+        _, local_path = resolve_artifact_file_for_user(db, context, artifact.id)
+        shutil.copyfile(local_path, destination)
+        return
+    resolved = resolve_case_file(db, context, artifact.case_id, "linked", artifact.relative_path)
+    with destination.open("wb") as output:
+        for content in resolved.chunks():
+            output.write(content)
 
 
 @router.get("/artifacts/{artifact_id}")
 def download_artifact(artifact_id: str, db: Session = Depends(get_db), paired=Depends(identity)):
     client, context = paired
-    artifact, _ = authorized_artifact(db, paired, artifact_id)
+    artifact = authorized_artifact(db, paired, artifact_id)
     try:
         with reserve_case_files(db, client.workspace_id, artifact.case_id):
             # Resolve again after acquiring the reservation: a rename may have
             # completed between the initial authorization and admission.
-            artifact, source = authorized_artifact(db, paired, artifact_id)
+            artifact = authorized_artifact(db, paired, artifact_id)
             root = snapshot_root()
             with tempfile.NamedTemporaryFile(dir=root, suffix=".tmp", delete=False) as staged:
                 temporary = Path(staged.name)
             try:
-                shutil.copyfile(source, temporary)
+                _copy_artifact_to_snapshot(db, context, artifact, temporary)
                 sha256 = digest_file(temporary)
                 snapshot = root / (hashlib.sha256((client.id + ":" + artifact.id + ":" + sha256).encode()).hexdigest() + ".bin")
                 temporary.replace(snapshot)
@@ -186,10 +199,13 @@ def download_artifact(artifact_id: str, db: Session = Depends(get_db), paired=De
                 temporary.unlink(missing_ok=True)
             log_event(db, context, "mcp.artifact.downloaded", case_id=artifact.case_id,
                       artifact_id=artifact.id, details={"client_id": client.id})
+            db.commit()
             return FileResponse(snapshot, filename=artifact.name, media_type=artifact.mime_type,
                                 headers={"X-Checksum-SHA256": sha256, "ETag": '"' + sha256 + '"', "Cache-Control": "no-store"})
     except OutputBusy as exc:
         raise HTTPException(409, str(exc)) from exc
+    except BridgeError as exc:
+        raise HTTPException(404, f"Linked source unavailable: {exc}") from exc
 
 
 @router.get("/cases/{case_id}")
@@ -204,6 +220,8 @@ def download_case(case_id: str, db: Session = Depends(get_db), paired=Depends(id
             return archive_case(db, client, context, case, case_dir)
     except OutputBusy as exc:
         raise HTTPException(409, str(exc)) from exc
+    except BridgeError as exc:
+        raise HTTPException(404, f"Linked source unavailable: {exc}") from exc
 
 
 def snapshot_root():
@@ -225,18 +243,42 @@ def archive_case(db, client, context, case, case_dir):
         if not path.is_symlink() and path.is_file() and case_dir.resolve() in path.resolve().parents:
             info = path.stat()
             manifest.append((path, str(path.relative_to(case_dir)), info.st_size, info.st_mtime_ns))
-    fingerprint = hashlib.sha256(repr((client.id, case.id, manifest)).encode()).hexdigest()
+    linked_source = db.query(LinkedCaseSource).filter(LinkedCaseSource.case_id == case.id).one_or_none()
+    bridge: BridgeClient | None = None
+    linked_entries: list[tuple[dict, str]] = []
+    if linked_source is not None:
+        bridge, linked_entries = linked_case_manifest(linked_source)
+    fingerprint = (
+        uuid4().hex
+        if linked_source is not None
+        else hashlib.sha256(repr((client.id, case.id, manifest)).encode()).hexdigest()
+    )
     archive = root / (fingerprint + ".zip")
     if not archive.exists():
         temporary = archive.with_suffix(".tmp")
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                archived_names: set[str] = set()
                 for path, name, _, _ in manifest:
                     output.write(path, arcname=name)
+                    archived_names.add(name)
+                for entry, case_path in linked_entries:
+                    if linked_source is None or bridge is None or entry.get("type") != "file":
+                        continue
+                    if case_path in archived_names:
+                        continue
+                    with output.open(str(case_path), "w") as linked_output:
+                        resolved = linked_case_file(
+                            linked_source, case_path, bridge, int(entry.get("size") or 0)
+                        )
+                        for content in resolved.chunks():
+                            linked_output.write(content)
+                    archived_names.add(case_path)
             temporary.replace(archive)
         finally:
             temporary.unlink(missing_ok=True)
     sha256 = digest_file(archive)
     log_event(db, context, "mcp.case.downloaded", case_id=case.id, details={"client_id": client.id})
+    db.commit()
     return FileResponse(archive, filename=f"{case.title}.zip", media_type="application/zip",
                         headers={"X-Checksum-SHA256": sha256, "ETag": '"' + sha256 + '"', "Cache-Control": "no-store"})

@@ -83,6 +83,7 @@ def _checkpoint_state(state: dict[str, Any]) -> dict[str, Any]:
         "assistant_messages": list(state.get("assistant_messages", [])),
         "round_count": int(state.get("round_count", 0)),
         "last_tool_call_fingerprint": state.get("last_tool_call_fingerprint"),
+        "finalization_reason": state.get("finalization_reason"),
     }
 
 
@@ -262,7 +263,7 @@ class AssistantRuntime:
             if not persist or db is None or thread is None:
                 raise HTTPException(status_code=400, detail="Tool approvals require a persisted private chat")
             turn, approved_tools, resume_checkpoint = self.turns.consume_approvals(db, thread, tool_approvals)
-        max_rounds = max(int(settings.assistant_max_rounds), 1)
+        max_rounds = settings.assistant_max_rounds
         state: dict[str, Any] = {
             "db": db,
             "context": context,
@@ -284,6 +285,7 @@ class AssistantRuntime:
             "reasoning_entries": list(resume_checkpoint.get("reasoning_entries", [])),
             "assistant_messages": list(resume_checkpoint.get("assistant_messages", [])),
             "last_tool_call_fingerprint": resume_checkpoint.get("last_tool_call_fingerprint"),
+            "finalization_reason": resume_checkpoint.get("finalization_reason"),
         }
         if turn is None and persist and db is not None and context is not None and thread is not None:
             turn = self.turns.start(
@@ -387,7 +389,7 @@ class AssistantRuntime:
         if final_state.get("error"):
             detail = (
                 _assistant_round_limit_message(max_rounds)
-                if "without finishing" in str(final_state["error"])
+                if max_rounds > 0 and "without finishing" in str(final_state["error"])
                 else final_state["error"]
             )
             if persist and db is not None and context is not None and thread is not None:

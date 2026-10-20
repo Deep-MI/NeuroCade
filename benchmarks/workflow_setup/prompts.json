@@ -1,0 +1,4 @@
+{
+  "blur": "Set up FSL-Maths Gaussian blur with kernel size 5 millimeters.",
+  "thalamus": "Set up segment thalamic nuclei from the latest FreeSurfer version."
+}

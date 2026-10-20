@@ -130,12 +130,13 @@ def handle_gui_focus_label(arguments: dict, gui_state: dict) -> list[ToolTextCon
     try:
         data = get_label_centroid(segmentation["disk_path"], str(label_query), lut_path)
         if "error" in data:
-            return text_response(f"Failed to focus label: {data['error']}")
-        x, y, z = data["x"], data["y"], data["z"]
-        command_id = enqueue_gui_command(gui_state, "move_cursor", {"position": [x, y, z]})
+            return error_response(f"Failed to focus label in {segmentation['display_path']}: {data['error']}")
+        x, y, z = data["world_position"]
+        command_id = enqueue_gui_command(gui_state, "move_cursor", {"position": [x, y, z], "coordinate_space": "world"})
         return text_response(
             f"Found centroid for {data['label_name']} ({data['label_id']}) and queued "
-            f"GUI command {command_id} to move the cursor to ({x}, {y}, {z})."
+            f"GUI command {command_id} to move the cursor to RAS mm ({x}, {y}, {z}) "
+            f"using {segmentation['display_path']}."
         )
     except Exception as exc:
         return error_response(f"An unexpected error occurred during label focus: {exc}")

@@ -74,7 +74,7 @@ export function useAnalysisRunController({
     if (!currentCaseId || !initialWorkspaceId) {
       throw new Error('No active case selected');
     }
-    if (params.input_artifact_ids.length === 0 || params.input_artifact_ids.some((value) => !value)) {
+    if (params.input_files.length === 0 || params.input_files.some((value) => !value.path)) {
       throw new Error('Choose every required workflow input');
     }
     const currentCaseName = currentCaseTitle
@@ -89,7 +89,7 @@ export function useAnalysisRunController({
       const data = await api.startRun({
         tool_id: params.tool_id,
         case_id: currentCaseId,
-        input_artifact_ids: params.input_artifact_ids,
+        input_files: params.input_files,
         output_name_overrides: params.output_name_overrides,
       });
       setRunStatus(data.status);

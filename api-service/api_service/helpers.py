@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,20 +13,11 @@ from backend_common.auth import AuthContext
 from backend_common.case_storage import resolve_case_storage, resolve_workspace_storage
 from backend_common.db import AuditEvent, Case, RoleEnum, Workspace, WorkspaceMembership
 
-AUDIT_RETENTION_CLEANUP_INTERVAL_SECONDS = 60 * 60
-_audit_retention_cleanup_lock = threading.Lock()
-_next_audit_retention_cleanup_at = 0.0
 
-
-def _claim_audit_retention_cleanup() -> bool:
-    """Claim the process-wide audit cleanup when it is due."""
-    global _next_audit_retention_cleanup_at
-    now = time.monotonic()
-    with _audit_retention_cleanup_lock:
-        if now < _next_audit_retention_cleanup_at:
-            return False
-        _next_audit_retention_cleanup_at = now + AUDIT_RETENTION_CLEANUP_INTERVAL_SECONDS
-        return True
+def prune_audit_events(db: Session) -> int:
+    """Stage retention maintenance in the caller's explicit transaction."""
+    cutoff = datetime.now(UTC) - timedelta(days=max(settings.monitoring_event_retention_days, 1))
+    return db.query(AuditEvent).filter(AuditEvent.created_at < cutoff).delete(synchronize_session=False)
 
 
 def log_event(
@@ -39,11 +28,7 @@ def log_event(
     artifact_id: str | None = None,
     details: dict | None = None,
 ) -> None:
-    """Persist an audit event for the current user."""
-    if _claim_audit_retention_cleanup():
-        retention_days = max(settings.monitoring_event_retention_days, 1)
-        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
-        db.query(AuditEvent).filter(AuditEvent.created_at < cutoff).delete(synchronize_session=False)
+    """Stage an audit event; the application operation owns flush/commit."""
     db.add(
         AuditEvent(
             user_id=context.user.id,
@@ -53,7 +38,6 @@ def log_event(
             details_json=details or {},
         )
     )
-    db.commit()
 
 
 def get_workspace_for_user(db: Session, workspace_id: str, user_id: str) -> tuple[Workspace, RoleEnum]:

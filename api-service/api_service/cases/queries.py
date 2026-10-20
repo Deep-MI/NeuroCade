@@ -114,6 +114,7 @@ def get_case_detail_for_user(db: Session, context: AuthContext, *, case_id: str)
     artifacts = db.query(Artifact).filter(Artifact.case_id == case.id).order_by(Artifact.created_at.desc()).all()
     runs = db.query(Run).filter(Run.case_id == case.id).order_by(Run.created_at.desc()).all()
     log_event(db, context, "case.viewed", case_id=case_id)
+    db.commit()
     return serialize_case_detail(
         case,
         role,
@@ -137,5 +138,13 @@ def get_case_logs_for_user(db: Session, context: AuthContext, *, case_id: str) -
     require_case_read(role)
     latest_run = latest_case_run(db, case.id)
     if latest_run is None:
-        return {"logs": ""}
-    return {"logs": render_run_logs(case_dir, latest_run.id)}
+        return {"logs": "", "run": None}
+    return {
+        "logs": render_run_logs(case_dir, latest_run.id),
+        "run": {
+            "id": latest_run.id,
+            "tool_id": latest_run.run_type,
+            "status": latest_run.status.value,
+            "created_at": latest_run.created_at.isoformat() if latest_run.created_at else None,
+        },
+    }

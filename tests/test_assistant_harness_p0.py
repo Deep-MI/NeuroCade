@@ -121,6 +121,12 @@ def test_tool_output_is_untrusted_data():
 
 def test_parallel_safe_tools_return_structured_results_in_planned_order(tmp_path):
     loop = AssistantLoop(None, config_dir=tmp_path)  # type: ignore[arg-type]
+    events = []
+
+    async def event_sink(kind, payload):
+        if kind == "tool_call":
+            events.append(payload)
+
     active = 0
     peak = 0
 
@@ -141,6 +147,7 @@ def test_parallel_safe_tools_return_structured_results_in_planned_order(tmp_path
         ToolDefinition("two", "", {}, execute, parallel_safe=True),
     ]
     result = asyncio.run(loop._execute_tools({
+        "event_sink": event_sink,
         "conversation": [],
         "tool_calls_log": [],
         "result": {},
@@ -156,6 +163,9 @@ def test_parallel_safe_tools_return_structured_results_in_planned_order(tmp_path
     assert [entry["call_id"] for entry in result["tool_calls_log"]] == ["call-1", "call-2"]
     assert result["tool_calls_log"][0]["details"] == {"source": "catalog"}
     assert result["tool_calls_log"][1]["artifacts"] == [{"path": "out-2"}]
+
+    assert [event["call_id"] for event in events] == ["call-1", "call-2"]
+    assert [message["call_id"] for message in result["conversation"]] == ["call-1", "call-2"]
 
 
 def test_compaction_preserves_recent_user_turn_and_domain_evidence():
@@ -372,7 +382,7 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
             turn_id=workflow_turn.id,
             tool=workflow_tool,
             call_id="call-workflow",
-            arguments={"tool_id": "fastsurfer_fast", "inputs": ["/workspace/input.mgz"]},
+            arguments={"tool_id": "fastsurfer_fast", "input_files": [{"source": "managed", "path": "input.mgz"}]},
             approved=True,
         )
         assert workflow_execution is not None
@@ -386,7 +396,7 @@ def test_restart_reconciles_known_workflow_and_marks_unknown_write_ambiguous():
             created_by_user_id=user.id,
             status=RunStatus.queued,
             run_type="fastsurfer_fast",
-            input_json={"inputs": ["/workspace/input.mgz"]},
+            input_json={"input_files": [{"source": "managed", "path": "input.mgz"}]},
             result_json={"status": "queued"},
         ))
         db.commit()

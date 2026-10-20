@@ -16,7 +16,12 @@ sys.path.insert(0, str(ROOT / "api-service"))
 from api_service.artifacts.service import artifact_download_path_for_output, resolve_artifact_file_for_user  # noqa: E402
 from api_service.cases import operations as cases_module  # noqa: E402
 from api_service.routers import artifacts as artifacts_module  # noqa: E402
-from api_service.routers.artifacts import download_case_archive, list_case_artifacts  # noqa: E402
+from api_service.routers.artifacts import (  # noqa: E402
+    download_case_archive,
+    download_case_file,
+    list_case_artifacts,
+    list_files,
+)
 from api_service.routers.cases import case_logs, case_runs, list_cases  # noqa: E402
 from api_service.runtime_tools.workflow_catalog import resolve_workflow  # noqa: E402
 from api_service.runtime_tools.workflow_outputs import (  # noqa: E402
@@ -27,8 +32,21 @@ from api_service.runtime_tools.workflow_outputs import (  # noqa: E402
 )
 
 from backend_common import storage as storage_module  # noqa: E402
+from backend_common.auth import AuthContext  # noqa: E402
 from backend_common.case_storage import case_storage_dir, ensure_case_storage_layout  # noqa: E402
-from backend_common.db import Artifact, ArtifactKind, AuditEvent, Base, Case, CaseEvent, Run, RunStatus, Workspace  # noqa: E402
+from backend_common.db import (  # noqa: E402
+    Artifact,
+    ArtifactKind,
+    AuditEvent,
+    Base,
+    Case,
+    CaseEvent,
+    RoleEnum,
+    Run,
+    RunStatus,
+    User,
+    Workspace,
+)
 from backend_common.run_logs import run_log_paths  # noqa: E402
 from tests.factories import seed_workspace_context  # noqa: E402
 
@@ -476,6 +494,101 @@ def test_download_case_archive_returns_zip_with_case_contents(seeded_case):
     assert f"{case.title}/existing.mgz" in names
     assert f"{case.title}/scripts/runs/run-1/stdout.log" in names
     assert f"{case.title}/missing.mgz" not in names
+
+
+def test_case_file_listing_and_download_do_not_require_artifact_rows(seeded_case):
+    db_session, context = seeded_case
+    case = db_session.get(Case, CASE_ID)
+    workspace = db_session.get(Workspace, "workspace-1")
+    assert case is not None
+    assert workspace is not None
+    case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
+    incidental = case_dir / "stats" / "unindexed.custom"
+    incidental.parent.mkdir(parents=True, exist_ok=True)
+    incidental.write_bytes(b"sensitive")
+
+    entries = list_files(CASE_ID, db=db_session, context=context)
+    by_path = {(entry.source, entry.path): entry for entry in entries}
+    assert by_path[("managed", ".")].type == "directory"
+    response = download_case_file(
+        CASE_ID,
+        source="managed",
+        path="stats/unindexed.custom",
+        db=db_session,
+        context=context,
+    )
+
+    assert by_path[("managed", "stats")].type == "directory"
+    assert by_path[("managed", "stats/unindexed.custom")].size_bytes == len(b"sensitive")
+    assert Path(response.path) == incidental
+    assert db_session.query(Artifact).filter_by(case_id=CASE_ID, relative_path="stats/unindexed.custom").count() == 0
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "../outside-secret.txt",
+        "/etc/passwd",
+        "stats/../../outside-secret.txt",
+        "stats\\secret.txt",
+        "stats/secret\x00.txt",
+        f"stats/{'x' * 256}",
+    ],
+)
+def test_case_file_download_rejects_path_escape(seeded_case, unsafe_path):
+    db_session, context = seeded_case
+
+    with pytest.raises(HTTPException) as exc_info:
+        download_case_file(
+            CASE_ID,
+            source="managed",
+            path=unsafe_path,
+            db=db_session,
+            context=context,
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def test_case_file_access_rejects_symlinks_and_users_without_case_access(seeded_case, tmp_path):
+    db_session, context = seeded_case
+    case = db_session.get(Case, CASE_ID)
+    workspace = db_session.get(Workspace, "workspace-1")
+    assert case is not None
+    assert workspace is not None
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    case_dir = case_storage_dir(storage_module.settings, workspace.id, case.id)
+    (case_dir / "linked-secret.txt").symlink_to(outside)
+
+    entries = list_files(CASE_ID, db=db_session, context=context)
+    assert "linked-secret.txt" not in {entry.path for entry in entries}
+    with pytest.raises(HTTPException) as symlink_error:
+        download_case_file(
+            CASE_ID,
+            source="managed",
+            path="linked-secret.txt",
+            db=db_session,
+            context=context,
+        )
+    assert symlink_error.value.status_code == 404
+
+    outsider = User(id="outsider", external_auth_id="outsider", email="outsider@example.com", full_name="Outsider")
+    db_session.add(outsider)
+    db_session.commit()
+    outsider_context = AuthContext(user=outsider, role=RoleEnum.user, auth_mode="local")
+    with pytest.raises(HTTPException) as list_error:
+        list_files(CASE_ID, db=db_session, context=outsider_context)
+    with pytest.raises(HTTPException) as download_error:
+        download_case_file(
+            CASE_ID,
+            source="managed",
+            path="existing.mgz",
+            db=db_session,
+            context=outsider_context,
+        )
+    assert list_error.value.status_code == 404
+    assert download_error.value.status_code == 404
 
 
 def test_download_case_archive_skips_symlinked_files_outside_case(seeded_case, tmp_path):

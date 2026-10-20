@@ -92,6 +92,7 @@ def test_frontend_config_exposes_runtime_auth_mode_without_secrets(monkeypatch):
 
     monkeypatch.setattr(auth_router.settings, "local_auth_enabled", False)
     monkeypatch.setattr(auth_router.settings, "mcp_enabled", False)
+    monkeypatch.setattr(auth_router.settings, "max_upload_files", 30_000)
     monkeypatch.setattr(auth_router.settings, "clerk_publishable_key", "pk_test_public")
     monkeypatch.setattr(auth_router.settings, "clerk_jwt_template", "neurocade")
     monkeypatch.setattr(auth_router.settings, "clerk_secret_key", "secret")
@@ -105,6 +106,7 @@ def test_frontend_config_exposes_runtime_auth_mode_without_secrets(monkeypatch):
     assert response.json() == {
         "local_auth_enabled": False,
         "mcp_enabled": False,
+        "max_upload_files": 30_000,
         "clerk_publishable_key": "pk_test_public",
         "clerk_jwt_template": "neurocade",
     }

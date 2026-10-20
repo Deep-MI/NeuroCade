@@ -1,20 +1,36 @@
-"""Shared output ownership checks for workflows, imports, and case snapshots."""
+"""Shared output activity checks for workflows, imports, and case snapshots.
+
+One writer at a time per case is enforced from two observable facts, never from
+a stored verdict:
+
+* the application's own schedule -- a queued or running row means work is
+  expected, and it clears itself when the row reaches a terminal status;
+* the container runtime -- a tool container that outlived its job is still
+  visible to the daemon through its run-ID label, and stops being visible the
+  moment it exits.
+
+Neither can outlive the condition it describes, so no case can be left
+permanently unavailable by a failure that happened once.
+"""
 
 import fcntl
 import hashlib
+import logging
 from contextlib import contextmanager
 
 from sqlalchemy import or_
 
 from backend_common.db import PacsImport, Run
 from backend_common.mcp_lifecycle import reserve_scope_deletion
-from backend_common.run_statuses import run_owns_outputs
+from backend_common.run_statuses import run_is_active
 from backend_common.settings import get_settings
 from backend_common.submission_lock import submission_lock
 
+logger = logging.getLogger(__name__)
+
 
 class OutputBusy(ValueError):
-    """A writer or snapshot reader still owns the selected output scope."""
+    """A writer or snapshot reader is currently using the selected output scope."""
 
 
 def _lock_path(workspace_id, case_id):
@@ -31,6 +47,27 @@ def _read_lock_paths(workspace_id, case_id):
     return workspace.parent.glob(workspace.name.removesuffix("workspace.lock") + "*.lock")
 
 
+def _live_writer_run_ids() -> set[str]:
+    """Ask the runtime which runs still have a container writing.
+
+    An unreachable or undetermined runtime yields an empty set. That is a
+    deliberate narrowing: a bridge the application cannot reach also cannot
+    start a competing writer, and the scheduled-run check above still applies.
+    The alternative -- refusing on an unanswerable question -- is what made a
+    single failed query able to block a case forever.
+    """
+    from neurocade_runtime_tools.bridge_client import BridgeClient
+
+    try:
+        determined, run_ids = BridgeClient.from_environment().active_writers()
+    except Exception as exc:  # noqa: BLE001 - any bridge failure means "unknown"
+        logger.debug("output_activity.writer_probe_unavailable error=%s", exc)
+        return set()
+    if not determined:
+        logger.debug("output_activity.writer_probe_undetermined tracked=%d", len(run_ids))
+    return run_ids
+
+
 def ensure_outputs_idle(db, workspace_id, case_id=None, *, exclude_run_id=None):
     imports = db.query(PacsImport).filter(
         PacsImport.workspace_id == workspace_id,
@@ -44,8 +81,11 @@ def ensure_outputs_idle(db, workspace_id, case_id=None, *, exclude_run_id=None):
         runs = runs.filter(Run.id != exclude_run_id)
     if imports.first():
         raise OutputBusy("Case has an active PACS import or unresolved import cleanup")
-    if any(run_owns_outputs(run) for run in runs):
-        raise OutputBusy("Processing may still own this case or workspace's outputs")
+    if any(run_is_active(run) for run in runs):
+        raise OutputBusy("Another workflow is queued or running for this case")
+    live_writers = _live_writer_run_ids()
+    if live_writers and runs.filter(Run.id.in_(live_writers)).first():
+        raise OutputBusy("A previous workflow's container is still writing this case's outputs")
     for path in _read_lock_paths(workspace_id, case_id):
         if not path.exists():
             continue

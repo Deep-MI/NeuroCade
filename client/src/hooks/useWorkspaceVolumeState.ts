@@ -4,7 +4,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import type { LayerType, Volume } from '../types';
 import { appUrl } from '../utils/api';
 import { forgetClosedCaseVolume, rememberClosedCaseVolume } from '../utils/caseStorage';
-import { createViewerLayer } from '../utils/layerBuilders';
+import { createViewerLayer, refreshViewerLayer } from '../utils/layerBuilders';
 
 function layerTypeOf(volume: Volume): LayerType {
   return volume.type;
@@ -18,6 +18,7 @@ interface UseWorkspaceVolumeStateArgs {
 }
 
 interface LoadLayerCommand {
+  artifactId?: string;
   downloadPath: string;
   filename: string;
   name?: string;
@@ -43,6 +44,8 @@ export function useWorkspaceVolumeState({
   ): Volume => {
     return createViewerLayer({
       filename: cmd.filename,
+      name: cmd.name,
+      artifactId: cmd.artifactId,
       url: `${appUrl(cmd.downloadPath)}?t=${Date.now()}`,
       type: layerType,
       lut: cmd.lut,
@@ -66,7 +69,7 @@ export function useWorkspaceVolumeState({
       if (existing) {
         return prev.map(v => {
           if (v.filename === cmd.filename || v.id === cmd.filename) {
-            return buildLoadedLayer(cmd, layerType);
+            return refreshViewerLayer(v, buildLoadedLayer(cmd, layerType), cmd);
           }
           return v;
         });
@@ -96,12 +99,12 @@ export function useWorkspaceVolumeState({
 
   const handleSetLayerDisplayCommand = useCallback((
     layerIds: string[],
-    updates: { opacity?: number; brightness?: number; contrast?: number; surface_color_mode?: 'solid' | 'curvature' | 'annotation' },
+    updates: { name?: string; opacity?: number; brightness?: number; contrast?: number; surface_color_mode?: 'solid' | 'curvature' | 'annotation' },
   ) => {
     const targets = new Set(layerIds);
     setVolumes(prev => prev.map(v => {
       if (!targets.has(v.id) && !targets.has(v.filename)) return v;
-      const common = updates.opacity === undefined ? v : { ...v, opacity: updates.opacity };
+      const common = { ...v, name: updates.name ?? v.name, opacity: updates.opacity ?? v.opacity };
       if (common.type === 'surface') {
         return {
           ...common,

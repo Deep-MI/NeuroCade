@@ -6,6 +6,11 @@ ACTIVE_RUN_STATUSES = frozenset({RunStatus.queued, RunStatus.running})
 TERMINAL_RUN_STATUSES = frozenset({RunStatus.completed, RunStatus.failed, RunStatus.canceled})
 
 
-def run_owns_outputs(run) -> bool:
-    """Terminal display state does not prove an interrupted writer has stopped."""
-    return run.status in ACTIVE_RUN_STATUSES or (run.result_json or {}).get("output_ownership") in {"held", "unresolved"}
+def run_is_active(run) -> bool:
+    """Return whether the application still expects this run to do work.
+
+    Whether a *container* is still writing is a separate question, answered by
+    the runtime rather than by a stored field: see
+    ``backend_common.output_activity``.
+    """
+    return run.status in ACTIVE_RUN_STATUSES

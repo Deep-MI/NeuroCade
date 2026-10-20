@@ -2,6 +2,7 @@ import { Children } from 'react';
 import type { RefObject } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import type { AssistantActivity, ChatContentPart, ChatImagePart, ChatMessage, ChatTextPart } from '../types';
 import { assistantActivityMessage, assistantActivityProgress } from './assistantActivity';
@@ -89,7 +90,15 @@ export function ChatMessageList({
           ) : (
             <>
               <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
                 components={{
+                  table({ children }) {
+                    return (
+                      <div className="chat-table-scroll" role="region" aria-label="Markdown table" tabIndex={0}>
+                        <table>{children}</table>
+                      </div>
+                    );
+                  },
                   code({ inline, className, children, ...props }: CodeProps) {
                     const match = /language-(\w+)/.exec(className ?? '');
                     return !inline && match ? (

@@ -1203,7 +1203,7 @@ input[type="range"]::-moz-focus-outer {
 }
 
 .nc-upload-dialog {
-  width: min(100%, 440px);
+  width: min(100%, 680px);
   max-height: min(86vh, 760px);
   display: flex;
   flex-direction: column;
@@ -1276,6 +1276,36 @@ input[type="range"]::-moz-focus-outer {
   padding: 18px;
 }
 
+.nc-upload-dialog-transfer {
+  display: grid;
+  width: fit-content;
+  grid-template-columns: repeat(2, minmax(78px, 1fr));
+  gap: 2px;
+  border: 1px solid var(--nc-border);
+  border-radius: 6px;
+  background: var(--nc-bg-deep);
+  padding: 2px;
+}
+
+.nc-upload-dialog-transfer button {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nc-tx-muted);
+  padding: 6px 12px;
+  font-size: var(--nc-fs-2xs);
+}
+
+.nc-upload-dialog-transfer button.is-active {
+  background: var(--nc-bg-panel);
+  color: var(--nc-tx);
+  box-shadow: 0 0 0 1px var(--nc-border);
+}
+
+.nc-upload-dialog-transfer button:disabled:not(.is-active) {
+  opacity: 0.45;
+}
+
 .nc-upload-dialog-section,
 .nc-upload-dialog-form,
 .nc-upload-dialog-field {
@@ -1298,21 +1328,31 @@ input[type="range"]::-moz-focus-outer {
   gap: 8px;
 }
 
+.nc-upload-dialog-mode-row.has-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .nc-upload-dialog-mode {
   display: flex;
   min-width: 0;
-  align-items: center;
+  min-height: 82px;
+  align-items: flex-start;
   gap: 8px;
   border: 1px solid var(--nc-border);
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--nc-bg-surface);
-  padding: 8px;
+  padding: 11px;
   text-align: left;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 
 .nc-upload-dialog-mode:hover {
   background: var(--nc-row-hover);
+}
+
+.nc-upload-dialog-mode:disabled {
+  cursor: default;
+  opacity: 0.52;
 }
 
 .nc-upload-dialog-mode.is-active {
@@ -1326,6 +1366,7 @@ input[type="range"]::-moz-focus-outer {
   flex: 0 0 auto;
   border: 1px solid var(--nc-tx-dim);
   border-radius: 999px;
+  margin-top: 1px;
 }
 
 .nc-upload-dialog-mode.is-active .nc-upload-dialog-radio {
@@ -1414,6 +1455,19 @@ input[type="range"]::-moz-focus-outer {
   font-size: 10.5px;
   line-height: 1.25;
   color: var(--nc-tx-faint);
+}
+
+.nc-upload-dialog-detected-format {
+  margin-top: 4px;
+  color: var(--nc-interactive);
+  font-size: var(--nc-fs-2xs);
+  line-height: 1.25;
+}
+
+.nc-upload-dialog-file-change-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
 }
 
 .nc-upload-dialog-input {
@@ -1529,6 +1583,151 @@ input[type="range"]::-moz-focus-outer {
   transition: border-color 0.15s, background 0.15s;
 }
 
+.nc-upload-dialog-dropzone-compact {
+  min-height: 104px;
+  flex-direction: row;
+  justify-content: center;
+  gap: 13px;
+  padding: 18px;
+  text-align: left;
+}
+
+.nc-upload-dialog-dropzone-compact .nc-upload-dialog-dropzone-icon {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.nc-upload-dialog-dropzone-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  position: relative;
+}
+
+.nc-upload-dialog-dropzone-action {
+  color: var(--nc-tx-muted);
+  font-size: var(--nc-fs-2xs);
+}
+
+.nc-upload-dialog-picker-menu {
+  position: static;
+  display: grid;
+  width: 224px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 9px;
+  overflow: hidden;
+  border: 1px solid var(--nc-border);
+  border-radius: 6px;
+  background: var(--nc-bg-panel);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
+}
+
+.nc-upload-dialog-picker-menu button {
+  border: 0;
+  border-right: 1px solid var(--nc-border);
+  background: transparent;
+  color: var(--nc-tx-muted);
+  padding: 9px 11px;
+  text-align: left;
+  font-size: var(--nc-fs-2xs);
+}
+
+.nc-upload-dialog-picker-menu button:last-child {
+  border-right: 0;
+}
+
+.nc-upload-dialog-picker-menu button:hover {
+  background: var(--nc-row-hover);
+  color: var(--nc-tx);
+}
+
+.nc-upload-dialog-dropzone-compact .nc-upload-dialog-dropzone-title {
+  margin-bottom: 2px;
+  color: var(--nc-tx);
+  font-weight: 600;
+}
+
+.nc-upload-dialog-dropzone-compact .nc-upload-dialog-source-actions {
+  justify-content: flex-start;
+  margin: 5px 0 0;
+  gap: 2px;
+}
+
+.nc-upload-dialog-dropzone-compact .nc-upload-dialog-source-actions button {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+}
+
+.nc-upload-dialog-dataset-summary {
+  border: 1px solid var(--nc-success-border);
+  border-radius: 6px;
+  background: var(--nc-success-bg);
+  padding: 11px 12px;
+}
+
+.nc-upload-dialog-dataset-title {
+  color: var(--nc-tx);
+  font-size: var(--nc-fs-sm);
+  font-weight: 600;
+}
+
+.nc-upload-dialog-dataset-subtitle {
+  margin-top: 3px;
+  color: var(--nc-tx-muted);
+  font-size: var(--nc-fs-2xs);
+}
+
+.nc-upload-dialog-subject-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.nc-upload-dialog-subject-list span {
+  border: 1px solid var(--nc-border);
+  border-radius: 4px;
+  background: var(--nc-bg-deep);
+  color: var(--nc-tx-muted);
+  padding: 4px 7px;
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.nc-upload-dialog-optional {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nc-upload-dialog-optional-trigger {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--nc-tx-muted);
+  padding: 0;
+  font-size: var(--nc-fs-2xs);
+  line-height: 1;
+}
+
+.nc-upload-dialog-optional-trigger svg {
+  flex: 0 0 auto;
+  transition: transform 0.15s ease;
+}
+
+.nc-upload-dialog-optional-trigger svg.is-open {
+  transform: rotate(180deg);
+}
+
+.nc-upload-dialog-optional-trigger:hover {
+  color: var(--nc-tx);
+}
+
 .nc-upload-dialog-dropzone:hover,
 .nc-upload-dialog-dropzone.is-drag-over {
   border-color: var(--nc-interactive);
@@ -1552,6 +1751,33 @@ input[type="range"]::-moz-focus-outer {
 }
 
 .nc-upload-dialog-dropzone-title span {
+  color: var(--nc-interactive);
+}
+
+.nc-upload-dialog-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.nc-upload-dialog-source-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--nc-border);
+  border-radius: 4px;
+  background: var(--nc-bg-panel);
+  padding: 7px 10px;
+  color: var(--nc-tx-muted);
+  font-size: var(--nc-fs-2xs);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.nc-upload-dialog-source-actions button:hover:not(:disabled) {
+  border-color: var(--nc-interactive);
+  background: var(--nc-interactive-subtle);
   color: var(--nc-interactive);
 }
 
@@ -1600,7 +1826,7 @@ input[type="range"]::-moz-focus-outer {
 }
 
 .nc-upload-dialog-footer {
-  justify-content: space-between;
+  justify-content: flex-end;
   border-top-width: 1px;
   padding: 10px 14px;
 }
@@ -1620,7 +1846,8 @@ input[type="range"]::-moz-focus-outer {
 }
 
 @media (max-width: 520px) {
-  .nc-upload-dialog-mode-row {
+  .nc-upload-dialog-mode-row,
+  .nc-upload-dialog-mode-row.has-three {
     grid-template-columns: 1fr;
   }
 
@@ -2104,6 +2331,7 @@ input[type="range"]::-moz-focus-outer {
 }
 
 .chat-message {
+  min-width: 0;
   max-width: 84%;
   border: 1px solid var(--nc-border);
   border-radius: 5px;
@@ -2331,6 +2559,37 @@ input[type="range"]::-moz-focus-outer {
   border-radius: 4px;
 }
 
+.chat-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.chat-table-scroll:focus-visible {
+  outline: 2px solid var(--nc-interactive);
+  outline-offset: 2px;
+}
+
+.chat-table-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.chat-table-scroll th,
+.chat-table-scroll td {
+  min-width: 7rem;
+  border: 1px solid var(--nc-border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.chat-table-scroll th {
+  background: var(--nc-bg-panel);
+  font-weight: 600;
+}
+
 .chat-message a {
   color: var(--nc-interactive);
   text-decoration: underline;
@@ -2346,10 +2605,11 @@ input[type="range"]::-moz-focus-outer {
 
 .chat-approval {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 65%;
   gap: 12px;
-  flex-wrap: wrap;
   padding: 10px;
   border-top: 1px solid var(--nc-warning-border);
   background: rgba(241, 194, 27, 0.08);
@@ -2357,7 +2617,14 @@ input[type="range"]::-moz-focus-outer {
   font-size: var(--nc-fs-sm);
 }
 
+.chat-approval-body {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
 .chat-approval-actions {
+  flex-shrink: 0;
   margin-left: auto;
 }
 

@@ -54,7 +54,7 @@ async def test_preflight_returns_structured_422_and_keeps_failed_run(context, mo
 
     monkeypatch.setattr(run_operations, "prepare_workflow", fail)
     with pytest.raises(HTTPException) as error:
-        await run_operations.start_neuroimaging_run(db, auth, request=StartRunRequest(tool_id="tool", case_id="case", input_artifact_ids=[]))
+        await run_operations.start_neuroimaging_run(db, auth, request=StartRunRequest(tool_id="tool", case_id="case", input_files=[]))
     assert error.value.status_code == 422
     detail = cast(dict[str, str], error.value.detail)
     assert detail["code"] == "pacs_sequence_incompatible"

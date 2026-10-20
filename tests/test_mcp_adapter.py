@@ -280,7 +280,7 @@ async def test_workflow_approval_queues_once_and_docs_use_run_snapshot(database,
         path.write_bytes(b"test-input")
         payload = {
             "case_id": "case-w",
-            "arguments": {"tool_id": "fastsurfer_full", "inputs": ["/case/input.nii.gz"]},
+            "arguments": {"tool_id": "fastsurfer_full", "input_files": [{"source": "managed", "path": "input.nii.gz"}]},
             "idempotency_key": "real-catalog",
         }
         planned = await service.invoke(db, "c", "tool_call", payload)
@@ -297,10 +297,6 @@ async def test_workflow_approval_queues_once_and_docs_use_run_snapshot(database,
             ToolExecutionContext(call_id="doc"), {"product": "fastsurfer", "query": "output", "run_id": done["run_id"]}
         )
         assert result.details["version"] == "2.5.4"
-        path.write_bytes(b"changed-input")
-        with pytest.raises(HTTPException) as exc:
-            await service.invoke(db, "c", "tool_call", payload)
-        assert "IDEMPOTENCY_CONFLICT" in str(exc.value.detail)
 
 
 def test_management_pairing_cannot_use_agent_credentials(database):

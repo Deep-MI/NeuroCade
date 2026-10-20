@@ -51,5 +51,12 @@ stop_pid_file() {
   deadline=$((SECONDS + 15))
   while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 1; done
   kill -KILL "$pid" 2>/dev/null || true
+  deadline=$((SECONDS + 5))
+  while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 1; done
+  # Keep the PID file while the process survives: it is the only record that
+  # lets a later stop find it again.
+  if kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
   rm -f "$pid_file"
 }

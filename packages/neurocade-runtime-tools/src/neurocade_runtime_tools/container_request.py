@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from .execution import RuntimeBind, RuntimeContainerRunRequest
+from .execution import LinkedRuntimeBind, RuntimeBind, RuntimeContainerRunRequest
 from .protocol import RuntimeImageSpec
 
 DCM2NIIX_IMAGE = "vnmd/dcm2niix_v1.0.20240202:20260512"
@@ -32,7 +32,7 @@ def build_container_request(
     *,
     image: str | RuntimeImageSpec,
     command: Sequence[str],
-    binds: Sequence[RuntimeBind] = (),
+    binds: Sequence[RuntimeBind | LinkedRuntimeBind] = (),
     scratch_paths: Sequence[str] = (),
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -47,18 +47,23 @@ def build_container_request(
     """
     if not command:
         raise ValueError("Container command cannot be empty")
-    normalized_binds: list[RuntimeBind] = []
+    normalized_binds: list[RuntimeBind | LinkedRuntimeBind] = []
     for bind in binds:
         if bind.mode not in {"ro", "rw"}:
             raise ValueError(f"Unsupported bind mode: {bind.mode}")
         container_path = _validate_container_path(bind.container_path, label="Container bind path")
-        normalized_binds.append(
-            RuntimeBind(
-                host_path=str(Path(bind.host_path).expanduser().resolve()),
-                container_path=container_path,
-                mode=bind.mode,
+        if isinstance(bind, LinkedRuntimeBind):
+            if bind.mode != "ro":
+                raise ValueError("Linked source binds must be read-only")
+            normalized_binds.append(LinkedRuntimeBind(bind.source_id, bind.source_relative, container_path, "ro"))
+        else:
+            normalized_binds.append(
+                RuntimeBind(
+                    host_path=str(Path(bind.host_path).expanduser().resolve()),
+                    container_path=container_path,
+                    mode=bind.mode,
+                )
             )
-        )
     return RuntimeContainerRunRequest(
         image=image if isinstance(image, RuntimeImageSpec) else RuntimeImageSpec(oci_reference=container_image_name(image)),
         command=[str(part) for part in command],

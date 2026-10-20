@@ -1,34 +1,64 @@
-import { useRef, useState } from 'react';
-import { Check, FileUp, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, ChevronDown, FileUp, X } from 'lucide-react';
+import { useFrontendConfig } from '../auth/frontendConfigContext';
 import type { CaseMetadataInput } from '../utils/api/cases';
+import type { LinkedDirectorySelection } from '../utils/api/cases';
 import { getCaseNameValidationError } from '../utils/caseNames';
+import { droppedUploadFiles, summarizeUploadSelection } from '../utils/uploadFiles';
 
 interface UploadCaseModalProps {
-  isOpen: boolean;
-  filename: string | null;
-  fileCount?: number;
+  selectedFiles: File[];
+  linkedSource?: LinkedDirectorySelection | null;
   defaultName: string;
   addToCaseLabel?: string | null;
   onClose: () => void;
-  onSelectFiles?: (files: File[]) => void;
-  onCreateNewCase: (caseName: string, metadata?: CaseMetadataInput) => Promise<void> | void;
+  onSelectFiles: (files: File[]) => void;
+  onClearSelection: () => void;
+  onSelectLinkedDirectory?: () => Promise<void> | void;
+  onCreateNewCase: (
+    caseName: string,
+    metadata?: CaseMetadataInput,
+    importMode?: 'single' | 'dataset',
+  ) => Promise<void> | void;
   onAddToCase?: () => Promise<void> | void;
 }
 
-const FORMAT_LABELS = ['.nii', '.nii.gz', '.mgz', '.mgh', '.dcm', '.zip'];
+const DETECTED_FORMAT_LABELS = {
+  bids: 'BIDS dataset detected',
+  fastsurfer: 'FastSurfer case structure detected',
+  freesurfer: 'FreeSurfer case structure detected',
+  dicom: 'DICOM data detected',
+} as const;
+
+function formatByteCount(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
 
 export function UploadCaseModal({
-  isOpen,
-  filename,
-  fileCount = 1,
+  selectedFiles,
+  linkedSource = null,
   defaultName,
   addToCaseLabel = null,
   onClose,
   onSelectFiles,
+  onClearSelection,
+  onSelectLinkedDirectory,
   onCreateNewCase,
   onAddToCase,
 }: UploadCaseModalProps) {
+  const { max_upload_files: maxUploadFiles } = useFrontendConfig();
+  const filename = selectedFiles[0]?.name ?? null;
+  const fileCount = selectedFiles.length;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const [caseName, setCaseName] = useState(defaultName);
   const [description, setDescription] = useState('');
   const [modalities, setModalities] = useState<string[]>([]);
@@ -38,39 +68,84 @@ export function UploadCaseModal({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [optionalDetailsOpen, setOptionalDetailsOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [transferMode, setTransferMode] = useState<'upload' | 'link'>(linkedSource ? 'link' : 'upload');
   const addToCaseEnabled = typeof onAddToCase === 'function';
-  const [mode, setMode] = useState<'current' | 'new'>(addToCaseEnabled ? 'current' : 'new');
+  const [mode, setMode] = useState<'current' | 'new' | 'dataset'>(addToCaseEnabled ? 'current' : 'new');
+  useEffect(() => {
+    if (linkedSource) setMode('new');
+  }, [linkedSource]);
+  useEffect(() => {
+    setTransferMode(linkedSource ? 'link' : 'upload');
+    setPickerOpen(false);
+  }, [linkedSource, selectedFiles.length]);
+  const selectionSummary = selectedFiles.length > 0 ? summarizeUploadSelection(selectedFiles) : null;
+  const batchSubjectIds = selectionSummary?.subjectIds ?? linkedSource?.summary?.subject_ids ?? [];
+  const isBatchImport = batchSubjectIds.length > 0;
+  useEffect(() => {
+    if (isBatchImport) {
+      setMode('dataset');
+    } else {
+      setMode((currentMode) => currentMode === 'dataset' ? (addToCaseEnabled ? 'current' : 'new') : currentMode);
+    }
+  }, [addToCaseEnabled, isBatchImport]);
   const modalityOptions = ['T1w', 'FLAIR', 'DWI', 'rs-fMRI', 'PET'];
   const tagOptions = ['control', 'clinical', 'research', 'urgent'];
 
-  if (!isOpen) return null;
-
-  const hasSelectedFiles = Boolean(filename && fileCount > 0);
-  const selectedFileLabel = filename ? (fileCount > 1 ? `${fileCount} files selected` : filename) : '';
+  const hasSelectedFiles = linkedSource !== null || Boolean(filename && fileCount > 0);
+  const selectedFileLabel = linkedSource?.name ?? (selectionSummary?.sourceKind === 'folder'
+    ? selectionSummary.sourceName ?? 'Selected folder'
+    : filename ? (fileCount > 1 ? `${fileCount} files selected` : filename) : '');
+  const selectedFileDetail = selectionSummary
+    ? `${selectionSummary.fileCount} ${selectionSummary.fileCount === 1 ? 'file' : 'files'} · ${formatByteCount(selectionSummary.totalBytes)}`
+    : linkedSource
+      ? `${linkedSource.summary?.file_count ? `${linkedSource.summary.file_count} files · ` : ''}Read-only · files stay in place`
+      : `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`;
 
   const chooseFiles = () => {
     if (loading) return;
     fileInputRef.current?.click();
   };
 
+  const chooseFolder = () => {
+    if (loading) return;
+    folderInputRef.current?.click();
+  };
+
+  const chooseLinkedFolder = async () => {
+    if (loading || !onSelectLinkedDirectory) return;
+    try {
+      setError(null);
+      await onSelectLinkedDirectory();
+    } catch (linkError: unknown) {
+      setError(linkError instanceof Error ? linkError.message : 'Could not link the selected folder.');
+    }
+  };
+
   const handleFiles = (files: File[]) => {
+    if (files.length > maxUploadFiles) {
+      setError(`Selections are limited to ${maxUploadFiles.toLocaleString()} files.`);
+      return;
+    }
     const selected = files.filter(Boolean);
     if (selected.length === 0) return;
     setError(null);
-    onSelectFiles?.(selected);
+    onSelectFiles(selected);
   };
 
   const handleCreateNewCase = async () => {
     const trimmed = caseName.trim();
+    const requiresCaseName = mode !== 'dataset';
     if (!hasSelectedFiles) {
-      setError('Choose an MRI file or DICOM archive first.');
+      setError('Choose files or a folder first.');
       return;
     }
-    if (!trimmed) {
+    if (requiresCaseName && !trimmed) {
       setError('Case name cannot be empty.');
       return;
     }
-    const validationError = getCaseNameValidationError(trimmed);
+    const validationError = requiresCaseName ? getCaseNameValidationError(trimmed) : null;
     if (validationError) {
       setError(validationError);
       return;
@@ -78,12 +153,12 @@ export function UploadCaseModal({
     try {
       setLoading(true);
       setError(null);
-      await onCreateNewCase(trimmed, {
+      await onCreateNewCase(trimmed || defaultName, {
         description: description.trim() || null,
         modalities,
         tags,
         notes: notes.trim() || null,
-      });
+      }, mode === 'dataset' ? 'dataset' : 'single');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err) || 'Upload failed');
       setLoading(false);
@@ -113,7 +188,7 @@ export function UploadCaseModal({
       return;
     }
     if (!hasSelectedFiles) {
-      setError('Choose an MRI file or DICOM archive first.');
+      setError('Choose files or a folder first.');
       return;
     }
     try {
@@ -128,13 +203,22 @@ export function UploadCaseModal({
 
   const modeClass = (active: boolean) => `nc-upload-dialog-mode${active ? ' is-active' : ''}`;
 
+  const activateSourcePicker = () => {
+    if (loading) return;
+    if (transferMode === 'link') {
+      void chooseLinkedFolder();
+      return;
+    }
+    setPickerOpen((open) => !open);
+  };
+
   return (
     <div className="nc-upload-dialog-backdrop" onClick={!loading ? onClose : undefined}>
       <div className="nc-upload-dialog" onClick={(event) => event.stopPropagation()}>
         <div className="nc-upload-dialog-header">
           <div className="nc-upload-dialog-title">
             <FileUp size={14} className="text-[var(--nc-warning)]" />
-            <h3>{hasSelectedFiles ? 'Upload MRI' : 'New Upload'}</h3>
+            <h3>Add Data</h3>
           </div>
           <button type="button" onClick={onClose} disabled={loading} className="nc-upload-dialog-close" aria-label="Close upload dialog">
             <X size={16} />
@@ -152,51 +236,89 @@ export function UploadCaseModal({
               event.target.value = '';
             }}
           />
+          <input
+            ref={(element) => {
+              folderInputRef.current = element;
+              element?.setAttribute('webkitdirectory', '');
+              element?.setAttribute('directory', '');
+            }}
+            type="file"
+            multiple
+            className="hidden"
+            aria-label="Choose folder"
+            onChange={(event) => {
+              handleFiles(Array.from(event.target.files ?? []));
+              event.target.value = '';
+            }}
+          />
 
-          <div className="nc-upload-dialog-steps" aria-label="Upload progress">
-            {['Upload MRI', addToCaseEnabled ? 'Destination' : 'Case Details'].map((label, index) => {
-              const uploadStep = index === 0;
-              const done = uploadStep && hasSelectedFiles;
-              const active = uploadStep ? !hasSelectedFiles : hasSelectedFiles;
-              return (
-                <div key={label} className="nc-upload-dialog-step-wrap">
-                  <div className="nc-upload-dialog-step">
-                    <span className={`nc-upload-dialog-step-dot ${done ? 'is-done' : active ? 'is-active' : ''}`}>
-                      {done ? <Check size={10} /> : index + 1}
-                    </span>
-                    <span className={`nc-upload-dialog-step-label ${active || done ? 'is-active' : ''}`}>{label}</span>
-                  </div>
-                  {index === 0 && <span className="nc-upload-dialog-step-line" />}
-                </div>
-              );
-            })}
+          {onSelectLinkedDirectory && (
+            <div className="nc-upload-dialog-transfer" aria-label="Transfer method">
+              <button
+                type="button"
+                className={transferMode === 'upload' ? 'is-active' : ''}
+                onClick={() => { setTransferMode('upload'); setPickerOpen(false); }}
+                disabled={loading || hasSelectedFiles}
+              >
+                Upload
+              </button>
+              <button
+                type="button"
+                className={transferMode === 'link' ? 'is-active' : ''}
+                onClick={() => { setTransferMode('link'); setPickerOpen(false); }}
+                disabled={loading || hasSelectedFiles}
+              >
+                Link
+              </button>
+            </div>
+          )}
+
+          <div
+            role="button"
+            tabIndex={0}
+            data-testid="upload-file-dropzone"
+            className={`nc-upload-dialog-dropzone nc-upload-dialog-dropzone-compact ${dragOver ? 'is-drag-over' : ''}`}
+            onClick={activateSourcePicker}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                activateSourcePicker();
+              }
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              if (transferMode === 'upload') setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragOver(false);
+              if (transferMode !== 'upload') return;
+              void droppedUploadFiles(event.dataTransfer, maxUploadFiles)
+                .then(handleFiles)
+                .catch((dropError: unknown) => {
+                  setError(dropError instanceof Error ? dropError.message : 'Could not read the dropped folder.');
+                });
+            }}
+          >
+            <FileUp size={22} className="nc-upload-dialog-dropzone-icon" />
+            <div className="nc-upload-dialog-dropzone-copy">
+              <span className="nc-upload-dialog-dropzone-title">
+                {transferMode === 'link' ? 'Choose a folder to link' : 'Drop files or a folder'}
+              </span>
+              <span className="nc-upload-dialog-dropzone-action">
+                {transferMode === 'link' ? 'Click to choose · files stay in place' : 'Click to select'}
+              </span>
+              {pickerOpen && transferMode === 'upload' && (
+                <span className="nc-upload-dialog-picker-menu" onClick={(event) => event.stopPropagation()}>
+                  <button type="button" onClick={chooseFiles}>Select files</button>
+                  <button type="button" onClick={chooseFolder}>Select folder</button>
+                </span>
+              )}
+            </div>
           </div>
 
-          {!hasSelectedFiles ? (
-            <button
-              type="button"
-              data-testid="upload-file-dropzone"
-              className={`nc-upload-dialog-dropzone ${dragOver ? 'is-drag-over' : ''}`}
-              onClick={chooseFiles}
-              onDragOver={(event) => {
-                event.preventDefault();
-                setDragOver(true);
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setDragOver(false);
-                handleFiles(Array.from(event.dataTransfer.files ?? []));
-              }}
-            >
-              <FileUp size={28} className="nc-upload-dialog-dropzone-icon" />
-              <span className="nc-upload-dialog-dropzone-title">
-                Drag & drop or <span>browse files</span>
-              </span>
-              <span className="nc-upload-dialog-dropzone-formats">{FORMAT_LABELS.join('  ·  ')}</span>
-              <span className="nc-upload-dialog-dropzone-note">Processed locally</span>
-            </button>
-          ) : (
+          {hasSelectedFiles && (
             <>
               <div className="nc-upload-dialog-file is-selected">
                 <div className="nc-upload-dialog-file-icon">
@@ -205,34 +327,62 @@ export function UploadCaseModal({
                 <div className="min-w-0 flex-1">
                   <div className="nc-upload-dialog-file-name">{selectedFileLabel}</div>
                   <div className="nc-upload-dialog-file-types">
-                    {FORMAT_LABELS.join(' · ')}
+                    {linkedSource ? 'Linked folder' : selectionSummary?.sourceKind === 'folder' ? 'Folder' : 'Files'} · {selectedFileDetail}
                   </div>
+                  {selectionSummary?.detectedFormat && (
+                    <div className="nc-upload-dialog-detected-format">
+                      {DETECTED_FORMAT_LABELS[selectionSummary.detectedFormat]}
+                    </div>
+                  )}
+                  {!selectionSummary?.detectedFormat && linkedSource?.summary?.format && linkedSource.summary.format !== 'generic' && (
+                    <div className="nc-upload-dialog-detected-format">
+                      {DETECTED_FORMAT_LABELS[linkedSource.summary.format as keyof typeof DETECTED_FORMAT_LABELS] ?? `${linkedSource.summary.format} structure detected`}
+                    </div>
+                  )}
                 </div>
-                {onSelectFiles && (
-                  <button type="button" onClick={chooseFiles} disabled={loading} className="nc-upload-dialog-file-change">
-                    Change
-                  </button>
-                )}
+                <button type="button" onClick={onClearSelection} disabled={loading} className="nc-upload-dialog-file-change">
+                  Change
+                </button>
               </div>
 
-              {addToCaseEnabled && (
-                <div className="nc-upload-dialog-section">
-                  <div className="nc-eyebrow">Add As</div>
-                  <div className="nc-upload-dialog-mode-row">
-                    <button type="button" className={modeClass(mode === 'current')} onClick={() => setMode('current')} disabled={loading}>
+              <div className="nc-upload-dialog-section">
+                <div className="nc-eyebrow">Import as</div>
+                <div className={`nc-upload-dialog-mode-row ${addToCaseEnabled ? 'has-three' : ''}`}>
+                  {addToCaseEnabled && (
+                    <button type="button" className={modeClass(mode === 'current')} onClick={() => setMode('current')} disabled={loading || Boolean(linkedSource)}>
                       <span className="nc-upload-dialog-radio" aria-hidden="true" />
                       <span className="min-w-0">
-                        <span className="nc-upload-dialog-mode-title">Add to current case</span>
-                        <span className="nc-upload-dialog-mode-subtitle">{addToCaseLabel ?? 'New volume or overlay'}</span>
+                        <span className="nc-upload-dialog-mode-title">Current case</span>
+                        <span className="nc-upload-dialog-mode-subtitle">{addToCaseLabel ?? 'Add these files'}</span>
                       </span>
                     </button>
-                    <button type="button" className={modeClass(mode === 'new')} onClick={() => setMode('new')} disabled={loading}>
-                      <span className="nc-upload-dialog-radio" aria-hidden="true" />
-                      <span className="min-w-0">
-                        <span className="nc-upload-dialog-mode-title">New case</span>
-                        <span className="nc-upload-dialog-mode-subtitle">Separate subject</span>
+                  )}
+                  <button type="button" className={modeClass(mode === 'new')} onClick={() => setMode('new')} disabled={loading}>
+                    <span className="nc-upload-dialog-radio" aria-hidden="true" />
+                    <span className="min-w-0">
+                      <span className="nc-upload-dialog-mode-title">One new case</span>
+                      <span className="nc-upload-dialog-mode-subtitle">Keep the selection together</span>
+                    </span>
+                  </button>
+                  <button type="button" className={modeClass(mode === 'dataset')} onClick={() => setMode('dataset')} disabled={loading || !isBatchImport}>
+                    <span className="nc-upload-dialog-radio" aria-hidden="true" />
+                    <span className="min-w-0">
+                      <span className="nc-upload-dialog-mode-title">Dataset</span>
+                      <span className="nc-upload-dialog-mode-subtitle">
+                        {isBatchImport ? `${batchSubjectIds.length} subjects → ${batchSubjectIds.length} cases` : 'Available when subjects are detected'}
                       </span>
-                    </button>
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {mode === 'dataset' && (
+                <div className="nc-upload-dialog-dataset-summary">
+                  <div className="nc-upload-dialog-dataset-title">{batchSubjectIds.length} cases will be created</div>
+                  <div className="nc-upload-dialog-dataset-subtitle">Subject IDs were detected from the folder structure.</div>
+                  <div className="nc-upload-dialog-subject-list">
+                    {batchSubjectIds.slice(0, 8).map((subjectId) => <span key={subjectId}>{subjectId}</span>)}
+                    {batchSubjectIds.length > 8 && <span>+{batchSubjectIds.length - 8} more</span>}
                   </div>
                 </div>
               )}
@@ -240,7 +390,7 @@ export function UploadCaseModal({
               {mode === 'new' && (
                 <div className="nc-upload-dialog-form">
                   <label className="nc-upload-dialog-field">
-                    <span className="nc-eyebrow">Subject ID</span>
+                    <span className="nc-eyebrow">Case name</span>
                     <input
                       data-testid="upload-case-name-input"
                       autoFocus
@@ -258,19 +408,33 @@ export function UploadCaseModal({
                       placeholder="e.g. sub-302"
                     />
                   </label>
+                </div>
+              )}
 
-                  <label className="nc-upload-dialog-field">
-                    <span className="nc-eyebrow">Description</span>
-                    <input
-                      type="text"
-                      value={description}
-                      onChange={(event) => setDescription(event.target.value)}
-                      disabled={loading}
-                      className="nc-upload-dialog-input"
-                      placeholder="Age, sex, clinical notes..."
-                    />
-                  </label>
-
+              {(mode === 'new' || mode === 'dataset') && (
+                <div className="nc-upload-dialog-optional">
+                  <button
+                    type="button"
+                    className="nc-upload-dialog-optional-trigger"
+                    onClick={() => setOptionalDetailsOpen((open) => !open)}
+                    aria-expanded={optionalDetailsOpen}
+                  >
+                    <ChevronDown size={13} className={optionalDetailsOpen ? 'is-open' : ''} aria-hidden="true" />
+                    Optional details
+                  </button>
+                  {optionalDetailsOpen && (
+                    <div className="nc-upload-dialog-form">
+                      <label className="nc-upload-dialog-field">
+                        <span className="nc-eyebrow">Description</span>
+                        <input
+                          type="text"
+                          value={description}
+                          onChange={(event) => setDescription(event.target.value)}
+                          disabled={loading}
+                          className="nc-upload-dialog-input"
+                          placeholder={mode === 'dataset' ? 'Applied to every case' : 'Age, sex, clinical context...'}
+                        />
+                      </label>
                   <div className="nc-upload-dialog-field">
                     <div className="nc-eyebrow">Modalities</div>
                     <div className="nc-upload-dialog-chip-row">
@@ -344,6 +508,8 @@ export function UploadCaseModal({
                       placeholder="QC notes, findings, or cohort context..."
                     />
                   </label>
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -357,12 +523,11 @@ export function UploadCaseModal({
         </div>
 
         <div className="nc-upload-dialog-footer">
-          <div className="nc-upload-dialog-note">NIfTI, DICOM and FreeSurfer outputs supported.</div>
           <div className="nc-upload-dialog-actions">
             <button type="button" onClick={onClose} disabled={loading} className="nc-btn">
               Cancel
             </button>
-            {hasSelectedFiles && (addToCaseEnabled && mode === 'current' ? (
+            {hasSelectedFiles && (mode === 'current' ? (
               <button
                 type="button"
                 data-testid="confirm-add-to-case"
@@ -377,10 +542,10 @@ export function UploadCaseModal({
                 type="button"
                 data-testid="confirm-upload-case"
                 onClick={() => void handleCreateNewCase()}
-                disabled={loading || !caseName.trim()}
+                disabled={loading || (mode === 'new' && !caseName.trim())}
                 className="nc-btn nc-btn-warning"
               >
-                {loading ? 'Uploading…' : addToCaseEnabled ? 'Create New Case' : 'Add to Workspace'}
+                {loading ? 'Uploading…' : mode === 'dataset' ? `Create ${batchSubjectIds.length} Cases` : 'Create Case'}
               </button>
             ))}
           </div>

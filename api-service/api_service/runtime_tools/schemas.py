@@ -21,7 +21,7 @@ STATIC_TOOLS = [
 ]
 
 
-def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
+def get_gui_tools() -> list[RuntimeToolSpec]:
     """Return the stable case and typed-viewer tool vocabulary."""
     return [
         RuntimeToolSpec(
@@ -63,6 +63,10 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
             name="gui_load_layer",
             description=(
                 "Load or refresh an MRI intensity, segmentation, or FreeSurfer surface layer. "
+                "Automatically registers existing managed case files before loading so they also appear in the load list. "
+                "Existing type/LUT metadata is preserved unless explicitly overridden. "
+                "For untracked volumes supply layer_type, and lut for segmentation; do not rerun analysis. "
+                "To rename a loaded layer without reloading, use gui_set_layer_display with name. "
                 "Surface curvature and DKT annotation companions are resolved automatically."
             ),
             input_schema={
@@ -74,6 +78,10 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
                             "Active-case path such as /case/mri/orig.mgz or /case/surf/lh.pial."
                         ),
                     },
+                    "layer_type": {"type": "string", "enum": ["intensity", "segmentation", "surface"],
+                                   "description": "Required for untracked volumes; optional explicit correction for tracked files."},
+                    "lut": {"type": "string", "enum": ["freesurfer", "binary"],
+                            "description": "Required when registering a segmentation without an existing LUT."},
                     "name": {"type": "string"},
                     "visible": {"type": "boolean", "default": True},
                 },
@@ -108,7 +116,8 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
             name="gui_set_layer_display",
             description=(
                 "Change display properties for specific loaded layers: opacity, volume "
-                "brightness/contrast, or surface coloring mode."
+                "brightness/contrast, or surface coloring mode. Use name with one layer ID to "
+                "rename it in place without reloading or changing its type or display settings."
             ),
             input_schema={
                 "type": "object",
@@ -118,6 +127,7 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
                         "items": {"type": "string"},
                         "minItems": 1,
                     },
+                    "name": {"type": "string", "minLength": 1, "maxLength": 255},
                     "opacity": {"type": "number", "minimum": 0, "maximum": 1},
                     "brightness": {"type": "number", "minimum": -100, "maximum": 100},
                     "contrast": {"type": "number", "minimum": 0, "maximum": 3},
@@ -213,13 +223,17 @@ def get_dynamic_gui_tools(_gui_state: dict) -> list[RuntimeToolSpec]:
         RuntimeToolSpec(
             name="gui_focus_label",
             description=(
-                "Find an anatomical segmentation label centroid and move the viewer cursor there."
+                "Focus a label in a specific segmentation. Prefer layer_id from gui_list_layers to preserve "
+                "nested output paths; alternatively use exact /case/... segmentation_file. "
+                "Bare filenames resolve registered artifacts when unique. Without a target, uses the default "
+                "whole-brain segmentation. Never substitute a parent structure when a requested nucleus is absent."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "label_query": {"type": "string"},
-                    "segmentation_file": {"type": "string"},
+                    "layer_id": {"type": "string", "description": "Loaded segmentation ID from gui_list_layers; mutually exclusive with segmentation_file."},
+                    "segmentation_file": {"type": "string", "description": "Exact case path, e.g. /case/thalamus/mri/ThalamicNuclei.v13.T1.mgz."},
                 },
                 "required": ["label_query"],
             },

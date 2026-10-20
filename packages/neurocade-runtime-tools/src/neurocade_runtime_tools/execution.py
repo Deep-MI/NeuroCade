@@ -36,6 +36,14 @@ runtime_progress_observer: ContextVar[ProgressObserver | None] = ContextVar(
 )
 
 
+def progress_signature(payload: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Exclude timestamps and liveness heartbeats from observable progress."""
+    return tuple(payload.get(key) for key in (
+        "kind", "label", "image", "run_id", "phase", "current_bytes", "total_bytes",
+        "completed_layers", "total_layers", "progress",
+    ))
+
+
 @dataclass(slots=True)
 class RuntimeBind:
     """Describe a bind mount for a structured runtime container request."""
@@ -45,6 +53,21 @@ class RuntimeBind:
     mode: str = "ro"
 
 
+@dataclass(slots=True)
+class LinkedRuntimeBind:
+    """A read-only bind from a directory explicitly authorized on the host."""
+
+    source_id: str
+    source_relative: str
+    container_path: str
+    mode: str = "ro"
+
+    @property
+    def host_path(self) -> None:
+        """Linked binds deliberately have no application-visible host path."""
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class BridgeBind:
     """A validated bind path relative to the bridge's configured data root."""
@@ -52,6 +75,7 @@ class BridgeBind:
     source_relative: str
     container_path: str
     mode: str = "ro"
+    host_path: Path | None = None
 
 
 @dataclass(slots=True)
@@ -60,14 +84,73 @@ class RuntimeContainerRunRequest:
 
     image: RuntimeImageSpec
     command: Sequence[str]
-    binds: Sequence[RuntimeBind | BridgeBind] = field(default_factory=tuple)
+    binds: Sequence[RuntimeBind | LinkedRuntimeBind | BridgeBind] = field(default_factory=tuple)
     scratch_paths: Sequence[str] = field(default_factory=tuple)
     env: Mapping[str, str] | None = None
     cwd: str | None = None
     network_disabled: bool = True
     gpu_enabled: bool = False
     isolated: bool = False
+    synthetic_fixture: bool = False
+    workflow_test: bool = False
     run_id: str | None = None
+
+
+def validate_synthetic_fixture(request: RuntimeContainerRunRequest, data_root: Path) -> None:
+    """Only two mounts of one fresh fixture subtree; never a case/data-root mount."""
+    if not (request.synthetic_fixture or request.workflow_test):
+        return
+    if not request.isolated or not request.network_disabled or request.gpu_enabled:
+        raise ValueError("Synthetic tests require isolation, no network, and no GPU")
+    if request.workflow_test:
+        validate_workflow_test(request, data_root)
+        return
+    if tuple(request.scratch_paths) != ("/workflow_output",) or len(request.binds) != 2:
+        raise ValueError("Synthetic tests require exactly the fixture and output-alias mounts")
+    case, output = request.binds
+    if not isinstance(case, BridgeBind) or not isinstance(output, BridgeBind):
+        raise ValueError("Synthetic fixtures require validated bridge binds")
+    if (case.host_path is not None or output.host_path is not None or case.mode != "rw" or output.mode != "rw"
+            or case.container_path != "/case with spaces" or output.container_path != "/workflow_output/output"):
+        raise ValueError("Synthetic fixtures cannot use host, linked-source, or arbitrary mounts")
+    relative = Path(case.source_relative)
+    out_relative = Path(output.source_relative)
+    if (len(relative.parts) != 2 or not relative.parts[0].startswith(".workflow-test-")
+            or relative.parts[1] != "case with spaces" or out_relative.parent != relative
+            or len(out_relative.parts) != 3):
+        raise ValueError("Synthetic fixture source must be a dedicated temporary subtree")
+    root = data_root.resolve(strict=True)
+    for bind in (case, output):
+        lexical = root / bind.source_relative
+        if lexical.resolve(strict=True) != lexical or not lexical.is_dir():
+            raise ValueError("Synthetic fixture paths must be directories without symlink aliases")
+
+
+def validate_workflow_test(request: RuntimeContainerRunRequest, data_root: Path) -> None:
+    """Accept only a private copied case and its output alias, never original data."""
+    if request.synthetic_fixture or len(request.binds) not in {1, 2}:
+        raise ValueError("Workflow tests require one copied case and optional output alias")
+    if tuple(request.scratch_paths) != ("/workflow_output",):
+        raise ValueError("Invalid workflow-test scratch paths")
+    root = data_root.resolve(strict=True)
+    first = request.binds[0]
+    if not isinstance(first, BridgeBind):
+        raise ValueError("Workflow tests require bridge binds")
+    relative = Path(first.source_relative)
+    if (len(relative.parts) != 2 or not relative.parts[0].startswith(".workflow-test-")
+            or relative.parts[1] != "case with spaces"):
+        raise ValueError("Workflow tests require a private copied case")
+    for index, bind in enumerate(request.binds):
+        if not isinstance(bind, BridgeBind) or bind.host_path is not None or bind.mode != "rw":
+            raise ValueError("Workflow tests cannot mount host or linked paths")
+        path = root / bind.source_relative
+        if path.resolve(strict=True) != path or not path.is_dir():
+            raise ValueError("Workflow test mounts cannot use symlink aliases")
+        target = "/case with spaces" if index == 0 else "/workflow_output/output"
+        if bind.container_path != target:
+            raise ValueError("Invalid workflow-test mount target")
+        if index and (path == root / relative or not path.is_relative_to(root / relative)):
+            raise ValueError("Output must be inside the copied case")
 
 
 @dataclass(slots=True)
@@ -120,6 +203,8 @@ def runtime_container_run_payload(request: RuntimeContainerRunRequest | None) ->
         "network_disabled": request.network_disabled,
         "gpu_enabled": request.gpu_enabled,
         "isolated": request.isolated,
+        "synthetic_fixture": request.synthetic_fixture,
+        "workflow_test": request.workflow_test,
         "run_id": request.run_id,
     }
 

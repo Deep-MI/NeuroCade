@@ -1,4 +1,4 @@
-"""Cancellation intent never grants another workflow access to live outputs."""
+"""One writer at a time, from observable facts that cannot outlive the writer."""
 
 import subprocess
 import threading
@@ -10,17 +10,20 @@ from api_service.jobs.manager import JobManager
 from api_service.jobs.reconcile import reconcile_interrupted_runs
 from api_service.runtime import neuroimaging_tasks, workflow_runs
 from api_service.runtime.run_admission import guard_output_submission
-from neurocade_runtime_tools.execution import cancellation_observer
+from neurocade_runtime_tools.bridge_client import BridgeClient
 from test_mcp_adapter import database as database
 
 from backend_common.db import Run, RunStatus
-from backend_common.run_statuses import run_owns_outputs
+from backend_common.run_statuses import run_is_active
 
 
-def rows(database):
+def rows(database, *, status=RunStatus.running):
+    # The writer is workspace-scoped: a partial unique index already forbids two
+    # queued or running rows on one case, so the interesting collisions are the
+    # ones the database cannot reject by itself.
     with database() as db:
-        db.add(Run(id="writer", workspace_id="w", created_by_user_id="u", status=RunStatus.running,
-                   run_type="test", job_id="writer-job", result_json={"output_ownership": "held"}))
+        db.add(Run(id="writer", workspace_id="w", created_by_user_id="u", status=status,
+                   run_type="test", job_id="writer-job"))
         db.add(Run(id="next", workspace_id="w", case_id="case-w", created_by_user_id="u", status=RunStatus.queued, run_type="test"))
         db.commit()
 
@@ -38,53 +41,126 @@ def assert_admission(database, blocked):
             assert submit(db.get(Run, "next"), None) == "admitted"
 
 
-@pytest.mark.parametrize("failure", [True, False])
-def test_two_workers_cancellation_requires_confirmed_stop(database, monkeypatch, failure):
+def use_runtime_writers(monkeypatch, run_ids, *, determined=True):
+    """Answer the writer probe the way a real bridge would."""
+    class Bridge:
+        def active_writers(self):
+            return determined, set(run_ids)
+
+    monkeypatch.setattr(BridgeClient, "from_environment", classmethod(lambda _cls: Bridge()))
+
+
+def test_a_scheduled_writer_blocks_a_second_submission(database, monkeypatch):
+    """A queued or running row is the schedule's own claim on the case."""
+    rows(database)
+    use_runtime_writers(monkeypatch, set())
+
+    assert_admission(database, True)
+
+    with database() as db:
+        db.get(Run, "writer").status = RunStatus.failed
+        db.commit()
+    assert_admission(database, False)
+
+
+def test_a_failure_after_the_container_exits_does_not_strand_the_case(database, monkeypatch):
+    """Bookkeeping that fails once must not cost the case its next run.
+
+    The container had already exited when the artifact write failed, so nothing
+    is writing and the next submission is admitted. The previous model recorded
+    the failure as unproven ownership and blocked the case permanently.
+    """
+    rows(database)
+    monkeypatch.setattr(neuroimaging_tasks, "SessionLocal", database)
+    use_runtime_writers(monkeypatch, set())
+
+    neuroimaging_tasks._update_run(
+        "writer",
+        status=RunStatus.failed,
+        result={"status": "failed", "return_code": None, "stderr": "(sqlite3.OperationalError) database is locked"},
+        error="(sqlite3.OperationalError) database is locked",
+    )
+
+    assert_admission(database, False)
+
+
+def test_a_surviving_container_blocks_admission_and_then_clears_itself(database, monkeypatch):
+    """The runtime, not a stored verdict, decides when the case is free again."""
+    rows(database)
+    reconcile_interrupted_runs(database)
+    with database() as db:
+        assert not run_is_active(db.get(Run, "writer"))
+
+    use_runtime_writers(monkeypatch, {"writer"})
+    assert_admission(database, True)
+
+    # The container exits. No operator action, no database edit.
+    use_runtime_writers(monkeypatch, set())
+    assert_admission(database, False)
+
+
+def test_an_unreachable_bridge_still_honours_the_schedule(database, monkeypatch):
+    """An unanswerable probe narrows protection; it never blocks forever."""
+    rows(database)
+
+    def unreachable(_cls):
+        raise RuntimeError("Runtime bridge is unavailable")
+
+    monkeypatch.setattr(BridgeClient, "from_environment", classmethod(unreachable))
+
+    assert_admission(database, True)
+    with database() as db:
+        db.get(Run, "writer").status = RunStatus.completed
+        db.commit()
+    assert_admission(database, False)
+
+
+def test_cancelling_an_orphaned_run_finalizes_it_without_bridge_proof(database, monkeypatch):
+    """A job the manager no longer knows has no callback left to report."""
+    rows(database)
+    monkeypatch.setattr(workflow_runs, "job_manager", JobManager())
+    use_runtime_writers(monkeypatch, set())
+
+    def unreachable(_cls):
+        raise RuntimeError("Runtime bridge is unavailable")
+
+    monkeypatch.setattr(BridgeClient, "from_environment", classmethod(unreachable))
+
+    with database() as db:
+        result = workflow_runs.cancel_workflow_run(db, db.get(Run, "writer"))
+        assert result.status == RunStatus.canceled
+        assert result.result_json["cancellation"] == "stopped"
+
+    use_runtime_writers(monkeypatch, set())
+    assert_admission(database, False)
+
+
+def test_a_live_worker_keeps_the_case_until_it_writes_the_terminal_row(database, monkeypatch):
+    """Accepting a cancel request is still not the end of the run."""
     rows(database)
     manager = JobManager(concurrency={"fastsurfer": 2})
     monkeypatch.setattr(workflow_runs, "job_manager", manager)
     monkeypatch.setattr(neuroimaging_tasks, "SessionLocal", database)
-    entered, release_cancel, stop_writer, running = (threading.Event() for _ in range(4))
-
-    def callback():
-        entered.set()
-        if failure and not release_cancel.is_set():
-            raise RuntimeError("bridge unavailable")
-        assert release_cancel.wait(5)
-        stop_writer.set()
+    use_runtime_writers(monkeypatch, set())
+    stop_writer, running = threading.Event(), threading.Event()
 
     def writer():
-        observer = cancellation_observer.get()
-        assert observer is not None
-        observer(callback)
         running.set()
         assert stop_writer.wait(10)
         neuroimaging_tasks._update_run("writer", status=RunStatus.failed,
-                                      result={"status": "failed", "return_code": 137, "writer_stopped": True})
+                                       result={"status": "failed", "return_code": 137})
 
     manager.register("writer", writer)
     manager.submit("writer", queue="fastsurfer", job_id="writer-job")
     assert running.wait(5)
-
-    def request():
-        with database() as db:
-            result = workflow_runs.cancel_workflow_run(db, db.get(Run, "writer"))
-            return workflow_runs.cancellation_result(result)
-
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            pending = pool.submit(request)
-            assert entered.wait(5)
-            assert_admission(database, True)
-            with database() as db:
-                assert db.get(Run, "writer").status == RunStatus.running
-            if failure:
-                assert pending.result(timeout=5)["cancellation"] == "unresolved"
-                release_cancel.set()
-                request()
-            else:
-                release_cancel.set()
-                pending.result(timeout=5)
+        with database() as db:
+            workflow_runs.cancel_workflow_run(db, db.get(Run, "writer"))
+        with database() as db:
+            assert db.get(Run, "writer").status == RunStatus.running
+        assert_admission(database, True)
+
+        stop_writer.set()
         handle = manager._handles["writer-job"]
         assert handle.future is not None
         handle.future.result(timeout=5)
@@ -92,43 +168,11 @@ def test_two_workers_cancellation_requires_confirmed_stop(database, monkeypatch,
             writer_run = db.get(Run, "writer")
             assert writer_run.status == RunStatus.canceled
             assert writer_run.result_json["cancellation"] == "stopped"
-            assert not run_owns_outputs(writer_run)
         assert_admission(database, False)
     finally:
-        release_cancel.set()
         stop_writer.set()
         manager.shutdown(wait=True)
 
-
-def test_restart_keeps_ownership_until_bridge_confirms_stop(database, monkeypatch):
-    rows(database)
-    reconcile_interrupted_runs(database)
-    assert_admission(database, True)
-    manager = JobManager()
-    monkeypatch.setattr(workflow_runs, "job_manager", manager)
-    from neurocade_runtime_tools.bridge_client import BridgeClient
-
-    class Bridge:
-        stopped = False
-        def cancel(self, run_id):
-            if not self.stopped:
-                raise RuntimeError("no acknowledgement")
-        def status(self, run_id):
-            return {"state": "canceled", "writer_stopped": True}
-
-    bridge = Bridge()
-    monkeypatch.setattr(BridgeClient, "from_environment", lambda: bridge)
-    with database() as db:
-        run = db.get(Run, "writer")
-        workflow_runs.cancel_workflow_run(db, run)
-        assert run_owns_outputs(run)
-    assert_admission(database, True)
-    bridge.stopped = True
-    with database() as db:
-        run = db.get(Run, "writer")
-        workflow_runs.cancel_workflow_run(db, run)
-        assert not run_owns_outputs(run)
-    assert_admission(database, False)
 
 @pytest.mark.parametrize("failure", [True, False])
 def test_bridge_does_not_publish_canceled_before_stop(monkeypatch, failure):
@@ -216,13 +260,3 @@ def test_watcher_requires_daemon_stop_proof(monkeypatch, timed_out, confirmed):
     assert [call[1] for call in calls] == ["rm", "container"]
     assert record.public()["writer_stopped"] is confirmed
     assert record.public()["state"] == (("timed_out" if timed_out else "failed") if confirmed else "running")
-
-
-def test_integer_exit_code_does_not_release_ownership(database, monkeypatch):
-    rows(database)
-    monkeypatch.setattr(neuroimaging_tasks, "SessionLocal", database)
-    result = {"status": "failed", "return_code": 137}
-    neuroimaging_tasks._update_run("writer", status=RunStatus.failed, result=result)
-    assert_admission(database, True)
-    neuroimaging_tasks._update_run("writer", status=RunStatus.failed, result={**result, "writer_stopped": True})
-    assert_admission(database, False)

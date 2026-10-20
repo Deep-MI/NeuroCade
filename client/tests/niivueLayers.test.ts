@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   referenceWorldToVoxel,
   referenceVoxelToWorld,
+  externalCoordinateToWorld,
   reorderLoadedVolumes,
   setLoadedVolumeOpacity,
   syncLoadedVolumeOpacities,
@@ -353,4 +354,36 @@ void test('reordering pane layers only reorders real NiiVue volumes', async () =
   );
   assert.equal(volumes[0], fixedReference);
   assert.equal(coordinateSourceId, 'orig.mgz');
+});
+
+
+void test('loading a larger input after a segmentation expands the reference only once', async () => {
+  const segmentation = source('brainstem', 'segmentation', true);
+  const input = source('input', 'intensity', true);
+  const volumes = [loadedVolume(segmentation.id, 0)];
+  const nv = mockNiivue(volumes);
+  await ensureFixedNiivueReference(nv as never, [segmentation]);
+  const croppedReference = volumes[0];
+  const fullInput = loadedVolume(input.id, 0);
+  fullInput.extentsMin = [-100, -120, -130];
+  fullInput.extentsMax = [100, 120, 130];
+  volumes.push(fullInput);
+  await Promise.all([
+    ensureFixedNiivueReference(nv as never, [segmentation, input]),
+    ensureFixedNiivueReference(nv as never, [segmentation, input]),
+  ]);
+  const expandedReference = volumes[0];
+  assert.notEqual(expandedReference, croppedReference);
+  assert.equal(volumes.filter(v => v.__neurocadeFixedReference).length, 1);
+  assert.equal(expandedReference.__neurocadeCoordinateSourceId, input.id);
+  await ensureFixedNiivueReference(nv as never, [segmentation, input]);
+  assert.equal(volumes[0], expandedReference);
+});
+
+
+void test('external world cursor bypasses cropped/reference voxel transforms', () => {
+  const nv = { volumes: [{ matRAS: [2, 0, 0, 100, 0, 3, 0, -50, 0, 0, 4, 20, 0, 0, 0, 1] }] };
+  assert.deepEqual(externalCoordinateToWorld(nv as never, [12.5, -20, 7], 'world'), [12.5, -20, 7]);
+  assert.deepEqual(externalCoordinateToWorld(nv as never, [1, 2, 3]), [102, -44, 32]);
+  assert.equal(externalCoordinateToWorld(nv as never, [NaN, 0, 0], 'world'), null);
 });

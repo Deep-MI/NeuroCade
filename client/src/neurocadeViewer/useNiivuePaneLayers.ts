@@ -87,9 +87,9 @@ export function useNiivuePaneLayers({
   onError,
   onCoordinateSourceChange,
 }: UseNiivuePaneLayersOptions): void {
-  // Incremental layer reconcile. Every volume remains loaded regardless of
-  // visibility so hide/show cannot replace NiiVue's background/reference grid.
-  // Surfaces remain lazy because they do not participate in volume geometry.
+  // Incremental layer reconcile. Hidden volumes that have already been opened
+  // remain loaded, while initially-hidden imported artifacts stay lazy until
+  // the user enables them. This keeps large subject directories responsive.
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
@@ -102,7 +102,10 @@ export function useNiivuePaneLayers({
     const release = (id: string) => loadingLayerIds.delete(id);
     const syncFixedReference = async () => {
       try {
-        const coordinateSourceId = await ensureFixedNiivueReference(nv, latestVolumesRef.current);
+        const referenceSources = latestVolumesRef.current.filter((layer) => (
+          isSurfaceLayer(layer) || layer.visible || isLayerLoaded(nv, layer)
+        ));
+        const coordinateSourceId = await ensureFixedNiivueReference(nv, referenceSources);
         if (!cancelled) onCoordinateSourceChange?.(coordinateSourceId);
       } catch (error) {
         if (!cancelled) {
@@ -149,7 +152,7 @@ export function useNiivuePaneLayers({
         }
 
         const pending = sources.filter((layer) => (
-          (!isSurfaceLayer(layer) || layer.visible)
+          layer.visible
           && !isLayerLoaded(nv, layer)
           && !loadingLayerIds.has(layer.id)
         ));

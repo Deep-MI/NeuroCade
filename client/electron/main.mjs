@@ -12,6 +12,9 @@ const runtimeLauncher = path.join(repoRoot, 'scripts', 'run.sh');
 const appIconPath = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 const electronRuntimeDir = path.join(repoRoot, '.runtime', 'electron');
 const runtimeAppUrlPath = path.join(repoRoot, '.runtime', 'app-url');
+const runtimeBridgeTokenPath = path.join(repoRoot, '.runtime', 'bridge-token');
+const runtimeSourceTokenPath = path.join(repoRoot, '.runtime', 'source-token');
+const runtimeLaunchIdPath = path.join(repoRoot, '.runtime', 'launch-id');
 const healthPollMs = 1500;
 const healthTimeoutMs = 600_000;
 const appDisplayName = 'NeuroCade';
@@ -189,6 +192,80 @@ async function readEnvFile() {
   return values;
 }
 
+async function readRuntimeSecret(secretPath, label) {
+  const value = (await readFile(secretPath, 'utf8')).trim();
+  if (!value) throw new Error(`${label} is unavailable`);
+  return value;
+}
+
+async function registerLinkedDirectory(hostPath) {
+  const env = await readEnvFile();
+  const bridgePort = env.NEUROCADE_BRIDGE_PORT || '8765';
+  if (!/^\d+$/.test(bridgePort) || Number(bridgePort) < 1 || Number(bridgePort) > 65535) {
+    throw new Error('The runtime bridge port is invalid');
+  }
+  const [bridgeToken, sourceToken, launchId] = await Promise.all([
+    readRuntimeSecret(runtimeBridgeTokenPath, 'Runtime bridge authorization'),
+    readRuntimeSecret(runtimeSourceTokenPath, 'Host directory authorization'),
+    readRuntimeSecret(runtimeLaunchIdPath, 'Runtime launch session'),
+  ]);
+  const response = await fetch(`http://127.0.0.1:${bridgePort}/v1/sources/register`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${bridgeToken}`,
+      'Content-Type': 'application/json',
+      'X-NeuroCade-Launch-ID': launchId,
+      'X-NeuroCade-Source-Authorization': sourceToken,
+    },
+    body: JSON.stringify({ protocol_version: '3', host_path: hostPath }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Directory registration failed (${response.status})`);
+  }
+  if (typeof payload.source_id !== 'string' || typeof payload.name !== 'string') {
+    throw new Error('The runtime bridge returned an invalid directory authorization');
+  }
+  const manifestResponse = await fetch(
+    `http://127.0.0.1:${bridgePort}/v1/sources/${encodeURIComponent(payload.source_id)}/manifest`,
+    {
+      headers: {
+        Authorization: `Bearer ${bridgeToken}`,
+        'X-NeuroCade-Launch-ID': launchId,
+      },
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  const manifest = await manifestResponse.json().catch(() => ({}));
+  if (!manifestResponse.ok) {
+    throw new Error(manifest.error || `Directory inspection failed (${manifestResponse.status})`);
+  }
+  const filePaths = Array.isArray(manifest.entries)
+    ? manifest.entries.filter((entry) => entry?.type === 'file' && typeof entry.path === 'string').map((entry) => entry.path)
+    : [];
+  const roots = new Set(filePaths.map((value) => value.split('/')[0]).filter(Boolean));
+  const bidsSubjects = [...roots].filter((value) => value.startsWith('sub-') && value.length > 4).sort();
+  const fsSubjects = [...roots].filter((root) => (
+    filePaths.some((value) => value.startsWith(`${root}/mri/`))
+    && filePaths.some((value) => [`${root}/stats/`, `${root}/surf/`, `${root}/label/`].some((prefix) => value.startsWith(prefix)))
+  )).sort();
+  const singleFsSubject = filePaths.some((value) => value.startsWith('mri/'))
+    && filePaths.some((value) => ['stats/', 'surf/', 'label/'].some((prefix) => value.startsWith(prefix)));
+  const fastSurfer = filePaths.some((value) => /(?:deep|fastsurfer)/i.test(value));
+  const isBids = filePaths.includes('dataset_description.json') && bidsSubjects.length > 0;
+  return {
+    ...payload,
+    summary: {
+      format: isBids ? 'bids' : (singleFsSubject || fsSubjects.length > 0) ? (fastSurfer ? 'fastsurfer' : 'freesurfer') : 'generic',
+      scope: isBids ? 'dataset' : fsSubjects.length > 0 ? 'subjects-directory' : singleFsSubject ? 'subject' : 'folder',
+      subject_ids: isBids ? bidsSubjects : fsSubjects,
+      file_count: filePaths.length,
+      truncated: Boolean(manifest.truncated),
+    },
+  };
+}
+
 function healthUrlFor(appBaseUrl) {
   return new URL('/api/app/healthz', appBaseUrl).toString();
 }
@@ -320,6 +397,20 @@ ipcMain.on('neurocade:titlebar-theme', (event, theme) => {
   const targetWindow = BrowserWindow.fromWebContents(event.sender);
   if (!targetWindow || targetWindow.isDestroyed()) return;
   targetWindow.setTitleBarOverlay(titlebarOptions(theme));
+});
+
+ipcMain.handle('neurocade:select-linked-directory', async (event) => {
+  const targetWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!targetWindow || targetWindow !== mainWindow || targetWindow.isDestroyed()) {
+    throw new Error('Directory selection is only available from the NeuroCade window');
+  }
+  const selection = await dialog.showOpenDialog(targetWindow, {
+    title: 'Link data directory',
+    buttonLabel: 'Link directory',
+    properties: ['openDirectory'],
+  });
+  if (selection.canceled || selection.filePaths.length !== 1) return null;
+  return registerLinkedDirectory(selection.filePaths[0]);
 });
 
 async function boot() {

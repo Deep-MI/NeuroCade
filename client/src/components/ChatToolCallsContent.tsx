@@ -35,7 +35,7 @@ export function ChatToolCallsContent({
             {reasoningEntries.length > 0 && (
                 <details style={{ marginBottom: toolCalls.length > 0 ? 6 : 0 }}>
                     <summary style={{ cursor: 'pointer', fontWeight: 600, listStyle: 'revert' }}>
-                        Working notes
+                        Model reasoning
                     </summary>
                     <div style={{ marginTop: 4, paddingLeft: 16 }}>
                         {reasoningEntries.map((entry, index) => (

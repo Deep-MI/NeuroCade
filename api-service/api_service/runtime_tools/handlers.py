@@ -194,6 +194,13 @@ def handle_gui_set_layer_display(arguments: dict, gui_state: dict) -> list[ToolT
         return error_response("surface_color_mode applies only to surface layers.")
 
     updates: dict[str, Any] = {}
+    if "name" in arguments:
+        name = arguments["name"]
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 255:
+            return error_response("name must be a non-empty string of at most 255 characters.")
+        if len(layer_ids) != 1:
+            return error_response("Rename exactly one layer at a time.")
+        updates["name"] = name.strip()
     if "opacity" in arguments:
         updates["opacity"] = max(0.0, min(1.0, float(arguments["opacity"])))
     if "brightness" in arguments:
@@ -207,7 +214,7 @@ def handle_gui_set_layer_display(arguments: dict, gui_state: dict) -> list[ToolT
         updates["surface_color_mode"] = mode
     if not updates:
         return error_response(
-            "Provide opacity, brightness, contrast, or surface_color_mode."
+            "Provide name, opacity, brightness, contrast, or surface_color_mode."
         )
 
     command_id = enqueue_gui_command(

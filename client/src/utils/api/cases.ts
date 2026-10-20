@@ -1,7 +1,10 @@
 import type { RunCancellation } from '../runCancellation';
+import { describeRunLogSource, type RunLogSource } from '../runLogProvenance';
 import type {
   AnalysisToolSummary,
   ArtifactListItem,
+  CaseFileEntry,
+  CaseFileReference,
   CaseListResponse,
   CaseSummary,
   OutputsListResponse,
@@ -12,6 +15,7 @@ import type {
 
 import { appFetch, appFetchUrl, appJson, appOk, appUrl, expectOk, jsonRequest } from './core';
 import { configuredOutputLayerType } from '../artifactOutputs';
+import { uploadRelativePath } from '../uploadFiles';
 
 interface CaseRunItem {
   id: string;
@@ -34,7 +38,7 @@ interface ApiArtifactListItem {
 interface StartRunPayload {
   tool_id: string;
   case_id: string;
-  input_artifact_ids: string[];
+  input_files: CaseFileReference[];
   output_name_overrides: Record<string, string>;
 }
 
@@ -43,6 +47,49 @@ export interface CaseMetadataInput {
   modalities?: string[];
   tags?: string[];
   notes?: string | null;
+}
+
+export interface CaseUploadImportSummary {
+  format?: string;
+  scope?: string;
+  file_count?: number;
+  artifact_counts?: Record<string, number>;
+  warnings?: string[];
+  subject_ids?: string[];
+  created_case_count?: number;
+}
+
+export interface CreatedCaseUploadResult {
+  case_id: string;
+  title: string;
+  filenames: string[];
+  file_count: number;
+  default_layers?: Record<string, unknown>[];
+}
+
+export interface CaseUploadResult {
+  case_id: string;
+  filenames: string[];
+  workspace_id: string;
+  title: string;
+  import_summary?: CaseUploadImportSummary | null;
+  default_layers?: Record<string, unknown>[];
+  created_cases?: CreatedCaseUploadResult[];
+}
+
+export interface LinkedDirectorySelection {
+  protocol_version: string;
+  source_id: string;
+  name: string;
+  available: boolean;
+  created_at?: number;
+  summary?: {
+    format: string;
+    scope: string;
+    subject_ids: string[];
+    file_count: number;
+    truncated: boolean;
+  };
 }
 
 interface CaseUpdateInput extends CaseMetadataInput {
@@ -77,8 +124,9 @@ export async function fetchLogs(caseId: string): Promise<string> {
     console.warn(`fetchLogs: server returned ${res.status} for case ${caseId}`);
     return '';
   }
-  const data = await res.json() as { logs: string };
-  return data.logs;
+  const data = await res.json() as { logs: string; run?: RunLogSource | null };
+  const caption = describeRunLogSource(data.run ?? null);
+  return caption ? `[workflow] ${caption}\n\n${data.logs}` : data.logs;
 }
 
 interface SurfaceCompanionUrls {
@@ -187,6 +235,13 @@ export async function fetchCaseArtifacts(caseId: string): Promise<ArtifactListIt
   return artifacts.map(normalizeArtifactListItem);
 }
 
+export async function fetchCaseFiles(caseId: string): Promise<CaseFileEntry[]> {
+  return appJson<CaseFileEntry[]>(
+    `/cases/${encodeURIComponent(caseId)}/files`,
+    'Failed to fetch case files',
+  );
+}
+
 export async function saveGeneratedVolume(
   caseId: string,
   params: {
@@ -246,6 +301,13 @@ export async function downloadArtifactFile(artifact: ArtifactListItem): Promise<
   await downloadResponse(response, artifact.name, 'Failed to download artifact');
 }
 
+export async function downloadCaseFile(caseId: string, file: CaseFileReference): Promise<void> {
+  const params = new URLSearchParams({ source: file.source, path: file.path });
+  const response = await appFetch(`/cases/${encodeURIComponent(caseId)}/files/download?${params.toString()}`);
+  const fallbackFilename = file.path.split('/').at(-1) ?? 'case-file';
+  await downloadResponse(response, fallbackFilename, 'Failed to download case file');
+}
+
 export async function downloadCaseArchive(caseId: string, caseTitle?: string | null): Promise<void> {
   const response = await appFetch(`/cases/${encodeURIComponent(caseId)}/download`);
   await downloadResponse(response, `${caseTitle ?? caseId}.zip`, 'Failed to download case archive');
@@ -275,10 +337,12 @@ export async function createCaseWithUpload(
   workspaceId: string,
   caseName?: string,
   metadata: CaseMetadataInput = {},
-): Promise<{ case_id: string; filenames: string[]; workspace_id: string; title: string }> {
+  importMode: 'auto' | 'single' | 'dataset' = 'auto',
+): Promise<CaseUploadResult> {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
   formData.append('workspace_id', workspaceId);
+  formData.append('import_mode', importMode);
   if (caseName) {
     formData.append('title', caseName);
   }
@@ -294,30 +358,53 @@ export async function createCaseWithUpload(
   if (metadata.notes) {
     formData.append('notes', metadata.notes);
   }
+  const relativePaths = uploadFiles.map(uploadRelativePath);
+  formData.append('relative_paths', JSON.stringify(relativePaths));
   if (uploadFiles.length === 1) {
-    formData.append('file', uploadFiles[0]);
+    formData.append('file', uploadFiles[0], relativePaths[0]);
   } else {
-    uploadFiles.forEach((file) => formData.append('files', file));
+    uploadFiles.forEach((file, index) => formData.append('files', file, relativePaths[index]));
   }
-  return appJson<{ case_id: string; filenames: string[]; workspace_id: string; title: string }>(
+  return appJson<CaseUploadResult>(
     '/cases',
     'Upload failed',
     { method: 'POST', body: formData },
   );
 }
 
+export async function createCaseWithLinkedDirectory(
+  source: LinkedDirectorySelection,
+  workspaceId: string,
+  caseName?: string,
+  metadata: CaseMetadataInput = {},
+  importMode: 'auto' | 'single' | 'dataset' = 'auto',
+): Promise<CaseUploadResult> {
+  return appJson<CaseUploadResult>('/cases/linked', 'Linking directory failed', jsonRequest({
+    workspace_id: workspaceId,
+    source_id: source.source_id,
+    title: caseName,
+    description: metadata.description,
+    modalities: metadata.modalities ?? [],
+    tags: metadata.tags ?? [],
+    notes: metadata.notes,
+    import_mode: importMode,
+  }, { method: 'POST' }));
+}
+
 export async function addUploadToCase(
   files: File | File[],
   caseId: string,
-): Promise<{ case_id: string; filenames: string[]; workspace_id: string; title: string }> {
+): Promise<CaseUploadResult> {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
+  const relativePaths = uploadFiles.map(uploadRelativePath);
+  formData.append('relative_paths', JSON.stringify(relativePaths));
   if (uploadFiles.length === 1) {
-    formData.append('file', uploadFiles[0]);
+    formData.append('file', uploadFiles[0], relativePaths[0]);
   } else {
-    uploadFiles.forEach((file) => formData.append('files', file));
+    uploadFiles.forEach((file, index) => formData.append('files', file, relativePaths[index]));
   }
-  return appJson<{ case_id: string; filenames: string[]; workspace_id: string; title: string }>(
+  return appJson<CaseUploadResult>(
     `/cases/${encodeURIComponent(caseId)}/uploads`,
     'Upload failed',
     { method: 'POST', body: formData },

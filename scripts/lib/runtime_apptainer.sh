@@ -5,6 +5,15 @@ runtime_application_exists() {
   [[ -s "$APP_SIF" && -f "$APP_SIF.mode" && "$(sed -n '1p' "$APP_SIF.mode")" == "$APP_SIF_MODE" ]]
 }
 
+runtime_application_running() {
+  # Apptainer rewrites its starter argv after launch, so the launch ID passed
+  # on the command line is not visible to ps. Identity rests on the PID file
+  # instead: this launch session wrote it, stop removes it, and pid_matches
+  # pins the recorded start time so a recycled PID cannot impersonate it.
+  [[ -n "${LAUNCH_ID:-}" ]] || return 1
+  pid_matches "$APP_PID_FILE" "$(basename "$APP_SIF")"
+}
+
 runtime_pull_application() {
   runtime_application_exists && return
   fail "The application SIF is missing; rerun scripts/install.sh to download the latest release or build from source"
@@ -44,7 +53,7 @@ runtime_start_application() {
     "${APPTAINER_APP_COMMAND[@]}" &
     app_pid="$!"
     write_pid_file "$app_pid" "$APP_PID_FILE" || { kill "$app_pid" 2>/dev/null || true; fail "Could not record the Apptainer process identity"; }
-    trap 'stop_mcp_discovery; stop_application; stop_bridge' EXIT INT TERM
+    trap 'stop_mcp_discovery || true; stop_application || true; stop_bridge || true' EXIT INT TERM
     wait "$(sed -n '1p' "$APP_PID_FILE")"
   fi
 }

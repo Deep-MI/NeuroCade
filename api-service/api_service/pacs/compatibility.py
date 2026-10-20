@@ -12,16 +12,19 @@ from backend_common.db import Artifact, ArtifactKind, SessionLocal, Workspace
 from backend_common.storage import resolve_artifact_path
 
 
-def validate_input(path, requirement, db=None):
+def validate_input(path, requirement, db=None, *, source_path=None):
+    # Disposable copies keep the authorized source's workspace/provenance context;
+    # fingerprints and image dimensions are still checked against the copied bytes.
+    provenance_path = source_path if source_path is not None else path
     if not (requirement.modalities or requirement.dimensions or requirement.sequences):
         return
-    if not path.is_relative_to(settings.fs_data_root.resolve()):
+    if not provenance_path.is_relative_to(settings.fs_data_root.resolve()):
         return  # Not managed application storage (e.g. isolated catalog tooling).
     with (nullcontext(db) if db is not None else SessionLocal()) as db:
         workspace_id = None
         for workspace in db.query(Workspace).all():
             try:
-                if path.is_relative_to(workspace_storage_dir(settings, workspace.id).resolve()):
+                if provenance_path.is_relative_to(workspace_storage_dir(settings, workspace.id).resolve()):
                     workspace_id = workspace.id
                     break
             except FileNotFoundError:
@@ -38,7 +41,7 @@ def validate_input(path, requirement, db=None):
         exact = []
         for record in records:
             metadata = record.metadata_json or {}
-            if resolve_artifact_path(record) == path:
+            if resolve_artifact_path(record) == provenance_path:
                 exact.append(metadata)
             elif metadata.get("sha256") == digest:
                 matches.append(metadata)

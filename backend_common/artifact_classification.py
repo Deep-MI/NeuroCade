@@ -39,6 +39,9 @@ def artifact_mime_type(path: Path) -> str:
         ".md": "text/markdown",
         ".txt": "text/plain",
         ".log": "text/plain",
+        ".csv": "text/csv",
+        ".tsv": "text/tab-separated-values",
+        ".stats": "text/plain",
     }.get(path.suffix.lower(), "application/octet-stream")
 
 
@@ -80,8 +83,10 @@ def classify_artifact(
         values.setdefault("volume_role", "intensity")
     elif path.suffix.lower() == ".log":
         kind = ArtifactKind.log
-    elif path.suffix.lower() in {".json", ".txt", ".md", ".pdf", ".png"}:
+    elif path.suffix.lower() in {".json", ".txt", ".md", ".pdf", ".png", ".csv", ".tsv", ".stats"}:
         kind = ArtifactKind.report
+        if path.suffix.lower() in {".csv", ".tsv", ".stats"} or "stats" in path.parts:
+            values.setdefault("artifact_role", "statistics")
     elif fallback_kind is not None:
         kind = fallback_kind
     else:
@@ -92,3 +97,34 @@ def classify_artifact(
         mime_type=artifact_mime_type(path),
         metadata=values,
     )
+
+
+def classify_import_artifact(
+    path: Path,
+    *,
+    metadata: dict[str, object] | None = None,
+) -> ArtifactClassification | None:
+    """Classify files worth exposing in the semantic case catalog.
+
+    A case import may contain tens of thousands of implementation details. The
+    filesystem remains authoritative for those files; artifact rows are kept
+    only for neuroimaging data that NeuroCade can present meaningfully.
+    """
+    classification = classify_artifact(path, metadata=metadata)
+    if classification is None:
+        if path.suffix.lower() in {".lta", ".xfm", ".mat", ".ctab", ".lut"}:
+            return ArtifactClassification(
+                kind=ArtifactKind.derived,
+                mime_type=artifact_mime_type(path),
+                metadata={**(metadata or {}), "artifact_role": "transform"},
+            )
+        return None
+    if classification.kind in {ArtifactKind.volume, ArtifactKind.derived}:
+        return classification
+    if path.suffix.lower() == ".stats":
+        return classification
+    if path.suffix.lower() in {".csv", ".tsv"}:
+        parts = {part.lower() for part in path.parts}
+        if "stats" in parts or any(token in path.stem.lower() for token in ("stat", "metric", "measure")):
+            return classification
+    return None

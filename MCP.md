@@ -43,7 +43,7 @@ are checked again at redemption.
 
 ### Claude Desktop
 
-Select Claude Desktop, download the extension and open it in Claude on this Mac.
+Select Claude Desktop, download the extension and open it in Claude.
 Install and launch within 10 minutes, then start a new conversation. No JSON file,
 file picker or token entry is needed. NeuroCade must be running with MCP enabled.
 The extension launches the installed host connector outside Cowork’s isolated shell.
