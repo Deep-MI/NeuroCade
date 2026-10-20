@@ -5,7 +5,7 @@
   "version": "2.0.0",
   "icon": "logo.png",
   "description": "Connect Claude to a workspace in your local NeuroCade installation.",
-  "long_description": "Connects Claude to the workspace selected in NeuroCade. Install and launch within 10 minutes of downloading; pairing is automatic and credentials are stored privately on this Mac. Keep NeuroCade running. Confirm the case, scan and analysis with the user before running. Information requested by Claude may be sent to its model provider.",
+  "long_description": "Connects Claude to the workspace selected in NeuroCade. Install and launch within 10 minutes of downloading; pairing is automatic and credentials are stored privately. Keep NeuroCade running. Confirm the case, scan and analysis with the user before running. Information requested by Claude may be sent to its model provider.",
   "author": {
     "name": "NeuroCade"
   },
