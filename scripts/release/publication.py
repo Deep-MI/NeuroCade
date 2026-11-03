@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,14 @@ def newer_release_exists(plan: dict[str, str]) -> bool:
     )
 
 
+def verify_uploaded_installer(tag: str) -> None:
+    # Download the actual uploaded bytes while the release is still a draft.
+    with tempfile.TemporaryDirectory(prefix="neurocade-release-check-") as directory:
+        run("gh", "release", "download", tag, "--dir", directory,
+            "--pattern", "neurocade-install.sh*", "--pattern", "neurocade-release.json")
+        run("python3", "scripts/release/verify_installer.py", directory, tag)
+
+
 def publish(path: Path) -> None:
     plan = read_plan(path)
     tag = plan["tag"]
@@ -100,7 +109,8 @@ def publish(path: Path) -> None:
         # Incomplete assets remain hidden in a draft until every upload succeeds.
         sif, wheel, source = os.environ["APP_SIF"], os.environ["BRIDGE_WHEEL"], os.environ["SOURCE_ARCHIVE"]
         run("gh", "release", "upload", tag, sif, f"{sif}.sha256", wheel, f"{wheel}.sha256",
-            source, f"{source}.sha256", "neurocade-release.json", "--clobber")
+            source, f"{source}.sha256", "neurocade-release.json", "neurocade-install.sh", "neurocade-install.sh.sha256", "--clobber")
+        verify_uploaded_installer(tag)
         run("docker", "buildx", "imagetools", "create", "--tag", image, os.environ["CANDIDATE_DIGEST_IMAGE"])
         if not has_tag:
             run("git", "config", "user.name", "github-actions[bot]")

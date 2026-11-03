@@ -88,6 +88,7 @@ export interface StatusConfig {
 interface AnalysisToolInput {
   name: string;
   description: string;
+  kind: 'file' | 'directory';
 }
 
 /** One typed output declared by a configured analysis workflow. */
@@ -102,8 +103,22 @@ interface AnalysisToolOutput {
 /** Parameters submitted by the generated Run Analysis form. */
 export interface AnalysisRunParams {
   tool_id: string;
-  input_artifact_ids: string[];
+  input_files: CaseFileReference[];
   output_name_overrides: Record<string, string>;
+}
+
+export type CaseFileSource = 'managed' | 'linked';
+
+export interface CaseFileReference {
+  source: CaseFileSource;
+  path: string;
+}
+
+/** One authorized entry in the complete case file tree. */
+export interface CaseFileEntry extends CaseFileReference {
+  name: string;
+  type: 'file' | 'directory';
+  size_bytes: number | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,7 +137,6 @@ export interface AnalysisToolSummary {
   description: string;
   inputs: AnalysisToolInput[];
   outputs: AnalysisToolOutput[];
-  input_artifact_kind: 'intensity_volume';
   execution: {
     mode: 'synchronous' | 'background';
     gpu: boolean;
@@ -219,7 +233,7 @@ export interface AssistantActivity {
   run_id?: string | null;
   mode?: 'synchronous' | 'background' | null;
   device?: 'cpu' | 'gpu' | null;
-  phase?: 'waiting' | 'downloading' | 'extracting' | 'preparing' | 'verifying' | 'ready' | null;
+  phase?: 'waiting' | 'resolving_platform' | 'downloading' | 'extracting' | 'preparing' | 'verifying' | 'ready' | null;
   progress?: number | null;
   completed_layers?: number | null;
   total_layers?: number | null;

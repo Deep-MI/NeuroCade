@@ -27,9 +27,12 @@ def reconcile_interrupted_runs(
             if run.job_id not in recovered
         ]
         for run in stuck:
+            # The row is released here on purpose. Whether a container survived
+            # the restart is answered by the runtime at the next submission, not
+            # by a flag this process would have no way to ever clear.
             run.status = RunStatus.failed
-            run.result_json = {**(run.result_json or {}), "output_ownership": "unresolved",
-                               "cancellation": "unresolved" if (run.result_json or {}).get("cancellation") else None}
+            run.result_json = {**(run.result_json or {}),
+                               "cancellation": "stopped" if (run.result_json or {}).get("cancellation") else None}
             if not run.error_message:
                 run.error_message = "Interrupted by an application restart."
         if stuck:

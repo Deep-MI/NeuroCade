@@ -243,12 +243,25 @@ class AssistantToolExecutionStore:
     ) -> None:
         if db is None or execution is None:
             return
+        AssistantToolExecutionStore._persist_terminal_result(
+            db, execution, result, status="failed" if result.is_error else "succeeded", retain_arguments=retain_arguments,
+        )
+
+    @staticmethod
+    def _persist_terminal_result(
+        db: Session,
+        execution: AssistantToolExecution,
+        result: ToolResult,
+        *,
+        status: str,
+        retain_arguments: bool = True,
+    ) -> None:
         identity = inspect(execution).identity
         if identity is None:
             raise ValueError("Completion requires a persisted invocation")
         execution_id = identity[0]
         values: dict[Any, Any] = {
-            "status": "failed" if result.is_error else "succeeded",
+            "status": status,
             "result_json": result.as_dict(),
             "error_message": result.content if result.is_error else None,
         }
@@ -279,9 +292,6 @@ class AssistantToolExecutionStore:
         """Fail closed an execution whose side-effect outcome cannot be proven."""
         if db is None or execution is None:
             return
-        current = db.get(AssistantToolExecution, execution.id)
-        if current is None or current.status != "executing":
-            return
         result = ToolResult(
             content=(
                 f"Error: {reason} The tool was not retried because its side-effect outcome is unknown."
@@ -290,10 +300,7 @@ class AssistantToolExecutionStore:
             details={"ledger_status": "ambiguous"},
             terminal=True,
         )
-        current.status = "ambiguous"
-        current.result_json = result.as_dict()
-        current.error_message = result.content
-        db.commit()
+        AssistantToolExecutionStore._persist_terminal_result(db, execution, result, status="ambiguous")
 
 
 def reconcile_interrupted_tool_executions(db: Session) -> list[dict[str, Any]]:

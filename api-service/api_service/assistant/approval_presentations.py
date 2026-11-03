@@ -14,11 +14,13 @@ from api_service.assistant.approval_contracts import (
     AssistantApprovalTone,
     AssistantWorkflowApprovalPresentation,
 )
+from api_service.runtime_tools.neurodesk_images import validate_catalog_image
 from api_service.runtime_tools.workflow_catalog import (
     NeuroimagingWorkflow,
     load_user_workflow_catalog,
     load_workflow_catalog,
     resolve_workflow,
+    workflow_output_path,
     workflow_source,
 )
 from backend_common.db import AssistantScope, Run
@@ -78,7 +80,7 @@ def workflow_approval_presentation(
 ) -> AssistantWorkflowApprovalPresentation | None:
     """Resolve configured workflow metadata for one exact tool_call request."""
     tool_id = arguments.get("tool_id")
-    inputs = arguments.get("inputs")
+    inputs = arguments.get("input_files")
     if not isinstance(tool_id, str) or not isinstance(inputs, list):
         return None
     try:
@@ -91,13 +93,15 @@ def workflow_approval_presentation(
         return None
 
     presented_inputs: list[dict[str, str]] = []
-    for index, path in enumerate(inputs):
+    for index, reference in enumerate(inputs):
         configured = workflow.inputs[index] if index < len(workflow.inputs) else None
+        source = reference.get("source") if isinstance(reference, dict) else None
+        path = reference.get("path") if isinstance(reference, dict) else None
         presented_inputs.append(
             {
                 "name": configured.name if configured is not None else f"input_{index + 1}",
                 "description": configured.description if configured is not None else "Workflow input",
-                "path": str(path),
+                "path": f"{source}:{path}" if source and path else str(reference),
             }
         )
     return AssistantWorkflowApprovalPresentation.model_validate(
@@ -111,7 +115,7 @@ def workflow_approval_presentation(
                 {
                     "name": output.name,
                     "description": output.description,
-                    "path": output.path,
+                    "path": workflow_output_path(workflow, output.path),
                 }
                 for output in workflow.outputs
             ],
@@ -132,10 +136,8 @@ def config_upsert_approval_presentation(
     definition = arguments.get("definition")
     if not isinstance(definition, dict):
         return None
-    try:
-        workflow = NeuroimagingWorkflow.model_validate(definition)
-    except ValueError:
-        return None
+    workflow = NeuroimagingWorkflow.model_validate(definition)
+    validate_catalog_image(workflow.neurodesk_image, settings=settings)
 
     user_id = _user_id(state)
     existing_source: str | None = None
@@ -154,7 +156,7 @@ def config_upsert_approval_presentation(
     scheduling = "Background" if workflow.execution.mode == "background" else "Synchronous"
     compute = "GPU enabled" if workflow.execution.gpu else "CPU only"
     output_rows = [
-        _row(output.name, f"{output.description} — {output.path}", code=True)
+        _row(output.name, f"{output.description} — {workflow_output_path(workflow, output.path)}", code=True)
         for output in workflow.outputs
     ]
     sections: list[dict[str, Any]] = [

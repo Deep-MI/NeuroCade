@@ -7,12 +7,15 @@ import platform as host_platform
 import re
 from pathlib import Path
 
-from .execution import BridgeBind, RuntimeContainerRunRequest
+from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command, validate_synthetic_fixture
 from .protocol import validate_environment
 
 _DOCKER_PLATFORM = re.compile(
     r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)?$"
 )
+RUNTIME_LABEL = "org.neurocade.runtime"
+RUN_ID_LABEL = "org.neurocade.run-id"
+LAUNCH_ID_LABEL = "org.neurocade.launch-id"
 
 
 def configured_docker_platform() -> str | None:
@@ -41,7 +44,8 @@ def build_docker_argv(
     platform: str,
     launch_id: str | None = None,
 ) -> list[str]:
-    if request.isolated and request.binds:
+    validate_synthetic_fixture(request, data_root)
+    if request.isolated and request.binds and not (request.synthetic_fixture or request.workflow_test):
         raise ValueError("Isolated container execution cannot use bind mounts")
     command = [str(part) for part in request.command]
     if not command:
@@ -57,9 +61,9 @@ def build_docker_argv(
             "--name",
             f"neurocade-tool-{safe_id}",
             "--label",
-            "org.neurocade.runtime=true",
+            f"{RUNTIME_LABEL}=true",
             "--label",
-            f"org.neurocade.run-id={run_id}",
+            f"{RUN_ID_LABEL}={run_id}",
             "--user",
             f"{os.getuid()}:{os.getgid()}",
             "--read-only",
@@ -68,16 +72,19 @@ def build_docker_argv(
             "--security-opt",
             "no-new-privileges",
             "--tmpfs",
-            "/tmp:rw,nosuid,nodev",
+            # MATLAB Runtime extracts shared libraries here and needs executable mappings.
+            "/tmp:rw,nosuid,nodev," + ("noexec" if request.isolated and not request.workflow_test else "exec"),
         ]
     )
     if launch_id:
-        argv.extend(["--label", f"org.neurocade.launch-id={launch_id}"])
+        argv.extend(["--label", f"{LAUNCH_ID_LABEL}={launch_id}"])
     if request.network_disabled:
         argv.extend(["--network", "none"])
     if request.gpu_enabled:
         argv.extend(["--gpus", "all"])
-    if request.isolated:
+    if request.workflow_test:
+        argv.extend(["--pids-limit", "256", "--cpus", "2", "--memory", "8g", "--memory-swap", "8g"])
+    elif request.isolated:
         argv.extend(["--pids-limit", "64", "--memory", "512m", "--memory-swap", "512m"])
     for path in request.scratch_paths:
         # Docker Desktop reports bind roots as root-owned even when the macOS
@@ -88,8 +95,13 @@ def build_docker_argv(
     for bind in request.binds:
         if not isinstance(bind, BridgeBind):
             raise TypeError("Docker adapter requires root-relative bridge binds")
-        source = (data_root / bind.source_relative).resolve()
-        source.relative_to(data_root)
+        if bind.host_path is not None:
+            if bind.mode != "ro":
+                raise ValueError("Linked source binds must be read-only")
+            source = bind.host_path.resolve(strict=True)
+        else:
+            source = (data_root / bind.source_relative).resolve()
+            source.relative_to(data_root)
         mount = f"type=bind,src={source},dst={bind.container_path}"
         if bind.mode == "ro":
             mount += ",readonly"
@@ -105,3 +117,25 @@ def build_docker_argv(
     argv.append(request.image.docker_reference)
     argv.extend(command[1:])
     return argv
+
+
+def active_writer_run_ids(*, timeout: float = 30) -> set[str]:
+    """Return the run IDs whose tool containers the daemon still reports as running.
+
+    The daemon is the authority here, not the bridge's memory: labels survive a
+    bridge restart, so an interrupted launch session can still be asked whether
+    a container is writing. A failed query raises instead of reporting an empty
+    set, because absence and disconnection must never look alike.
+    """
+    listing = run_managed_command(
+        [
+            "docker", "container", "ls", "--no-trunc",
+            "--filter", f"label={RUNTIME_LABEL}=true",
+            "--format", "{{.Label \"" + RUN_ID_LABEL + "\"}}",
+        ],
+        timeout=timeout,
+        capture_output=True,
+    )
+    if listing.returncode != 0:
+        raise RuntimeError("Docker did not report the running tool containers")
+    return {line.strip() for line in listing.stdout.splitlines() if line.strip()}

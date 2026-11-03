@@ -93,6 +93,9 @@ def test_assistant_read_write_edit_tools_are_case_scoped(tmp_path, monkeypatch, 
 
     read_result = _execute(tools["read"], {"path": "/case/notes/report.txt"})
     assert "left hippocampus: pending" in read_result.content
+    assert _execute(tools["read"], {"path": "/case/notes/report.txt", "offset": 5}).content == _execute(
+        tools["read"], {"path": "/case/notes/report.txt", "offset_bytes": 5}
+    ).content
 
     edit_result = _execute(
         tools["edit"],

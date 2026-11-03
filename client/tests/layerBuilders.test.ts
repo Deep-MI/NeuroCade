@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createViewerLayer, outputVolumeLayerType } from '../src/utils/layerBuilders.js';
+import { createViewerLayer, outputVolumeLayerType, refreshViewerLayer } from '../src/utils/layerBuilders.js';
 import type { OutputVolume } from '../src/types.js';
 
 void test('createViewerLayer applies shared segmentation defaults', () => {
@@ -43,4 +43,31 @@ void test('output volumes preserve their required declared layer type', () => {
   };
 
   assert.equal(outputVolumeLayerType(segmentation), 'segmentation');
+});
+
+
+void test('refresh retains segmentation display settings and honors an explicit name', () => {
+  const source = { filename: 'brainstemSsLabels.v13.mgz', url: '/old', type: 'segmentation' as const, lut: 'freesurfer' };
+  const existing = { ...createViewerLayer({ ...source, name: 'My segmentation' }), opacity: 0.4, visible: false };
+  const loaded = createViewerLayer({ ...source, url: '/new', name: 'Brainstem', artifactId: 'artifact-1' });
+  const refreshed = refreshViewerLayer(existing, loaded, { name: 'Brainstem' });
+  assert.equal(refreshed.name, 'Brainstem');
+  assert.equal(refreshed.type, 'segmentation');
+  assert.equal(refreshed.opacity, 0.4);
+  assert.equal(refreshed.visible, false);
+  assert.equal(refreshed.lut, 'freesurfer');
+  assert.equal(refreshed.url, '/new');
+  assert.equal(refreshed.artifactId, 'artifact-1');
+  assert.equal(refreshViewerLayer(existing, loaded, {}).name, 'My segmentation');
+});
+
+void test('registered segmentation repairs a previously misclassified intensity layer', () => {
+  const source = { filename: 'brainstemSsLabels.v13.mgz', url: '/volume' };
+  const existing = createViewerLayer({ ...source, type: 'intensity' });
+  const loaded = createViewerLayer({ ...source, type: 'segmentation', name: 'Brainstem' });
+  const repaired = refreshViewerLayer(existing, loaded, {});
+  assert.equal(repaired.type, 'segmentation');
+  assert.equal(repaired.name, 'Brainstem');
+  assert.equal(repaired.opacity, 0.7);
+  assert.equal(repaired.lut, 'freesurfer');
 });

@@ -96,3 +96,42 @@ def test_assistant_image_search_returns_compact_page(monkeypatch: pytest.MonkeyP
     assert result.is_error is False
     assert payload["items"][0]["image"] == "vnmd/ants_2.10.0:20260101"
     assert result.details["catalog_stale"] is True
+
+
+def test_invalid_workflow_image_returns_tool_error_without_approval_or_execution(monkeypatch):
+    from functools import partial
+
+    from api_service.assistant.approval_presentations import config_upsert_approval_presentation
+    from api_service.assistant.tool_execution_store import AssistantToolExecutionStore
+    from api_service.assistant.tool_executor import AssistantToolExecutor
+    from api_service.assistant.tools.definition import ToolDefinition, ToolRisk
+    from api_service.runtime_tools import neurodesk_images as images
+
+    from backend_common.settings import get_settings
+
+    monkeypatch.setattr(images, "load_image_catalog", lambda **_kwargs: images.LoadedImageCatalog(
+        images.parse_catalog_manifest("ants_2.10.0_20260101 categories:registration"), "test", False,
+    ))
+    async def execute(_context, _arguments):
+        raise AssertionError("Invalid workflow must not execute")
+    tool = ToolDefinition("config_upsert", "", {}, execute, risk=ToolRisk.write,
+                          approval_presentation=partial(config_upsert_approval_presentation, {}, settings=get_settings()))
+    arguments = {"definition": {"id": "missing", "image": "vnmd/missing_1:20260101",
+                                "description": "missing", "details": "missing", "script": "echo example"}}
+    events = []
+
+    async def event_sink(kind, payload):
+        events.append((kind, payload))
+
+    result = asyncio.run(AssistantToolExecutor(AssistantToolExecutionStore()).execute({
+        "event_sink": event_sink,
+        "tool_definitions": [tool], "pending_tool_calls": [{"name": tool.name, "call_id": "invalid", "arguments": arguments}],
+    }))
+    assert result["status"] == "running"
+    assert "approval_request" not in result
+    assert "Unknown" in result["conversation"][-1]["content"]
+    assert result["tool_calls_log"][-1]["is_error"]
+    assert len(result["conversation"]) == len(result["tool_calls_log"]) == 1
+    assert len(events) == 1
+    assert events[0][0] == "tool_call"
+    assert events[0][1]["call_id"] == "invalid"

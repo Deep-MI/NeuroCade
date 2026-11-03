@@ -38,6 +38,7 @@ export function assistantActivityMessage(
             : '';
         let message = `Downloading ${activity.label}${bytes}${percent == null ? '' : ` (${percent}%)`}…`;
         if (activity.phase === 'waiting') message = `Waiting to prepare ${activity.label}…`;
+        if (activity.phase === 'resolving_platform') message = `Checking available image platforms for ${activity.label}…`;
         if (activity.phase === 'preparing') message = `Preparing ${activity.label}…`;
         if (activity.phase === 'verifying') message = `Verifying ${activity.label}…`;
         if (activity.phase === 'extracting') {

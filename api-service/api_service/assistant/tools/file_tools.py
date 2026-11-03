@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from api_service.assistant.approval_presentations import (
     file_edit_approval_presentation,
@@ -33,7 +33,10 @@ from backend_common.submission_lock import submission_lock
 class ReadFileArgs(BaseModel):
     path: str = Field(..., description="Text file path under the active workspace or case root.")
     max_bytes: int = Field(20000, ge=1, le=50000, description="Maximum number of bytes to return.")
-    offset_bytes: int = Field(0, ge=0, description="Zero-based byte offset. Ignored when from_end is true.")
+    offset_bytes: int = Field(
+        0, ge=0, validation_alias=AliasChoices("offset_bytes", "offset"),
+        description="Zero-based byte offset. Ignored when from_end is true.",
+    )
     from_end: bool = Field(False, description="Read the final max_bytes bytes. Use this for log completion checks.")
 
 

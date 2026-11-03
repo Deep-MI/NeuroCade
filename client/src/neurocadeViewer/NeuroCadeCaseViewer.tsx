@@ -31,6 +31,7 @@ interface NeuroCadeCaseViewerProps {
   canAddLayers?: boolean;
   onLocationChange?: (location: LocationInfo) => void;
   externalCoordinate?: [number, number, number] | null;
+  externalCoordinateSpace?: 'voxel' | 'world';
   onBackendChange?: (backend: ViewerBackend | null) => void;
 }
 
@@ -83,6 +84,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   canAddLayers = false,
   onLocationChange,
   externalCoordinate,
+  externalCoordinateSpace = 'voxel',
   onBackendChange,
 }, ref) => {
   const {
@@ -437,6 +439,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
             manualWindowingIds={manualWindowingRef}
             dragMode={dragMode}
             externalCoordinate={externalCoordinate}
+            externalCoordinateSpace={externalCoordinateSpace}
             reportLocation
             showOrientationLabels={showOrientationLabels}
             onReady={handlePaneReady}

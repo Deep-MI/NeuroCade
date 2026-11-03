@@ -3,6 +3,8 @@ import type Niivue from '@niivue/niivue';
 import {
   FIXED_REFERENCE_ID,
   createFixedReferenceGrid,
+  referenceContainsVolumes,
+  type VolumeBounds,
 } from './fixedReference.js';
 import { isSurfaceLayer, type Volume } from '../types.js';
 import {
@@ -14,6 +16,7 @@ import { reorderLoadedVolumes } from './loadedVolumeDisplay.js';
 
 interface FixedReferenceState {
   generation: number;
+  bounds?: VolumeBounds;
   creation?: Promise<NiivueVolumeInterop | null>;
 }
 
@@ -99,6 +102,7 @@ async function createFixedReference(
   fixedReference.url = FIXED_REFERENCE_ID;
   fixedReference.opacity = 0;
   fixedReference.__neurocadeFixedReference = true;
+  stateFor(nv).bounds = grid.bounds;
   return fixedReference;
 }
 
@@ -112,15 +116,21 @@ async function ensureReferenceCreated(
 
   while (state.generation === generation) {
     const existing = fixedReferenceVolume(nv);
-    if (existing) return existing;
+    if (existing && state.bounds && referenceContainsVolumes(state.bounds, loadedSources)) return existing;
     if (state.creation) {
       await state.creation;
       continue;
     }
 
+    // Keep the previous field of view, expanding it only when new data extends beyond it.
+    const referenceSources = existing ? [...loadedSources, existing] : loadedSources;
+    if (existing) {
+      const index = asNiivueInterop(nv).volumes.indexOf(existing);
+      if (index >= 0) nv.model.removeVolume(index);
+    }
     const creation = createFixedReference(
       nv,
-      loadedSources,
+      referenceSources,
       resolutionSource,
       generation,
     );

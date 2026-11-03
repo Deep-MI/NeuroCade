@@ -88,6 +88,7 @@ def search(db, context, request):
     finally:
         client.close()
     log_event(db, context, "pacs.searched", details={"workspace_id": request.workspace_id, "count": len(results)})
+    db.commit()
     return results
 
 
@@ -180,6 +181,7 @@ def persist_submission(db, context, request, chosen, study):
     db.commit()
     dispatch(db, row)
     log_event(db, context, "pacs.submitted", case_id=case.id, details={"import_id": identifier})
+    db.commit()
     return serialize(row)
 
 
@@ -212,6 +214,7 @@ def cancel_import(db, context, import_id):
             if row.job_id:
                 job_manager.cancel(row.job_id)
             log_event(db, context, "pacs.canceled", case_id=row.case_id, details={"import_id": row.id})
+            db.commit()
         return serialize(row)
 
 
@@ -235,4 +238,5 @@ def retry_import(db, context, import_id):
         db.commit()
         dispatch(db, row)
         log_event(db, context, "pacs.retried", case_id=row.case_id, details={"import_id": row.id})
+        db.commit()
         return serialize(row)

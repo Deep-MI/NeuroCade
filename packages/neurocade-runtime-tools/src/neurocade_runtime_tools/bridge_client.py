@@ -11,10 +11,12 @@ from typing import Any
 import requests
 
 from .execution import (
+    LinkedRuntimeBind,
     RuntimeBind,
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
     cancellation_observer,
+    progress_signature,
     runtime_progress_observer,
 )
 from .protocol import BUILD_VERSION, PROTOCOL_VERSION, TERMINAL_RUN_STATES, RunState, RuntimeImageSpec, relative_to_data_root
@@ -25,7 +27,12 @@ class BridgeError(RuntimeError):
 
 
 class RuntimeStoppedTimeout(TimeoutError):
-    writer_stopped = True
+    """The bridge reported a timeout after confirming the container stopped."""
+
+    def __init__(self, message: str, *, stdout: str = "", stderr: str = "") -> None:
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class RuntimeGpuUnavailableError(RuntimeError):
@@ -124,6 +131,60 @@ class BridgeClient:
             request_timeout=(10, preparation_timeout),
         )
 
+    def active_writers(self) -> tuple[bool, set[str]]:
+        """Return whether the runtime could be asked, and which runs still write.
+
+        A ``False`` determination means the question was unanswerable, not that
+        no writer exists. Callers must not read it as an all-clear.
+        """
+        payload = self._request("GET", "/v1/writers")
+        run_ids = payload.get("run_ids")
+        if not isinstance(run_ids, list):
+            raise BridgeError("Runtime bridge returned an invalid writer listing")
+        return bool(payload.get("determined")), {str(value) for value in run_ids}
+
+    def linked_source_manifest(self, source_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/sources/{source_id}/manifest")
+
+    def revoke_linked_source(self, source_id: str) -> bool:
+        payload = self._request("DELETE", f"/v1/sources/{source_id}")
+        return bool(payload.get("revoked"))
+
+    def read_linked_source(
+        self,
+        source_id: str,
+        relative_path: str,
+        *,
+        offset: int = 0,
+        length: int = 8 * 1024 * 1024,
+    ) -> tuple[bytes, int]:
+        try:
+            response = self.session.post(
+                f"{self.base_url}/v1/sources/read",
+                headers=self.headers,
+                json={
+                    "protocol_version": PROTOCOL_VERSION,
+                    "source_id": source_id,
+                    "relative_path": relative_path,
+                    "offset": offset,
+                    "length": length,
+                },
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise BridgeError(f"Runtime bridge is unavailable: {exc}") from exc
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("error")
+            except ValueError:
+                detail = response.text
+            raise BridgeError(f"Runtime bridge returned {response.status_code}: {detail or 'request failed'}")
+        try:
+            size = int(response.headers["X-NeuroCade-File-Size"])
+        except (KeyError, ValueError) as exc:
+            raise BridgeError("Runtime bridge returned an invalid linked file response") from exc
+        return response.content, size
+
     def status(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{run_id}")
 
@@ -139,13 +200,23 @@ class BridgeClient:
         assert run is not None and run.run_id is not None
         binds = []
         for bind in run.binds:
-            if not isinstance(bind, RuntimeBind):
-                raise TypeError("Application requests require host-path runtime binds")
-            binds.append({
-                "source_relative": relative_to_data_root(bind.host_path, self.data_root, label="Bind source"),
-                "container_path": bind.container_path,
-                "mode": bind.mode,
-            })
+            if isinstance(bind, RuntimeBind):
+                binds.append({
+                    "source_relative": relative_to_data_root(bind.host_path, self.data_root, label="Bind source"),
+                    "container_path": bind.container_path,
+                    "mode": bind.mode,
+                })
+            elif isinstance(bind, LinkedRuntimeBind):
+                if bind.mode != "ro":
+                    raise ValueError("Linked source binds must be read-only")
+                binds.append({
+                    "linked_source_id": bind.source_id,
+                    "linked_relative": bind.source_relative,
+                    "container_path": bind.container_path,
+                    "mode": "ro",
+                })
+            else:
+                raise TypeError("Application requests require host-path or linked-source runtime binds")
         return {
             "protocol_version": PROTOCOL_VERSION,
             "build_version": BUILD_VERSION,
@@ -156,6 +227,8 @@ class BridgeClient:
                 "env": dict(run.env or {}), "cwd": run.cwd,
                 "network_disabled": run.network_disabled, "gpu_enabled": run.gpu_enabled,
                 "isolated": run.isolated,
+                "synthetic_fixture": run.synthetic_fixture,
+                "workflow_test": run.workflow_test,
             },
             "timeout_s": request.timeout_s,
             "workdir_relative": relative_to_data_root(request.cwd, self.data_root, label="Working directory") if request.cwd else None,
@@ -181,7 +254,9 @@ class BridgeClient:
             # multi-GB image pull must not consume the tool's execution budget.
             preparation_timeout = max(60, int(os.environ.get("NEUROCADE_BRIDGE_PREPARE_TIMEOUT_SECONDS", "7200")))
             disconnect_grace = max(5, int(os.environ.get("NEUROCADE_BRIDGE_DISCONNECT_GRACE_SECONDS", "30")))
-            deadline = time.monotonic() + preparation_timeout + (request.timeout_s or 0) + 15
+            preparation_deadline = time.monotonic() + preparation_timeout
+            execution_deadline: float | None = None
+            preparation_progress: tuple[Any, ...] | None = None
             disconnected_at: float | None = None
             last_progress: dict[str, Any] | None = None
             last_progress_publish_at = 0.0
@@ -225,7 +300,8 @@ class BridgeClient:
                         raise BridgeError("Runtime bridge has not confirmed that the output writer stopped")
                     terminal = True
                     if run_state == RunState.timed_out:
-                        raise RuntimeStoppedTimeout(f"Runtime command timed out after {request.timeout_s}s")
+                        raise RuntimeStoppedTimeout(f"Runtime command timed out after {request.timeout_s}s",
+                                                    stdout=str(state.get("stdout") or ""), stderr=str(state.get("stderr") or ""))
                     result = RuntimeExecutionResult(
                         request=request, returncode=int(state.get("returncode") or 0),
                         stdout=str(state.get("stdout") or ""), stderr=str(state.get("stderr") or ""),
@@ -234,8 +310,20 @@ class BridgeClient:
                     if request.check and result.returncode != 0:
                         raise BridgeError(f"Runtime command failed with exit code {result.returncode}: {result.stderr}")
                     return result
-                if time.monotonic() > deadline:
-                    raise TimeoutError("Runtime bridge did not report a terminal result")
+                monotonic_now = time.monotonic()
+                if run_state == RunState.accepted:
+                    if isinstance(progress, dict):
+                        signature = progress_signature(progress)
+                        if signature != preparation_progress:
+                            preparation_deadline = monotonic_now + preparation_timeout
+                            preparation_progress = signature
+                    if monotonic_now > preparation_deadline:
+                        raise TimeoutError("Image preparation made no progress before its idle timeout")
+                elif request.timeout_s is not None:
+                    if execution_deadline is None:
+                        execution_deadline = monotonic_now + request.timeout_s + 15
+                    if monotonic_now > execution_deadline:
+                        raise TimeoutError("Runtime bridge did not report a terminal result")
                 time.sleep(self.poll_interval_s)
         finally:
             if submitted and not terminal:

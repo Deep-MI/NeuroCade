@@ -14,6 +14,7 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        volume_roles: [intensity]
         modalities: [MR]
         dimensions: [3]
         sequences: [T1]
@@ -172,6 +173,7 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        volume_roles: [intensity]
         modalities: [MR]
         dimensions: [3]
         sequences: [T1]
@@ -256,6 +258,7 @@ tools:
     inputs:
       - name: t1
         description: T1-weighted input volume.
+        volume_roles: [intensity]
         modalities: [MR]
         dimensions: [3]
         sequences: [T1]

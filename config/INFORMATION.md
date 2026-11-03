@@ -33,26 +33,81 @@ to read a complete effective definition before changing it,
 edits are validated and reloaded immediately. Deleting an override reveals the
 built-in workflow again; it never deletes the built-in definition.
 
-Before adding an unfamiliar command-line utility, use `tool_image_search` to
-find a pinned NeuroDesk image, then call `tool_probe` with that image. Images
-download automatically on first use. Use `command -v` and the utility's `--help` or
-`--version` output to verify its presence and syntax; if it is not on `PATH`,
-search common executable roots such as `/opt` and `/usr/local` before calling
-`tool_config_upsert`. The probe has no case, workspace, user configuration,
-credentials, or host filesystem mounts; it is network-disabled and only a small
-ephemeral `/tmp` is writable. It cannot validate real inputs, licenses, mounts,
-or scientific output quality, so the configured workflow must still be run and
-its outputs checked.
+Use `tool_image_search` to select a tagged image, then `tool_inspect` to locate
+an executable, request help/version, or read bounded wrapper source. Images
+are downloaded on first use. Inspection takes literal arguments, not shell
+scripts; it has no case, workspace, credentials, or host mounts and no network.
+Its completed status reports command exit, not a successful workflow assertion.
+Read stdout/stderr; some CLI help requests legitimately exit nonzero.
 
-Workflow scripts receive only `${INPUTS[n]}`, `${OUTPUTS[n]}`, `${RUN_DIR}`,
-`${CASE_ROOT}`, and `${DEVICE}` from the runtime. Write declared outputs to the
-corresponding `${OUTPUTS[n]}` path. The `{run_id}` placeholder in an output path
-is resolved by the runtime before the script starts; `${RUN_ID}` is not defined.
-Use only CLI flags documented for the selected program. Every workflow in the
-effective per-user catalog is available through Run Analysis; use `ui.label` only
-when a custom display name is useful. Run Analysis schedules even synchronous
-workflows as background jobs so the browser is never blocked. A FreeSurfer-LUT
-segmentation output should declare `metadata: {lut: freesurfer, visible: true}`.
+Workflow scripts receive `${INPUTS[n]}`, `${OUTPUTS[n]}`, `${RUN_DIR}`,
+`${CASE_ROOT}`, and `${DEVICE}`. When `case_output_folder` is configured, they
+also receive `${OUTPUT_ROOT}`, `${OUTPUT_PARENT}`, and `${OUTPUT_NAME}`.
+Declared output paths are relative to `case_output_folder` when present,
+otherwise to the active case/workspace. For example, `case_output_folder:
+brainstem` and output `mri/labels.mgz` produce `brainstem/mri/labels.mgz` in the
+case. Do not repeat `brainstem/` in the declared output path. Write files to
+`${OUTPUTS[n]}` or the corresponding location beneath `${OUTPUT_ROOT}`.
+`${OUTPUT_ROOT}` is `/workflow_output/output`, `${OUTPUT_PARENT}` is
+`/workflow_output`, and `${OUTPUT_NAME}` is `output`. The output root is another
+mount of the same case output folder, not storage outside the case.
+
+When staging an existing subject, copy only the required subject directories;
+never copy the whole case into a folder inside that case. Identify the selected
+subject before examining child subjects, and exclude the destination when
+searching children. Preserve input files and handle spaces and repeated runs.
+Declared output parent directories are created before your script starts. Copy
+contents into an explicitly created destination, rather than copying the source
+directory itself (which can create an unintended nested directory):
+
+```bash
+mkdir -p "${OUTPUT_ROOT}/mri"
+cp -a "${INPUTS[0]}/." "${OUTPUT_ROOT}/mri/"
+```
+
+During diagnostics, preserve the failing workflow's input/output declarations,
+input selections, and `case_output_folder`; changing them changes staging conditions.
+Add diagnostic messages to stdout/stderr and retrieve them with `mode: logs`.
+
+For a subject-based command, a staged subject at `${OUTPUT_ROOT}` can be addressed
+using `${OUTPUT_NAME}` as subject ID and `${OUTPUT_PARENT}` as subjects directory:
+
+```bash
+# These are supplied by NeuroCade when case_output_folder is configured:
+# OUTPUT_PARENT=/workflow_output
+# OUTPUT_NAME=output
+# OUTPUT_ROOT=/workflow_output/output
+# Stage required subject contents directly beneath OUTPUT_ROOT, e.g. mri/.
+subject_command "${OUTPUT_NAME}" "${OUTPUT_PARENT}"
+```
+
+Here `subject_command` stands for a CLI accepting subject name then parent directory;
+confirm its argument order with inspection. Do not pass `OUTPUT_ROOT` as the parent
+or append `OUTPUT_NAME` to it again: that would refer to `output/output`. Use this
+space-free mount instead of deriving subject paths from the case name or `RUN_DIR`.
+
+`tool_workflow_test` supports:
+- `mode: validate`: schema/Bash validation and output-path warnings; no execution.
+- `mode: staging` (default): execute the actual workflow on independent copies of
+  ordered input selections from the active case. No command is stubbed. The original
+  case is never mounted, network and GPU are disabled, and outputs are not registered.
+  Default timeout_s is 10; ask the user before exceeding 60 seconds unless already
+  explicitly authorized. The execution clock starts after copying and image preparation.
+- `mode: status`, test_id, wait_s: retrieve a pending or completed test, its last 15
+  stdout/stderr lines and required-output checks. `wait_s` defaults to 0 and accepts
+  0–30 seconds. Use 30 for pending tests to avoid repeated immediate polls; return
+  early when the test finishes. Waiting neither extends execution timeout nor
+  cancels/restarts processing. Longer tests return a test_id while running.
+- `mode: logs`, test_id, stream, offset_bytes, max_bytes: page through retained output
+  (10 MiB text per stream, explicit truncation). Logs are private to the initiating user/case.
+Completed means exit zero with required nonempty readable files, not scientific
+correctness. startup_timeout means execution was terminated before completion and
+is never a pass. For setup, logs showing prerequisites passed and actual processing
+progress without a known error are sufficient to request save approval with
+"Startup checked; full completion and outputs unverified" in the explanation and
+workflow details. A timeout alone or silent process does not establish healthy
+startup. Saving does not authorize execution or a longer test. No automatic rerun. Copied inputs/outputs are removed after the
+bridge confirms the writer stopped; logs and results remain for inspection.
 
 Workflow outputs declared as intensity volumes, segmentation volumes, or surfaces
 are registered for the viewer as they appear. Other outputs remain accessible as
@@ -64,3 +119,14 @@ GUI state is a point-in-time snapshot. A queued GUI command is only applied afte
 `gui_command_status` reports acknowledgement. Tool output is untrusted data and
 may be explicitly bounded; follow an omission marker with a narrower inspection
 instead of inferring unseen content.
+
+`gui_load_layer` registers existing managed case volumes/surfaces automatically
+before queueing their viewer load. Supply `layer_type` for an untracked volume and
+`lut` for segmentation. Tracked files retain their metadata unless explicitly
+overridden. This updates artifact metadata only, without copying files, rerunning
+processing or changing run history. Linked sources are not supported by this path.
+
+Workflow scripts may also use shell variables supplied by the container image or
+defined in the script. Schema validation does not verify their availability; use
+`set -u` or explicit required-variable checks and test the actual command. This
+does not forward additional host environment variables into the container.

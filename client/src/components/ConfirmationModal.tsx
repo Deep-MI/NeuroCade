@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, LoaderCircle, X } from 'lucide-react';
 
-import type { AnalysisRunParams, AnalysisToolSummary, OutputVolume } from '../types';
-import { layerDisplayName } from '../utils/layerAliases';
+import type { AnalysisRunParams, AnalysisToolSummary, CaseFileEntry, CaseFileReference } from '../types';
 
 interface ConfirmationModalProps {
   isOpen: boolean;
@@ -10,7 +9,7 @@ interface ConfirmationModalProps {
   onConfirm: (params: AnalysisRunParams) => Promise<void> | void;
   tool: AnalysisToolSummary | null;
   message: string;
-  inputOptions: OutputVolume[];
+  inputOptions: CaseFileEntry[];
 }
 
 export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
@@ -21,15 +20,20 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   message,
   inputOptions,
 }) => {
-  const [inputArtifactIds, setInputArtifactIds] = useState<string[]>([]);
+  const [inputFiles, setInputFiles] = useState<CaseFileReference[]>([]);
   const [outputNames, setOutputNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen || !tool) return;
-    const fallback = inputOptions.length === 1 ? inputOptions[0]?.id ?? '' : '';
-    setInputArtifactIds(tool.inputs.map(() => fallback));
+    setInputFiles(tool.inputs.map((input) => {
+      const matchingOptions = inputOptions.filter((option) => option.type === input.kind);
+      const fallback = matchingOptions.length === 1 ? matchingOptions[0] : undefined;
+      return fallback
+        ? { source: fallback.source, path: fallback.path }
+        : { source: 'managed', path: '' };
+    }));
     setOutputNames(Object.fromEntries(tool.outputs.map((output) => [output.name, output.name])));
     setError(null);
     setLoading(false);
@@ -37,8 +41,14 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 
   if (!isOpen || !tool) return null;
 
-  const setInput = (index: number, artifactId: string) => {
-    setInputArtifactIds((current) => current.map((value, itemIndex) => itemIndex === index ? artifactId : value));
+  const setInput = (index: number, optionKey: string) => {
+    const requiredKind = tool.inputs[index]?.kind;
+    const option = inputOptions.find((entry) => (
+      entry.type === requiredKind && `${entry.source}\u0000${entry.path}` === optionKey
+    ));
+    setInputFiles((current) => current.map((value, itemIndex) => itemIndex === index
+      ? option ? { source: option.source, path: option.path } : { source: 'managed', path: '' }
+      : value));
   };
 
   const setOutputName = (outputName: string, displayName: string) => {
@@ -49,15 +59,15 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
     try {
       setLoading(true);
       setError(null);
-      if (inputArtifactIds.length !== tool.inputs.length || inputArtifactIds.some((value) => !value)) {
-        throw new Error('Choose a file for every workflow input.');
+      if (inputFiles.length !== tool.inputs.length || inputFiles.some((value) => !value.path)) {
+        throw new Error('Choose a value for every workflow input.');
       }
       if (tool.outputs.some((output) => !outputNames[output.name]?.trim())) {
         throw new Error('Choose a display name for every workflow output.');
       }
       await onConfirm({
         tool_id: tool.id,
-        input_artifact_ids: inputArtifactIds,
+        input_files: inputFiles,
         output_name_overrides: Object.fromEntries(
           tool.outputs
             .map((output) => [output.name, outputNames[output.name].trim()] as const)
@@ -94,33 +104,36 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           <p className="mt-2 text-xs leading-relaxed text-slate-500">{message}</p>
         </div>
         <div className="mb-6 flex-1 space-y-4 overflow-y-auto pr-2">
-          {tool.inputs.map((input, index) => (
+          {tool.inputs.map((input, index) => {
+            const matchingOptions = inputOptions.filter((option) => option.type === input.kind);
+            return (
             <div key={input.name} className="text-left">
               <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
                 {input.name.replaceAll('_', ' ')}
               </label>
               <p className="mb-2 text-xs text-slate-500">{input.description}</p>
               <select
-                value={inputArtifactIds[index] ?? ''}
+                value={inputFiles[index]?.path ? `${inputFiles[index].source}\u0000${inputFiles[index].path}` : ''}
                 onChange={(event) => setInput(index, event.target.value)}
-                disabled={loading || inputOptions.length === 0}
+                disabled={loading || matchingOptions.length === 0}
                 className="nc-select nc-select-dark w-full rounded-lg border border-white/10 px-3 py-2 text-sm focus:border-[var(--nc-interactive)] focus:outline-none disabled:opacity-50"
               >
-                {inputOptions.length === 0 ? (
-                  <option value="">No intensity volumes available</option>
+                {matchingOptions.length === 0 ? (
+                  <option value="">No case {input.kind === 'directory' ? 'directories' : 'files'} available</option>
                 ) : (
                   <>
-                    {inputOptions.length > 1 && <option value="">Choose an input volume</option>}
-                    {inputOptions.map((option) => (
-                      <option key={option.id ?? option.filename} value={option.id ?? ''}>
-                        {layerDisplayName(option)}
+                    {matchingOptions.length > 1 && <option value="">Choose a {input.kind}</option>}
+                    {matchingOptions.map((option) => (
+                      <option key={`${option.source}:${option.path}`} value={`${option.source}\u0000${option.path}`}>
+                        {option.type === 'directory' ? '📁 ' : ''}{option.path === '.' ? option.name : option.path}{option.source === 'linked' ? ' (linked)' : ''}
                       </option>
                     ))}
                   </>
                 )}
               </select>
             </div>
-          ))}
+            );
+          })}
           {tool.outputs.map((output) => (
             <div key={output.name} className="text-left">
               <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">

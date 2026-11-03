@@ -11,4 +11,7 @@ contextBridge.exposeInMainWorld('neurocadeElectron', {
   setTitlebarTheme(theme) {
     ipcRenderer.send('neurocade:titlebar-theme', theme === 'light' ? 'light' : 'dark');
   },
+  selectLinkedDirectory() {
+    return ipcRenderer.invoke('neurocade:select-linked-directory');
+  },
 });

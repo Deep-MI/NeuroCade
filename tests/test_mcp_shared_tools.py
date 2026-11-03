@@ -20,6 +20,7 @@ def test_registry_and_prompt_parity(database, case_id):
         builder = service.tool_builder()
         local = builder.build(state)[0]
         external = service.definitions(state)
+        assert len(local) == len({tool.name for tool in local})
         assert {tool.name for tool in local} == set(external)
         for tool in local:
             assert tool.parameters == external[tool.name].parameters
@@ -27,7 +28,7 @@ def test_registry_and_prompt_parity(database, case_id):
             assert tool.risk == external[tool.name].risk
         advertised = {tool.name for tool in builder.discover(state)}
         assert set(external) <= advertised
-        assert {'read', 'write', 'edit', 'tool_config_upsert', 'tool_config_delete', 'tool_probe', 'tool_image_search', 'gui_load_layer', 'workspace_file_tree', 'get_case'} <= advertised
+        assert {'read', 'write', 'edit', 'tool_config_upsert', 'tool_config_delete', 'tool_inspect', 'tool_workflow_test', 'tool_image_search', 'gui_load_layer', 'workspace_file_tree', 'get_case'} <= advertised
         state['tool_specs'] = builder.build(state)[1]
         assert build_system_prompt(ROOT_DIR / 'config', state) in instructions(state)
         for name in ['SOUL.md', 'INFORMATION.md', 'RULES.md']:
@@ -115,7 +116,10 @@ async def test_prepare_analysis_rejects_incompatible_pacs_before_approval(databa
         db.add(artifact)
         db.commit()
         result = await service.invoke(db, 'c', 'prepare_analysis', {
-            'case_id': 'case-w', 'arguments': {'tool_id': 'fastsurfer_fast', 'artifact_ids': [artifact.id]},
+            'case_id': 'case-w', 'arguments': {
+                'tool_id': 'fastsurfer_fast',
+                'input_files': [{'source': 'managed', 'path': 'scan.nii'}],
+            },
         })
         assert result['result']['is_error'], result
         assert message in result['result']['content']

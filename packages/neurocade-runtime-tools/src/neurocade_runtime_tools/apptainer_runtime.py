@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command
+from .execution import BridgeBind, RuntimeContainerRunRequest, run_managed_command, validate_synthetic_fixture
 from .protocol import validate_environment
 
 
@@ -50,7 +50,7 @@ def _assert_rootless(request: RuntimeContainerRunRequest) -> None:
         value = str(token)
         if value in {"--fakeroot", "--writable", "--writable-tmpfs", "sudo"} or value.startswith("--fakeroot"):
             raise ValueError(f"Disallowed privilege escalation in tool command: {value}")
-    if request.isolated and (request.binds or request.gpu_enabled):
+    if request.isolated and ((request.binds and not (request.synthetic_fixture or request.workflow_test)) or request.gpu_enabled):
         raise ValueError("Isolated Apptainer runs cannot use binds or a GPU")
 
 
@@ -61,6 +61,7 @@ def build_container_argv(
     prepared_image: Path | str,
 ) -> list[str]:
     """Build a shell-free argv for a verified, immutable SIF."""
+    validate_synthetic_fixture(request, data_root)
     _assert_rootless(request)
     root = data_root.expanduser().resolve(strict=True)
     image = Path(prepared_image).expanduser().resolve(strict=True)
@@ -80,8 +81,13 @@ def build_container_argv(
             raise TypeError("Apptainer adapter requires root-relative bridge binds")
         if bind.mode not in {"ro", "rw"}:
             raise ValueError(f"Unsupported bind mode: {bind.mode}")
-        source = (root / bind.source_relative).resolve(strict=True)
-        source.relative_to(root)
+        if bind.host_path is not None:
+            if bind.mode != "ro":
+                raise ValueError("Linked source binds must be read-only")
+            source = bind.host_path.resolve(strict=True)
+        else:
+            source = (root / bind.source_relative).resolve(strict=True)
+            source.relative_to(root)
         target = _container_path(bind.container_path, label="Bind target")
         specification = f"{source}:{target}" + (":ro" if bind.mode == "ro" else "")
         argv.extend(["--bind", specification])

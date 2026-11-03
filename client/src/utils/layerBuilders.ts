@@ -86,3 +86,21 @@ export function createViewerLayer(source: ViewerLayerSource, options: ViewerLaye
     contrast: 1.0,
   };
 }
+
+
+/** Refresh file contents without discarding an existing layer's display choices. */
+export function refreshViewerLayer(
+  existing: Volume,
+  loaded: Volume,
+  overrides: { name?: string; visible?: boolean },
+): Volume {
+  if (existing.type !== loaded.type) return loaded;
+  return {
+    ...loaded,
+    ...existing,
+    url: loaded.url,
+    artifactId: loaded.artifactId ?? existing.artifactId,
+    name: overrides.name?.trim() ?? existing.name,
+    visible: overrides.visible ?? existing.visible,
+  };
+}

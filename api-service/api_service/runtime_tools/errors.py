@@ -1,6 +1,7 @@
 """Stable workflow validation codes, independent of displayed wording."""
 
 INPUT_ERRORS = {
+    "artifact_role_incompatible": "The selected case file has an incompatible imaging role",
     "pacs_provenance_invalid": "PACS input changed or lacks verified provenance; re-import it",
     "pacs_modality_incompatible": "PACS input modality is incompatible with this workflow",
     "pacs_dimensions_incompatible": "PACS input dimensions are incompatible with this workflow",

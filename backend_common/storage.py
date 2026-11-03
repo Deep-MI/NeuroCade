@@ -11,6 +11,8 @@ settings = get_settings()
 
 def resolve_artifact_path(artifact: Artifact) -> Path:
     """Return an artifact path confined to its owning case or workspace."""
+    if (artifact.metadata_json or {}).get("source") == "linked":
+        raise ValueError("Linked artifacts do not have a managed filesystem path")
     relative = PurePosixPath(artifact.relative_path)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("Artifact path escapes its storage root")

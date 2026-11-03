@@ -22,6 +22,7 @@ from api_service.assistant.tools.catalog_execution import (
 )
 from api_service.assistant.tools.definition import ToolDefinition, ToolExecutionContext, ToolResult, ToolRisk
 from api_service.assistant.tools.registration import ToolRegistration
+from api_service.assistant.tools.workflow_inputs import prepare_analysis_inputs
 from api_service.helpers import get_case_for_user, get_workspace_for_user
 from api_service.policies import require_case_write, require_workspace_write
 from api_service.runtime_tools.neurodesk_images import validate_catalog_image
@@ -32,6 +33,7 @@ from api_service.runtime_tools.workflow_catalog import (
     resolve_workflow,
     search_workflows,
     upsert_user_workflow,
+    workflow_output_path,
     workflow_source,
 )
 from backend_common.db import AssistantScope
@@ -51,7 +53,8 @@ class CatalogConfigUpsertArgs(BaseModel):
         ...,
         description=(
             "Complete workflow definition to create or replace. Use only documented CLI flags. "
-            "Output paths are relative (for example mri/segmentation.mgz), never /case/... paths. "
+            "Output paths are relative to case_output_folder when set, otherwise to the case/workspace "
+            "(for example mri/segmentation.mgz). Do not repeat the output-folder prefix or use /case/... paths. "
             "The script must directly double-quote every ${INPUTS[n]} and ${OUTPUTS[n]} reference. "
             "For a FreeSurfer-LUT segmentation, set output metadata.lut to "
             "freesurfer and metadata.visible to true. Do not add optional command flags that "
@@ -107,21 +110,9 @@ class AssistantCatalogTools:
                 parallel_safe=True,
             ),
             ToolRegistration(
-                "tool_inspect",
-                "Load the extended guidance, ordered inputs, outputs, and execution contract for one configured workflow.",
-                {
-                    "type": "object",
-                    "properties": {"tool_id": {"type": "string", "description": "Exact tool id returned by tool_search."}},
-                    "required": ["tool_id"],
-                    "additionalProperties": False,
-                },
-                self.inspect,
-                parallel_safe=True,
-            ),
-            ToolRegistration(
                 "tool_call",
-                "Run one fixed catalog workflow using its exact tool_id and ordered /case/... or /workspace/... inputs.",
-                CatalogToolCallArgs.model_json_schema(),
+                "Run one fixed catalog workflow using its exact tool_id and ordered authorized case-relative inputs.",
+                _inline_schema(CatalogToolCallArgs.model_json_schema()),
                 self.call,
                 ToolRisk.workflow,
                 approval_presentation=partial(workflow_approval_presentation, settings=settings),
@@ -159,7 +150,8 @@ class AssistantCatalogTools:
                 ),
                 ToolRegistration(
                     "tool_config_upsert",
-                    "Create or replace one workflow in the authenticated user's private catalog overlay.",
+                    "Create or replace one workflow in the authenticated user's private catalog overlay. "
+                    "First review the draft with tool_workflow_test mode=validate and address its warnings.",
                     _catalog_config_upsert_schema(),
                     self.config_upsert,
                     ToolRisk.write,
@@ -221,6 +213,7 @@ class AssistantCatalogTools:
                 tool.execution.gpu,
                 image=runtime_image_spec(tool.neurodesk_image),
             )
+            prepared_inputs = prepare_analysis_inputs(state, arguments)
         except Exception as exc:
             return ToolResult.error(f"Error preparing tool image: {exc}")
         binds = self.catalog_executor.catalog_runtime_binds(state)
@@ -243,6 +236,7 @@ class AssistantCatalogTools:
             workflow=tool,
             validate_submission=validate_submission,
             gpu_enabled=gpu_enabled,
+            prepared_inputs=prepared_inputs,
         )
         if result.is_error:
             return result
@@ -357,6 +351,47 @@ class AssistantCatalogTools:
             return ToolResult.structured(payload)
         except Exception as exc:
             return ToolResult.error(f"Error reading workflow configuration: {exc}")
+
+    @staticmethod
+    def config_validate(_state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        """Return concrete authoring feedback without mutating the catalog or running a script."""
+        try:
+            parsed = CatalogConfigUpsertArgs.model_validate(arguments)
+            tool = NeuroimagingWorkflow.model_validate(parsed.definition)
+            warnings: list[dict[str, str]] = []
+            if not any(output.required for output in tool.outputs):
+                warnings.append({
+                    "code": "no_required_output",
+                    "message": "Every output is optional. Mark the main requested result required so a missing result fails the run.",
+                })
+            directory_staging = bool(tool.case_output_folder and any(item.kind == "directory" for item in tool.inputs))
+            if directory_staging:
+                warnings.append({
+                    "code": "directory_output_alias",
+                    "message": "OUTPUT_ROOT aliases CASE_ROOT/case_output_folder. Copy only explicitly required subject directories, "
+                    "not every case entry. realpath and literal path comparisons cannot identify bind-mount aliases. "
+                    "A symlink-only probe does not reproduce this mount layout.",
+                })
+            return ToolResult.structured({
+                "status": "schema_valid",
+                "saved": False,
+                "executed": False,
+                "outputs": [
+                    {"name": output.name, "case_relative_path": workflow_output_path(tool, output.path), "required": output.required}
+                    for output in tool.outputs
+                ],
+                "output_mount": {
+                    "container_path": "/workflow_output/output",
+                    "same_directory_as": f"${{CASE_ROOT}}/{tool.case_output_folder}",
+                } if tool.case_output_folder else None,
+                "warnings": warnings,
+                "not_verified": ["script semantics and staging", "real inputs and bind mounts", "CLI compatibility", "scientific output"],
+                "next_step": "Address warnings. Use tool_workflow_test mode=staging with ordered input selections to test the actual "
+                "command on disposable copies (10 seconds by default). Ask before timeout_s exceeds 60 unless "
+                "already authorized. A timeout is incomplete, not a pass. Do not save a separate probe workflow.",
+            })
+        except Exception as exc:
+            return ToolResult.error(f"Workflow validation failed: {exc}")
 
     def config_upsert(self, state: dict[str, Any], _execution: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         try:

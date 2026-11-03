@@ -7,7 +7,7 @@ from typing import Any
 from api_service.runtime.gui_state import GuiStateStore
 from api_service.runtime_tools import (
     STATIC_TOOLS,
-    get_dynamic_gui_tools,
+    get_gui_tools,
     handle_case_file_tree,
     handle_gui_apply_view_preset,
     handle_gui_command_status,
@@ -38,9 +38,7 @@ class RuntimeToolDispatcher:
         gui_state_key: str,
         gui_state_override: dict | None = None,
     ) -> list[dict[str, Any]]:
-        base_gui_state = self.gui_state_store.state_for_key(gui_state_key)
-        effective_gui_state = base_gui_state if gui_state_override is None else {**base_gui_state, **gui_state_override}
-        return [tool.as_openai_tool() for tool in list(STATIC_TOOLS) + get_dynamic_gui_tools(effective_gui_state)]
+        return [tool.as_openai_tool() for tool in list(STATIC_TOOLS) + get_gui_tools()]
 
     def call_tool(
         self,

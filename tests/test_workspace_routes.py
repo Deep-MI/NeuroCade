@@ -2,6 +2,7 @@
 
 import asyncio
 import gzip
+import json
 import sys
 import zipfile
 from io import BytesIO
@@ -20,9 +21,9 @@ sys.path.insert(0, str(ROOT / "api-service"))
 
 from api_service.cases import operations as cases_module  # noqa: E402
 from api_service.cases import run_operations as run_operations_module  # noqa: E402
-from api_service.cases import uploads as uploads_module  # noqa: E402
 from api_service.deps import get_context, get_db  # noqa: E402
 from api_service.helpers import get_case_for_user  # noqa: E402
+from api_service.routers import cases as cases_router_module  # noqa: E402
 from api_service.routers.cases import (  # noqa: E402
     add_case_upload,
     create_case_with_upload,
@@ -32,6 +33,7 @@ from api_service.routers.cases import (  # noqa: E402
     start_run,
     update_case,
 )
+from api_service.routers.cases import router as cases_router  # noqa: E402
 from api_service.routers.workspaces import (  # noqa: E402
     delete_workspace,
     update_workspace,
@@ -41,6 +43,7 @@ from api_service.runtime import workflow_runs as workflow_runs_module  # noqa: E
 from api_service.schemas import (  # noqa: E402
     CaseUpdateRequest,
     StartRunRequest,
+    WorkflowInputFile,
     WorkspaceDeleteRequest,
     WorkspaceUpdateRequest,
 )
@@ -164,9 +167,58 @@ def test_workspace_create_and_list_http_contract(seeded_context):
     assert invalid.status_code == 422
 
 
+def test_case_upload_route_uses_configured_multipart_file_limit(seeded_context, monkeypatch):
+    """Do not fall back to Starlette's fixed 1,000-file multipart limit."""
+    db_session, context, workspace = seeded_context
+    app = FastAPI()
+    app.include_router(cases_router)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_context] = lambda: context
+    monkeypatch.setattr(cases_router_module.settings, "max_upload_files", 30_000)
+
+    async def fake_create_case_with_upload(**kwargs):
+        return {
+            "case_id": "case-id",
+            "workspace_id": kwargs["workspace_id"],
+            "filenames": [upload.filename for upload in kwargs["files"]],
+            "title": "case",
+        }
+
+    monkeypatch.setattr(cases_router_module, "create_case_with_upload", fake_create_case_with_upload)
+    client = TestClient(app)
+    fields = {"workspace_id": workspace.id, "relative_paths": '["one.txt", "two.txt"]'}
+
+    accepted = client.post(
+        "/api/app/cases",
+        data=fields,
+        files=[("files", ("one.txt", b"one")), ("files", ("two.txt", b"two"))],
+    )
+    large_manifest = client.post(
+        "/api/app/cases",
+        data={"workspace_id": workspace.id, "relative_paths": "x" * (1024 * 1024 + 1)},
+        files=[("files", ("one.txt", b"one")), ("files", ("two.txt", b"two"))],
+    )
+    monkeypatch.setattr(cases_router_module.settings, "max_upload_files", 2)
+    rejected = client.post(
+        "/api/app/cases",
+        data=fields,
+        files=[
+            ("files", ("one.txt", b"one")),
+            ("files", ("two.txt", b"two")),
+            ("files", ("three.txt", b"three")),
+        ],
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["filenames"] == ["one.txt", "two.txt"]
+    assert large_manifest.status_code == 200
+    assert rejected.status_code == 413
+    assert rejected.json()["detail"] == "Upload contains more than 2 files"
+
+
 def test_rename_workspace_keeps_ids_and_references_stable(seeded_context, monkeypatch):
     db_session, context, workspace = seeded_context
-    monkeypatch.setattr("api_service.routers.workspaces.log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("api_service.workspaces.service.log_event", lambda *args, **kwargs: None)
 
     case = Case(
         id="case-a-id",
@@ -248,7 +300,7 @@ def test_rename_workspace_succeeds_with_foreign_keys_enabled(monkeypatch, tmp_pa
         outputs_dir = fs_root / "output"
         outputs_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
-        monkeypatch.setattr("api_service.routers.workspaces.settings.fs_data_root", fs_root)
+        monkeypatch.setattr("api_service.workspaces.service.settings.fs_data_root", fs_root)
         ensure_workspace_storage_layout(cases_module.settings, workspace)
         case_dir = ensure_case_storage_layout(cases_module.settings, case, workspace)
         (case_dir / "case-a.mgz").write_bytes(b"scan")
@@ -336,8 +388,8 @@ def test_delete_workspace_with_cases_requires_confirmation(seeded_context, monke
     fs_root = tmp_path / "neurocade-data"
     outputs_dir = fs_root / "output"
     outputs_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("api_service.routers.workspaces.settings.fs_data_root", fs_root)
-    monkeypatch.setattr("api_service.routers.workspaces.log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("api_service.workspaces.service.settings.fs_data_root", fs_root)
+    monkeypatch.setattr("api_service.workspaces.service.log_event", lambda *args, **kwargs: None)
 
     extra_workspace = Workspace(
         id="workspace-extra",
@@ -348,7 +400,11 @@ def test_delete_workspace_with_cases_requires_confirmation(seeded_context, monke
     )
     db_session.add(extra_workspace)
     db_session.flush()
-    db_session.add(WorkspaceMembership(workspace_id=extra_workspace.id, user_id=context.user.id, role=RoleEnum.owner, granted_by_user_id=context.user.id))
+    db_session.add(
+        WorkspaceMembership(
+            workspace_id=extra_workspace.id, user_id=context.user.id, role=RoleEnum.owner, granted_by_user_id=context.user.id
+        )
+    )
     db_session.add(
         Case(
             id="extra-case-id",
@@ -402,16 +458,8 @@ def test_create_case_with_upload_uses_explicit_title(seeded_context, monkeypatch
     )
 
     created_case = db_session.query(Case).filter(Case.id == response.case_id).one()
-    upload_artifact = (
-        db_session.query(Artifact)
-        .filter(Artifact.case_id == created_case.id, Artifact.kind == ArtifactKind.volume)
-        .one()
-    )
-    upload_event = (
-        db_session.query(CaseEvent)
-        .filter(CaseEvent.case_id == created_case.id, CaseEvent.event_type == "case.uploaded")
-        .one()
-    )
+    upload_artifact = db_session.query(Artifact).filter(Artifact.case_id == created_case.id, Artifact.kind == ArtifactKind.volume).one()
+    upload_event = db_session.query(CaseEvent).filter(CaseEvent.case_id == created_case.id, CaseEvent.event_type == "case.uploaded").one()
     assert created_case.id == response.case_id
     assert created_case.title == "chosen-name"
     assert response.title == "chosen-name"
@@ -438,21 +486,263 @@ def test_create_case_with_valid_gzipped_nifti_upload(seeded_context, monkeypatch
             workspace_id=workspace.id,
             title="nifti-case",
             file=upload,
+            relative_paths=json.dumps(["scan.nii.gz"]),
             db=db_session,
             context=context,
         )
     )
 
-    artifact = (
-        db_session.query(Artifact)
-        .filter(Artifact.case_id == response.case_id, Artifact.kind == ArtifactKind.volume)
-        .one()
-    )
+    artifact = db_session.query(Artifact).filter(Artifact.case_id == response.case_id, Artifact.kind == ArtifactKind.volume).one()
 
     assert db_session.get(Case, response.case_id) is not None
     assert response.filenames == ["nifti-case.nii.gz"]
     assert artifact.name == "nifti-case.nii.gz"
     assert resolve_artifact_path(artifact).exists()
+
+
+def test_folder_upload_preserves_tree_indexes_only_semantic_files_and_suggests_fastsurfer_layers(
+    seeded_context, monkeypatch, tmp_path
+):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    (fs_root / "output").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
+
+    paths = [
+        "subject-01/mri/orig.mgz",
+        "subject-01/mri/aparc.DKTatlas+aseg.deep.mgz",
+        "subject-01/stats/aseg.stats",
+        "subject-01/custom/data.unknown",
+    ]
+    response = asyncio.run(
+        create_case_with_upload(
+            workspace_id=workspace.id,
+            title="fastsurfer-import",
+            files=[
+                UploadFile(filename=paths[0], file=BytesIO(b"orig")),
+                UploadFile(filename=paths[1], file=BytesIO(b"seg")),
+                UploadFile(filename=paths[2], file=BytesIO(b"stats")),
+                UploadFile(filename=paths[3], file=BytesIO(b"unknown")),
+            ],
+            relative_paths=json.dumps(paths),
+            db=db_session,
+            context=context,
+        )
+    )
+
+    assert response.import_summary["format"] == "fastsurfer"
+    assert response.import_summary["scope"] == "subject"
+    assert response.import_summary["file_count"] == 4
+    assert response.import_summary["indexed_file_count"] == 3
+    assert [layer["type"] for layer in response.default_layers] == ["intensity", "segmentation"]
+    case_dir = case_storage_dir(cases_module.settings, workspace.id, response.case_id)
+    assert (case_dir / "mri/orig.mgz").read_bytes() == b"orig"
+    assert (case_dir / "stats/aseg.stats").read_bytes() == b"stats"
+    assert (case_dir / "custom/data.unknown").read_bytes() == b"unknown"
+
+    artifacts = db_session.query(Artifact).filter(Artifact.case_id == response.case_id).all()
+    by_path = {artifact.relative_path: artifact for artifact in artifacts}
+    assert by_path["stats/aseg.stats"].kind == ArtifactKind.report
+    assert by_path["stats/aseg.stats"].metadata_json["artifact_role"] == "statistics"
+    assert "custom/data.unknown" not in by_path
+    assert by_path["mri/orig.mgz"].metadata_json["visible"] is True
+    segmentation = by_path["mri/aparc.DKTatlas+aseg.deep.mgz"]
+    assert segmentation.metadata_json["volume_role"] == "segmentation"
+    assert segmentation.metadata_json["visible"] is True
+
+
+def test_explicit_single_unknown_file_remains_available_without_an_artifact(seeded_context, monkeypatch, tmp_path):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    (fs_root / "output").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
+
+    response = asyncio.run(
+        create_case_with_upload(
+            workspace_id=workspace.id,
+            title="uncommon-input",
+            files=[UploadFile(filename="custom.scheme", file=BytesIO(b"scheme"))],
+            relative_paths=json.dumps(["custom.scheme"]),
+            db=db_session,
+            context=context,
+        )
+    )
+
+    assert db_session.query(Artifact).filter_by(case_id=response.case_id).count() == 0
+    assert (case_storage_dir(cases_module.settings, workspace.id, response.case_id) / "custom.scheme").is_file()
+    assert response.import_summary["file_count"] == 1
+    assert response.import_summary["indexed_file_count"] == 0
+
+
+def test_folder_manifest_detects_bids_dataset(seeded_context, monkeypatch, tmp_path):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    (fs_root / "output").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
+    paths = ["dataset/dataset_description.json", "dataset/sub-001/anat/sub-001_T1w.nii.gz"]
+
+    response = asyncio.run(
+        create_case_with_upload(
+            workspace_id=workspace.id,
+            title="bids-import",
+            files=[
+                UploadFile(filename=paths[0], file=BytesIO(b"{}")),
+                UploadFile(filename=paths[1], file=BytesIO(b"volume")),
+            ],
+            relative_paths=json.dumps(paths),
+            db=db_session,
+            context=context,
+        )
+    )
+
+    assert response.import_summary["format"] == "bids"
+    assert response.import_summary["scope"] == "dataset"
+    assert response.import_summary["subject_ids"] == ["sub-001"]
+    assert [item["title"] for item in response.created_cases] == ["sub-001"]
+
+
+@pytest.mark.parametrize(
+    ("paths", "expected_format", "expected_titles"),
+    [
+        (
+            [
+                "dataset/dataset_description.json",
+                "dataset/sub-001/anat/sub-001_T1w.nii.gz",
+                "dataset/sub-002/anat/sub-002_T1w.nii.gz",
+            ],
+            "bids",
+            ["sub-001", "sub-002"],
+        ),
+        (
+            [
+                "subjects/bert/mri/orig.mgz",
+                "subjects/bert/mri/aparc.DKTatlas+aseg.deep.mgz",
+                "subjects/bert/stats/aseg.stats",
+                "subjects/ernie/mri/orig.mgz",
+                "subjects/ernie/mri/aseg.mgz",
+                "subjects/ernie/stats/aseg.stats",
+            ],
+            "fastsurfer",
+            ["bert", "ernie"],
+        ),
+    ],
+)
+def test_multi_subject_folder_creates_one_case_per_subject(seeded_context, monkeypatch, tmp_path, paths, expected_format, expected_titles):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    (fs_root / "output").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
+
+    response = asyncio.run(
+        create_case_with_upload(
+            workspace_id=workspace.id,
+            title="dataset-name-is-not-used-as-a-case",
+            files=[UploadFile(filename=path, file=BytesIO(path.encode())) for path in paths],
+            relative_paths=json.dumps(paths),
+            db=db_session,
+            context=context,
+        )
+    )
+
+    assert response.import_summary["format"] == expected_format
+    assert response.import_summary["created_case_count"] == 2
+    assert [item["title"] for item in response.created_cases] == expected_titles
+    assert response.case_id == response.created_cases[0]["case_id"]
+    cases = db_session.query(Case).filter(Case.workspace_id == workspace.id).order_by(Case.title).all()
+    assert [case.title for case in cases] == expected_titles
+    for case in cases:
+        case_dir = case_storage_dir(cases_module.settings, workspace.id, case.id)
+        assert any(path.is_file() for path in case_dir.rglob("*"))
+
+
+def test_multi_subject_folder_can_be_imported_as_one_case(seeded_context, monkeypatch, tmp_path):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    (fs_root / "output").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr("api_service.cases.operations.log_event", lambda *args, **kwargs: None)
+    paths = [
+        "subjects/subject-a/mri/orig.mgz",
+        "subjects/subject-a/stats/aseg.stats",
+        "subjects/subject-b/mri/orig.mgz",
+        "subjects/subject-b/stats/aseg.stats",
+    ]
+
+    response = asyncio.run(
+        create_case_with_upload(
+            workspace_id=workspace.id,
+            title="combined-outputs",
+            files=[UploadFile(filename=path, file=BytesIO(path.encode())) for path in paths],
+            relative_paths=json.dumps(paths),
+            import_mode="single",
+            db=db_session,
+            context=context,
+        )
+    )
+
+    assert response.title == "combined-outputs"
+    assert response.created_cases == []
+    assert db_session.query(Case).filter(Case.workspace_id == workspace.id).count() == 1
+    assert db_session.query(Artifact).filter(Artifact.case_id == response.case_id).count() == 4
+
+
+def test_multi_subject_conflicts_are_preflighted_without_partial_creation(seeded_context, monkeypatch, tmp_path):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    (fs_root / "output").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    existing = Case(id="existing-sub-002", workspace_id=workspace.id, owner_user_id=context.user.id, title="sub-002")
+    db_session.add(existing)
+    db_session.commit()
+    ensure_case_storage_layout(cases_module.settings, existing, workspace)
+    paths = [
+        "dataset/dataset_description.json",
+        "dataset/sub-001/anat/sub-001_T1w.nii.gz",
+        "dataset/sub-002/anat/sub-002_T1w.nii.gz",
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            create_case_with_upload(
+                workspace_id=workspace.id,
+                title="dataset",
+                files=[UploadFile(filename=path, file=BytesIO(path.encode())) for path in paths],
+                relative_paths=json.dumps(paths),
+                db=db_session,
+                context=context,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "sub-002" in str(exc_info.value.detail)
+    assert [case.title for case in db_session.query(Case).all()] == ["sub-002"]
+
+
+@pytest.mark.parametrize("unsafe_path", ["../secret.txt", "/tmp/secret.txt", "root/../../secret.txt", "root\\secret.txt"])
+def test_folder_upload_rejects_unsafe_relative_paths(seeded_context, monkeypatch, tmp_path, unsafe_path):
+    db_session, context, workspace = seeded_context
+    fs_root = tmp_path / "neurocade-data"
+    (fs_root / "output").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            create_case_with_upload(
+                workspace_id=workspace.id,
+                title="unsafe-folder",
+                files=[UploadFile(filename="secret.txt", file=BytesIO(b"secret"))],
+                relative_paths=json.dumps([unsafe_path]),
+                db=db_session,
+                context=context,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert db_session.query(Case).filter(Case.title == "unsafe-folder").count() == 0
 
 
 def test_save_generated_volume_registers_segmentation_artifact_with_collision_safe_name(seeded_context, monkeypatch, tmp_path):
@@ -693,11 +983,7 @@ def test_deleted_case_title_can_be_reused(seeded_context, monkeypatch, tmp_path)
         )
     )
 
-    matching_cases = (
-        db_session.query(Case)
-        .filter(Case.workspace_id == workspace.id, Case.title == "reusable-case")
-        .all()
-    )
+    matching_cases = db_session.query(Case).filter(Case.workspace_id == workspace.id, Case.title == "reusable-case").all()
     assert response.case_id == matching_cases[0].id
     assert len(matching_cases) == 1
 
@@ -807,15 +1093,8 @@ def test_add_case_upload_preserves_existing_case_outputs(seeded_context, monkeyp
         .order_by(Artifact.created_at.asc())
         .all()
     )
-    input_artifacts = [
-        artifact
-        for artifact in upload_artifacts
-        if (artifact.metadata_json or {}).get("volume_role") == "intensity"
-    ]
-    all_artifact_names = {
-        artifact.name
-        for artifact in db_session.query(Artifact).filter(Artifact.case_id == case.id).all()
-    }
+    input_artifacts = [artifact for artifact in upload_artifacts if (artifact.metadata_json or {}).get("volume_role") == "intensity"]
+    all_artifact_names = {artifact.name for artifact in db_session.query(Artifact).filter(Artifact.case_id == case.id).all()}
     upload_event = db_session.query(CaseEvent).filter(CaseEvent.case_id == case.id, CaseEvent.event_type == "case.uploaded").one_or_none()
     audit_event = db_session.get(AuditEvent, "audit-old-volume")
 
@@ -824,6 +1103,8 @@ def test_add_case_upload_preserves_existing_case_outputs(seeded_context, monkeyp
     assert response.title == case.title
     assert response.filenames == ["replacement.nii.gz"]
     assert [artifact.name for artifact in input_artifacts] == ["existing-case.mgz", "replacement.nii.gz"]
+    replacement_artifact = next(artifact for artifact in input_artifacts if artifact.name == "replacement.nii.gz")
+    assert replacement_artifact.metadata_json["visible"] is False
     assert (case_upload_dir / "existing-case.mgz").read_bytes() == b"old-bytes"
     assert gzip.decompress((case_upload_dir / "replacement.nii.gz").read_bytes()) == b"new-bytes"
     assert old_volume_path.exists()
@@ -885,11 +1166,7 @@ def test_start_run_persists_queued_run_before_runtime_handoff(
 
     def fake_submit_workflow(**kwargs):
         assert not db_session.in_transaction()
-        queued_run = (
-            db_session.query(Run)
-            .filter(Run.case_id == case.id, Run.status == RunStatus.queued)
-            .one_or_none()
-        )
+        queued_run = db_session.query(Run).filter(Run.case_id == case.id, Run.status == RunStatus.queued).one_or_none()
         assert queued_run is not None
         assert queued_run.job_id
         assert kwargs["workflow"].id == tool_id
@@ -904,11 +1181,9 @@ def test_start_run_persists_queued_run_before_runtime_handoff(
             StartRunRequest(
                 case_id=case.id,
                 tool_id=tool_id,
-                input_artifact_ids=[artifact.id],
+                input_files=[WorkflowInputFile(source="managed", path=upload_path.name)],
                 output_name_overrides=(
-                    {"whole_brain_segmentation": "Baseline segmentation"}
-                    if tool_id == "fastsurfer_segmentation"
-                    else {}
+                    {"whole_brain_segmentation": "Baseline segmentation"} if tool_id == "fastsurfer_segmentation" else {}
                 ),
             ),
             db=db_session,
@@ -921,10 +1196,10 @@ def test_start_run_persists_queued_run_before_runtime_handoff(
     assert run.job_id
     assert run.result_json["status"] == "queued"
     assert run.input_json["execution"] == {"device": "cuda" if expected_gpu else "cpu"}
+    assert run.input_json["input_files"] == [{"source": "managed", "path": upload_path.name}]
+    assert "input_artifact_ids" not in run.input_json
     assert run.input_json["output_name_overrides"] == (
-        {"whole_brain_segmentation": "Baseline segmentation"}
-        if tool_id == "fastsurfer_segmentation"
-        else {}
+        {"whole_brain_segmentation": "Baseline segmentation"} if tool_id == "fastsurfer_segmentation" else {}
     )
     assert (case_dir / "scripts" / "runs" / run.id / "stdout.log").is_file()
     assert (case_dir / "scripts" / "runs" / run.id / "stderr.log").is_file()
@@ -939,7 +1214,7 @@ def test_manual_run_rejects_unknown_output_name_override(seeded_context):
                 StartRunRequest(
                     case_id="unused-case",
                     tool_id="fastsurfer_fast",
-                    input_artifact_ids=["unused-artifact"],
+                    input_files=[WorkflowInputFile(source="managed", path="unused.mgz")],
                     output_name_overrides={"not_a_declared_output": "Custom name"},
                 ),
                 db=db_session,
@@ -968,7 +1243,7 @@ def test_start_run_rejects_unavailable_required_cuda_before_creating_run(
                 StartRunRequest(
                     case_id="missing-case",
                     tool_id="fastsurfer_full",
-                    input_artifact_ids=["missing-artifact"],
+                    input_files=[WorkflowInputFile(source="managed", path="missing.mgz")],
                 ),
                 db=db_session,
                 context=context,
@@ -1020,7 +1295,7 @@ def test_start_run_active_constraint_returns_conflict_when_precheck_races(seeded
             workspace_id=workspace.id,
             created_by_user_id=context.user.id,
             status=RunStatus.queued,
-                run_type="fastsurfer_segmentation",
+            run_type="fastsurfer_segmentation",
             job_id=case.id,
             result_json={},
         )
@@ -1033,7 +1308,7 @@ def test_start_run_active_constraint_returns_conflict_when_precheck_races(seeded
                 StartRunRequest(
                     case_id=case.id,
                     tool_id="fastsurfer_segmentation",
-                    input_artifact_ids=[artifact.id],
+                    input_files=[WorkflowInputFile(source="managed", path=upload_path.name)],
                 ),
                 db=db_session,
                 context=context,
@@ -1043,10 +1318,11 @@ def test_start_run_active_constraint_returns_conflict_when_precheck_races(seeded
     assert exc_info.value.status_code == 409
 
 
-def test_run_analysis_rejects_segmentation_input(seeded_context, monkeypatch, tmp_path):
+def test_run_analysis_rejects_path_traversal(seeded_context, monkeypatch, tmp_path):
     db_session, context, workspace = seeded_context
     fs_root = tmp_path / "neurocade-data"
-    monkeypatch.setattr(uploads_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", fs_root)
+    monkeypatch.setattr(run_operations_module, "resolve_gpu_enabled", lambda *_args, **_kwargs: False)
     case = Case(
         id="segmentation-input-id",
         workspace_id=workspace.id,
@@ -1057,22 +1333,67 @@ def test_run_analysis_rejects_segmentation_input(seeded_context, monkeypatch, tm
     db_session.flush()
     artifact_path = ensure_case_storage_layout(cases_module.settings, case, workspace) / "segmentation.mgz"
     artifact_path.write_bytes(b"segmentation")
-    artifact = Artifact(
-        case_id=case.id,
-        workspace_id=workspace.id,
-        kind=ArtifactKind.volume,
-        name=artifact_path.name,
-        relative_path="segmentation.mgz",
-        size_bytes=artifact_path.stat().st_size,
-        metadata_json={"volume_role": "segmentation"},
-    )
-    db_session.add(artifact)
-    db_session.flush()
+    db_session.commit()
 
-    with pytest.raises(HTTPException, match="intensity-volume") as exc_info:
-        uploads_module._require_run_analysis_input_artifact(db_session, case, artifact.id)
+    with pytest.raises(HTTPException, match="invalid") as exc_info:
+        run_operations_module._start_neuroimaging_run(
+            db_session,
+            context,
+            request=StartRunRequest(
+                case_id=case.id,
+                tool_id="fastsurfer_segmentation",
+                input_files=[WorkflowInputFile(source="managed", path="../segmentation.mgz")],
+            ),
+        )
 
     assert exc_info.value.status_code == 400
+
+
+def test_run_analysis_rejects_known_segmentation_as_t1(seeded_context, monkeypatch, tmp_path):
+    db_session, context, workspace = seeded_context
+    monkeypatch.setattr(cases_module.settings, "fs_data_root", tmp_path / "neurocade-data")
+    monkeypatch.setattr(run_operations_module, "resolve_gpu_enabled", lambda *_args, **_kwargs: False)
+    case = Case(
+        id="wrong-role-input-id",
+        workspace_id=workspace.id,
+        owner_user_id=context.user.id,
+        title="wrong-role-input",
+    )
+    db_session.add(case)
+    case_dir = ensure_case_storage_layout(cases_module.settings, case, workspace)
+    path = case_dir / "segmentation.mgz"
+    path.write_bytes(b"segmentation")
+    db_session.add(
+        Artifact(
+            id="wrong-role-artifact-id",
+            case_id=case.id,
+            workspace_id=workspace.id,
+            kind=ArtifactKind.volume,
+            name=path.name,
+            relative_path=path.name,
+            mime_type="application/octet-stream",
+            size_bytes=path.stat().st_size,
+            metadata_json={"volume_role": "segmentation"},
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        run_operations_module._start_neuroimaging_run(
+            db_session,
+            context,
+            request=StartRunRequest(
+                case_id=case.id,
+                tool_id="fastsurfer_segmentation",
+                input_files=[WorkflowInputFile(source="managed", path=path.name)],
+            ),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == {
+        "code": "artifact_role_incompatible",
+        "message": "The selected case file has an incompatible imaging role",
+    }
 
 
 def test_add_case_upload_uses_unique_filename_for_duplicates(seeded_context, monkeypatch, tmp_path):
@@ -1129,9 +1450,7 @@ def test_add_case_upload_uses_unique_filename_for_duplicates(seeded_context, mon
     )
     upload_artifact_names = {
         artifact.name
-        for artifact in db_session.query(Artifact)
-        .filter(Artifact.case_id == case.id, Artifact.kind == ArtifactKind.volume)
-        .all()
+        for artifact in db_session.query(Artifact).filter(Artifact.case_id == case.id, Artifact.kind == ArtifactKind.volume).all()
     }
 
     assert response.filenames == ["replacement-2.nii.gz"]

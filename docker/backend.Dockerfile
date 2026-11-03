@@ -65,7 +65,6 @@ COPY backend_common ./backend_common
 COPY api-service ./api-service
 COPY migrations ./migrations
 COPY config ./config
-COPY scripts/update_checker.py ./scripts/update_checker.py
 COPY --from=client-build /app/client/dist ./client/dist
 
 EXPOSE 8000

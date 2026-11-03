@@ -1,0 +1,81 @@
+id: freesurfer_segmentbs
+image: vnmd/freesurfer_8.2.0:20261005
+description: 'FreeSurfer 8.2.0 segmentBS.sh: Bayesian segmentation of brainstem substructures
+  (medulla, pons, midbrain, superior cerebellar peduncle).'
+details: Select a FreeSurfer/FastSurfer subject folder, or a directory containing
+  exactly one subject. Requires mri/wmparc.mgz, mri/norm.mgz, and mri/transforms/talairach.xfm.
+  Copies only subject directories into the case brainstem output folder; inputs remain
+  unchanged. Runs segmentBS.sh against that staged subject. CPU only.
+inputs:
+- name: subjects_dir
+  description: Subject folder or directory containing exactly one subject; requires
+    mri/wmparc.mgz, mri/norm.mgz, and mri/transforms/talairach.xfm.
+  kind: directory
+  modalities: []
+  dimensions: []
+  sequences: []
+  volume_roles: []
+outputs:
+- name: brainstem_segmentation
+  type: segmentation_volume
+  path: mri/brainstemSsLabels.v13.mgz
+  description: 'Brainstem substructure segmentation: 0=unknown, 1=medulla, 2=pons,
+    3=midbrain, 4=superior cerebellar peduncle.'
+  required: true
+  metadata:
+    lut: freesurfer
+    visible: true
+- name: brainstem_volumes_txt
+  type: other
+  path: mri/brainstemSsVolumes.v13.txt
+  description: Partial-volume-corrected brainstem structure volumes in mm^3.
+  required: false
+  metadata: {}
+- name: brainstem_stats
+  type: other
+  path: stats/brainstem.v13.stats
+  description: Brainstem volumes as a stats file, usable with asegstats2table.
+  required: false
+  metadata: {}
+- name: brainstem_log
+  type: other
+  path: scripts/brainstem-substructures-T1.log
+  description: segmentBS.sh processing log.
+  required: false
+  metadata: {}
+case_output_folder: brainstem
+script: "set -eu\n\nSOURCE=\"${INPUTS[0]}\"\n# Prefer the selected subject itself;\
+  \ previous output folders may also contain mri/.\nif [ ! -d \"$SOURCE/mri\" ]; then\n\
+  \  candidates=()\n  for directory in \"$SOURCE\"/*; do\n    if [ \"$directory\"\
+  \ -ef \"${OUTPUT_ROOT}\" ]; then continue; fi\n    if [ -d \"$directory/mri\" ];\
+  \ then candidates+=(\"$directory\"); fi\n  done\n  if [ \"${#candidates[@]}\" -ne\
+  \ 1 ]; then\n    echo \"ERROR: select a subject folder or a directory containing\
+  \ exactly one subject.\" >&2\n    exit 2\n  fi\n  SOURCE=\"${candidates[0]}\"\n\
+  fi\nSOURCE=$(cd \"$SOURCE\" && pwd -P)\nif [ \"$SOURCE\" -ef \"${OUTPUT_ROOT}\"\
+  \ ]; then\n  echo \"ERROR: input must not be the workflow output directory.\" >&2\n\
+  \  exit 4\nfi\nfor required in mri/wmparc.mgz mri/norm.mgz mri/transforms/talairach.xfm;\
+  \ do\n  if [ ! -f \"$SOURCE/$required\" ]; then\n    echo \"ERROR: missing required\
+  \ subject file: $required\" >&2\n    exit 3\n  fi\ndone\n\n# OUTPUT_ROOT is a separate\
+  \ container mount of the case's brainstem folder.\n# Copy only subject directories:\
+  \ copying the entire case would include that\n# same output folder and recursively\
+  \ copy the destination into itself.\nmkdir -p \"${OUTPUT_ROOT}\"\nDESTINATION=$(cd\
+  \ \"${OUTPUT_ROOT}\" && pwd -P)\ncase \"$SOURCE/\" in\n  \"$DESTINATION/\"*) echo\
+  \ \"ERROR: input must not be the workflow output directory.\" >&2; exit 4 ;;\nesac\n\
+  for directory in mri surf label stats scripts touch; do\n  if [ -d \"$SOURCE/$directory\"\
+  \ ]; then\n    cp -a \"$SOURCE/$directory\" \"${OUTPUT_ROOT}/\"\n  fi\ndone\nrm\
+  \ -f \"${OUTPUT_ROOT}/scripts/IsRunningBSsubst\"\nsegmentBS.sh \"${OUTPUT_NAME}\"\
+  \ \"${OUTPUT_PARENT}\"\n"
+execution:
+  mode: background
+  gpu: false
+  timeout_s: 28800.0
+  queue: freesurfer
+return:
+  include:
+  - return_code
+  - stdout
+  - stderr
+  - outputs
+  max_stream_chars: 16384
+ui:
+  label: "FreeSurfer \u2014 Brainstem Substructures (segmentBS)"

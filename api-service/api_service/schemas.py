@@ -18,6 +18,7 @@ class UserSummary(BaseModel):
 class FrontendConfig(BaseModel):
     local_auth_enabled: bool
     mcp_enabled: bool
+    max_upload_files: int
     clerk_publishable_key: str | None = None
     clerk_jwt_template: str | None = None
 
@@ -68,6 +69,14 @@ class ArtifactSummary(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CaseFileSummary(BaseModel):
+    path: str
+    name: str
+    type: Literal["file", "directory"]
+    size_bytes: int | None = None
+    source: Literal["managed", "linked"]
+
+
 class RunSummary(BaseModel):
     id: str
     case_id: str | None = None
@@ -87,7 +96,6 @@ class AnalysisToolSummary(BaseModel):
     inputs: list[dict[str, Any]] = Field(default_factory=list)
     outputs: list[dict[str, Any]] = Field(default_factory=list)
     execution: dict[str, Any] = Field(default_factory=dict)
-    input_artifact_kind: Literal["intensity_volume"]
 
 
 class CaseSummary(BaseModel):
@@ -352,12 +360,31 @@ class UploadResponse(BaseModel):
     workspace_id: str
     filenames: list[str]
     title: str
+    import_summary: dict[str, Any] = Field(default_factory=dict)
+    default_layers: list[dict[str, Any]] = Field(default_factory=list)
+    created_cases: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LinkedCaseCreateRequest(BaseModel):
+    workspace_id: str
+    source_id: str = Field(min_length=1, max_length=128)
+    title: str | None = None
+    description: str | None = None
+    modalities: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    notes: str | None = None
+    import_mode: Literal["auto", "single", "dataset"] = "auto"
+
+
+class WorkflowInputFile(BaseModel):
+    source: Literal["managed", "linked"]
+    path: str = Field(min_length=1, max_length=1024)
 
 
 class StartRunRequest(BaseModel):
     tool_id: str
     case_id: str
-    input_artifact_ids: list[str]
+    input_files: list[WorkflowInputFile]
     output_name_overrides: dict[str, str] = Field(default_factory=dict)
 
 

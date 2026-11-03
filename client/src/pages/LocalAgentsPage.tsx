@@ -101,7 +101,7 @@ function EnabledLocalAgentsPage({ isLight }: { isLight: boolean }) {
       const command = [executable, 'setup', '--client', target, '--url', grant.url.replace(/\/mcp$/, ''),
         '--pairing-id', grant.pairing_id, '--installation-id', grant.installation_id, '--pairing-code', grant.code].map(shellQuote).join(' ');
       const prompt = `Connect yourself to my local NeuroCade workspace. Run this command on this computer within 10 minutes: ${command}
-The single-use pairing code saves credentials automatically. Do not print tokens or repeat the pairing code. If pairing has expired, ask me to generate a new prompt in NeuroCade. Reload your MCP tools or start a new local task, then call neurocade_get_context and verify upload and download tools. Show the case, input scan and analysis and confirm with me before starting an analysis. If you cannot execute commands on this Mac, explain that limitation.`;
+The single-use pairing code saves credentials automatically. Do not print tokens or repeat the pairing code. If pairing has expired, ask me to generate a new prompt in NeuroCade. Reload your MCP tools or start a new local task, then call neurocade_get_context and verify upload and download tools. Show the case, input scan and analysis and confirm with me before starting an analysis.`;
       setSetupPrompt(prompt);
       try { await navigator.clipboard.writeText(prompt); setCopied(true); }
       catch { setError('Prompt ready below. Copy it from the text box.'); }
@@ -136,7 +136,7 @@ The single-use pairing code saves credentials automatically. Do not print tokens
   }
   const supported = [
     { id: 'codex-plugin', label: 'Codex', detail: 'Local desktop or CLI', icon: Terminal },
-    { id: 'chatgpt', label: 'ChatGPT Work', detail: 'Local tasks on this Mac', icon: Monitor },
+    { id: 'chatgpt', label: 'ChatGPT Work', detail: 'Local tasks', icon: Monitor },
     { id: 'claude-desktop', label: 'Claude Desktop', detail: 'macOS extension', icon: Monitor },
     { id: 'claude-code', label: 'Claude Code', detail: 'Local CLI', icon: Terminal },
   ];

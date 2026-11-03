@@ -43,6 +43,7 @@ def series(study_uid: str, workspace_id: str, db: Session = Depends(get_db), con
     finally:
         client.close()
     log_event(db, context, "pacs.study_inspected", details={"workspace_id": workspace_id})
+    db.commit()
     return result
 
 

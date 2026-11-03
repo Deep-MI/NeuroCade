@@ -40,6 +40,8 @@ def read_manifest(path: Path) -> list[str]:
     if tag != f"v{version}":
         raise ValueError("Release tag and version do not match")
 
+    if "installer" in payload:
+        _artifact(payload, "installer")
     values = [tag, version]
     for artifact_name in ("application_sif", "runtime_bridge"):
         filename, checksum = _artifact(payload, artifact_name)
@@ -84,8 +86,6 @@ def resolve_release(releases_path: Path, channel: str) -> tuple[str, bool]:
         candidates = [release for release in compatible if release[1]]
     elif channel == "stable":
         candidates = [release for release in compatible if not release[1]]
-        if not candidates:
-            candidates = compatible
     else:
         raise ValueError(f"Unsupported release channel: {channel}")
 
@@ -126,6 +126,7 @@ def main() -> None:
             "architecture": "amd64",
             "application_sif": {"filename": args.sif, "sha256_filename": f"{args.sif}.sha256"},
             "runtime_bridge": {"filename": args.bridge, "sha256_filename": f"{args.bridge}.sha256"},
+            "installer": {"filename": "neurocade-install.sh", "sha256_filename": "neurocade-install.sh.sha256"},
             "source_archive": {"filename": args.source, "sha256_filename": f"{args.source}.sha256"},
             "source_revision": args.source_revision,
             "minimum_updater_version": MIN_UPDATER_VERSION,
@@ -143,4 +144,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"Release metadata error: {exc}") from None

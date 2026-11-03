@@ -61,6 +61,16 @@ Python code targets Python 3.12, uses 4-space indentation, type hints where prac
 ## Testing Guidelines
 `pytest` is the test runner; Playwright covers browser flows. Prefer isolated in-process unit tests (each test file is independent), and document new setup requirements in `tests/README.md`. GUI and API E2E tests expect the app on `http://localhost:8000` and seed data under `$HOST_DATA_DIR/output` unless overridden by test-specific environment variables.
 
+## Reliability and Workflow Authoring
+- Diagnose the exact failing persistence path and check durable tool/run outcomes before retrying an assistant request. A failed chat turn can follow successful workflow submission; avoid submitting the same work twice.
+- For SQLite read-modify-write bookkeeping, use short, fresh write transactions and bounded retries of the complete persistence operation. Refresh cached ORM state under the write lock. Never retry model/tool side effects as part of a database retry, or hold the write lock across external work. Cover concurrent writers with a real WAL database test.
+- Distinguish process liveness, received output, and measured progress. A heartbeat does not prove bytes are advancing; missing progress output does not prove a download is stalled. Describe version-specific workarounds and their remaining limitations accurately.
+- Keep workflow instructions in `config/INFORMATION.md`, `config/RULES.md`, and tool schema descriptions consistent with `workflow_execution.py`. CLI help probes establish command syntax, not correctness of generated staging or output paths.
+- With `case_output_folder`, declared output paths are relative to that folder. `${OUTPUT_ROOT}` aliases the same case folder through another container mount; it is not independent storage. Never recursively copy an input ancestor into its output descendant. Copy only required subject directories and preserve inputs.
+- For generated staging logic, exercise the complete staging script with synthetic directories and a stub for expensive processing. Include case-root input, a subject inside a parent directory, existing output, repeated runs, and paths with spaces. Verify produced locations match declared outputs. State separately whether real processing was tested.
+- Verify long approval content in a browser at short window heights: details must scroll and decision buttons must remain reachable. Do not approve a real action during UI verification.
+- Before deploying a local fix, confirm the intended branch/worktree and that the assistant coordinator and runtime bridge are idle. Database rows marked running may be stale. Verify the running build after deployment; distinguish source changes, deployed changes, and unverified behavior.
+
 ## Commit & Pull Request Guidelines
 Recent history uses short, imperative subjects, sometimes with Conventional Commit prefixes such as `feat:` and `fix:`. Follow that pattern, for example `feat: add case selector filtering` or `fix: guard missing segmentation state`.
 

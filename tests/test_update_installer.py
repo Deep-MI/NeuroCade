@@ -276,6 +276,8 @@ def test_remote_installer_routes_owned_archive_through_verified_updater(
     manifest = {
         "schema_version": 1,
         "tag": "v2.0.0",
+        "version": "2.0.0",
+        "source_revision": "a" * 40,
         "source_archive": {"filename": archive.name, "sha256_filename": f"{archive.name}.sha256"},
     }
     (archive.parent / "neurocade-release.json").write_text(json.dumps(manifest), encoding="utf-8")

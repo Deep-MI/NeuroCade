@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from neurocade_runtime_tools.container_request import RuntimeBind
+from neurocade_runtime_tools.execution import LinkedRuntimeBind
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
@@ -20,9 +21,10 @@ from api_service.runtime.run_admission import serialize_submission
 from api_service.runtime_tools.case_resolver import CONTAINER_CASE_ROOT
 from api_service.runtime_tools.workflow_catalog import NeuroimagingWorkflow, resolve_workflow
 from api_service.runtime_tools.workflow_execution import prepare_workflow
+from api_service.schemas import WorkflowInputFile
 from backend_common.case_storage import workspace_storage_dir
 from backend_common.db import AssistantScope, Run, RunStatus, run_with_sqlite_lock_retry
-from backend_common.run_statuses import TERMINAL_RUN_STATUSES, run_owns_outputs
+from backend_common.run_statuses import TERMINAL_RUN_STATUSES
 
 RUN_STATUS_POLL_INTERVAL_SECONDS = 0.1
 
@@ -31,7 +33,10 @@ class CatalogToolCallArgs(BaseModel):
     """The only model-controlled workflow invocation fields."""
 
     tool_id: str = Field(..., description="Exact catalog workflow id returned by tool_search.")
-    inputs: list[str] = Field(default_factory=list, description="Ordered absolute /case or /workspace input file paths.")
+    input_files: list[WorkflowInputFile] = Field(
+        default_factory=list,
+        description="Ordered server-authorized case-relative file or directory references.",
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -115,6 +120,7 @@ class AssistantCatalogExecutor:
         workflow: NeuroimagingWorkflow | None = None,
         validate_submission: Callable[[NeuroimagingWorkflow], None] | None = None,
         gpu_enabled: bool | None = None,
+        prepared_inputs: Any | None = None,
     ) -> ToolResult:
         """Durably enqueue a catalog workflow for cancellable execution."""
         try:
@@ -126,14 +132,27 @@ class AssistantCatalogExecutor:
             )
             if not binds or len(binds) != 1:
                 raise ValueError("A catalog workflow requires one active case or workspace.")
+            if prepared_inputs is None or prepared_inputs.workflow.id != tool.id:
+                raise ValueError("Authorized workflow inputs were not prepared")
+            linked_bind = (
+                LinkedRuntimeBind(
+                    prepared_inputs.linked_source_id,
+                    prepared_inputs.linked_source_relative,
+                    "/linked-input",
+                    "ro",
+                )
+                if prepared_inputs.linked_source_id
+                else None
+            )
             prepared = prepare_workflow(
                 tool.id,
-                parsed.inputs,
+                list(prepared_inputs.container_inputs),
                 binds[0],
                 workflow=tool,
                 run_id=run_id,
                 db=db,
                 gpu_enabled=gpu_enabled,
+                linked_bind=linked_bind,
             )
         except Exception as exc:
             return ToolResult.error(f"Error preparing tool execution: {exc}")
@@ -163,7 +182,7 @@ class AssistantCatalogExecutor:
                 run_type=tool.id,
                 input_json={
                     "tool_id": tool.id,
-                    "inputs": parsed.inputs,
+                    "input_files": [item.model_dump() for item in parsed.input_files],
                     **workflow_runs.workflow_run_snapshot(tool, gpu_enabled=prepared.gpu_enabled),
                 },
                 result_json={"status": "queued", "tool_id": tool.id, "run_id": prepared.run_id},
@@ -186,13 +205,13 @@ class AssistantCatalogExecutor:
             return ToolResult.error(f"Error admitting workflow: {exc}")
 
         if idempotent_replay:
-            expected_inputs = list((run.input_json or {}).get("inputs") or [])
+            expected_inputs = list((run.input_json or {}).get("input_files") or [])
             if (
                 run.workspace_id != workspace_id
                 or run.case_id != case_id
                 or run.created_by_user_id != user_id
                 or run.run_type != tool.id
-                or expected_inputs != parsed.inputs
+                or expected_inputs != [item.model_dump() for item in parsed.input_files]
             ):
                 return ToolResult.error("Error submitting background workflow: idempotency key conflicts with another run.")
             execution_device = str(((run.input_json or {}).get("execution") or {}).get("device") or "cpu")
@@ -208,11 +227,13 @@ class AssistantCatalogExecutor:
             workflow_runs.submit_workflow_run(
                 run,
                 tool,
-                parsed.inputs,
+                list(prepared_inputs.container_inputs),
                 bind_host_path=prepared.host_root,
                 bind_container_path=prepared.container_root,
                 job_id=job_id,
                 gpu_enabled=prepared.gpu_enabled,
+                linked_source_id=prepared_inputs.linked_source_id,
+                linked_source_relative=prepared_inputs.linked_source_relative,
             )
         except Exception as exc:
             db.rollback()
@@ -299,7 +320,7 @@ class AssistantCatalogExecutor:
         run = db.get(Run, run_id)
         if run is None or run.workspace_id != workspace_id or (case_id is not None and run.case_id != case_id):
             return ToolResult.error(f"Error: workflow run {run_id!r} was not found.")
-        if run.status in TERMINAL_RUN_STATUSES and not run_owns_outputs(run):
+        if run.status in TERMINAL_RUN_STATUSES:
             return ToolResult.structured(workflow_runs.cancellation_result(run))
         workflow_runs.cancel_workflow_run(db, run)
         return ToolResult.structured(workflow_runs.cancellation_result(run))

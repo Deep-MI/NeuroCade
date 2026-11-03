@@ -136,6 +136,8 @@ def serve(args: argparse.Namespace) -> int:
             port=args.port,
             token_file=Path(args.token_file),
             launch_id=args.launch_id,
+            source_token_file=Path(args.source_token_file) if args.source_token_file else None,
+            max_source_files=args.max_source_files,
         )
     finally:
         if args.daemonize and pid_file is not None:
@@ -192,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--host", required=True)
     serve_parser.add_argument("--port", type=int, required=True)
     serve_parser.add_argument("--token-file", required=True)
+    serve_parser.add_argument("--source-token-file")
+    serve_parser.add_argument("--max-source-files", type=int, default=30_000)
     serve_parser.add_argument("--launch-id", required=True)
     serve_parser.add_argument("--daemonize", action="store_true")
     serve_parser.add_argument("--pid-file")

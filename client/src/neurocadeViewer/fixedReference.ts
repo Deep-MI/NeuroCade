@@ -6,7 +6,13 @@ const NIFTI_HEADER_SIZE = 352;
 const MAX_REFERENCE_AXIS = 512;
 const MAX_REFERENCE_VOXELS = 64 * 1024 * 1024;
 
+export interface VolumeBounds {
+  minimum: [number, number, number];
+  maximum: [number, number, number];
+}
+
 interface FixedReferenceGrid {
+  bounds: VolumeBounds;
   buffer: ArrayBuffer;
   dimensions: [number, number, number];
   spacing: [number, number, number];
@@ -135,5 +141,17 @@ export function createFixedReferenceGrid(
   });
   new Uint8Array(buffer, 344, 4).set([110, 43, 49, 0]);
 
-  return { buffer, dimensions, spacing, affine };
+  return { buffer, dimensions, spacing, affine, bounds: { minimum, maximum } };
+}
+
+
+export function referenceContainsVolumes(bounds: VolumeBounds, volumes: NiivueVolumeInterop[]): boolean {
+  return volumes.every(volume => {
+    const candidate = finiteBounds(volume);
+    if (!candidate) return false;
+    return candidate.minimum.every((value, axis) => (
+      value >= bounds.minimum[axis] - 0.001
+      && candidate.maximum[axis] <= bounds.maximum[axis] + 0.001
+    ));
+  });
 }

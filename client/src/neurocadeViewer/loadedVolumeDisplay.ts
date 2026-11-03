@@ -54,6 +54,16 @@ export function referenceVoxelToWorld(
   return isFiniteCoordinate(position) ? position : null;
 }
 
+export function externalCoordinateToWorld(
+  nv: Niivue,
+  position: [number, number, number],
+  space: 'voxel' | 'world' = 'voxel',
+  sourceId?: string | null,
+): WorldCoordinate | null {
+  if (space === 'world') return isFiniteCoordinate(position) ? position : null;
+  return referenceVoxelToWorld(nv, position, sourceId);
+}
+
 export function referenceWorldToVoxel(
   nv: Niivue,
   world: ArrayLike<number>,

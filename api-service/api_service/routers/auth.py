@@ -24,6 +24,7 @@ def frontend_config(response: Response) -> FrontendConfig:
     return FrontendConfig(
         local_auth_enabled=settings.local_auth_enabled,
         mcp_enabled=settings.mcp_enabled,
+        max_upload_files=settings.max_upload_files,
         clerk_publishable_key=settings.clerk_publishable_key,
         clerk_jwt_template=settings.clerk_jwt_template,
     )

@@ -9,67 +9,86 @@ Mixed profiles, nested container runtimes, and legacy runtime settings are not s
 
 ## Install
 
-Automatic install:
+Download the latest stable installer (Python 3 and curl are required):
 
 ```bash
-./scripts/install.sh --mode local
+curl -fL --retry 3 -o neurocade-install.sh https://github.com/Deep-MI/NeuroCade/releases/latest/download/neurocade-install.sh && bash neurocade-install.sh --mode local
 ```
 
-Fresh Linux installs prefer rootless Apptainer and automatically download the
-latest compatible stable NeuroCade release, its checksum, and its matching host
-bridge. If no compatible stable release exists, the installer falls back to the
-newest compatible release and reports the selected pre-release. Linux uses
-Docker when rootless Apptainer is unavailable; macOS uses Docker.
-An existing `NEUROCADE_RUNTIME` setting is preserved on reinstall; pass
-`--runtime docker|apptainer` to override it in a Git checkout. Transactional
-archive updates intentionally reject runtime changes because the two database
-stores require an explicit migration rather than ordinary rollback.
-
-Install a published beta explicitly:
+Each release publishes `neurocade-install.sh`, its `.sha256` checksum, and an
+installer entry in `neurocade-release.json`. A version-specific URL is
+`https://github.com/Deep-MI/NeuroCade/releases/download/<tag>/neurocade-install.sh`.
+The downloaded installer defaults to that exact release. All source and runtime
+artifacts are resolved from that release; stable never falls back to beta.
 
 ```bash
-# Docker rolling beta image
-./scripts/install.sh --mode local --runtime docker --image docker.io/deepmi/neurocade:beta
-
-# Latest Apptainer beta release
-./scripts/install.sh --mode local --runtime apptainer --version beta
+bash neurocade-install.sh --version beta --runtime docker
+bash neurocade-install.sh --version v2026.9.9-beta.1 --runtime apptainer
 ```
 
-For a reproducible install, use a versioned Docker Hub image with `--image`, or
-an exact v-prefixed GitHub release tag with Apptainer, for example
-`--version v2026.9.9-beta.1`. The installer rejects `--image` for Apptainer and
-`--version` for Docker so a requested version cannot be silently ignored.
+Docker builds the verified source archive and uses the bridge from that same
+source revision. Apptainer uses its matching SIF and bridge wheel. Runtime
+requirements are macOS with Docker, or Linux amd64 with Docker/rootless Apptainer.
+When both runtimes are available, the interactive installer offers a menu with
+Apptainer recommended on Linux. Start the Docker engine before setup.
 
-Build an Apptainer installation from the current checkout:
+For source development, choose the checkout explicitly:
 
 ```bash
+./scripts/install.sh --runtime docker --mode local
 ./scripts/install.sh --runtime apptainer --mode local --build-from-source
 ```
 
-This special path requires Docker. It builds the canonical Linux/amd64 OCI
-image from local files, converts it to a SIF with Apptainer, and installs the
-host bridge from the same checkout. Without Docker, only the release-download
-Apptainer path is supported.
+A checkout cannot switch source revisions through `--version`; use the standalone
+installer in a separate empty directory. The Apptainer source-build path requires
+Docker. A separately selected Docker `--image` remains an advanced checkout-only
+option; it is not accepted for verified archive installs.
 
-The installer pins `uv`, installs managed Python 3.12, creates
-`.runtime/bridge-venv`, generates `.runtime/bridge-token` with mode `0600`,
-writes a fresh `.env`, prepares the default tool images, records the installed
-release provenance, and starts the matched application and bridge. Rerunning
-the remote installer upgrades an installer-owned archive installation through
-the transactional update path described below.
+## Setup choices and automation
 
-Docker installs build the application from the current checkout by default, so
-the application and host bridge always share one protocol revision. Pass
-`--image docker.io/deepmi/neurocade:<tag>` to opt into a prebuilt image.
-Apptainer release artifacts and checksums are discovered automatically.
+Menus support arrow keys/Enter and numbered input; basic terminals use numbered
+input. `q` or Ctrl-C cancels. Explicit flags override detected/default choices.
+Existing installations offer update while retaining configuration, reconfiguration
+of the installed version, or cancellation. Run `scripts/install.sh --reconfigure`
+to review existing settings directly. Existing archive updates retain the runtime;
+switching database backends requires an explicit migration.
 
-The managed `uv` executable and Python installation live under `.runtime` and
-are used directly by the launcher. They do not need to be added to `PATH` and
-do not conflict with another `uv` installation. On Apple Silicon, the installer
-uses native arm64 tools even when it was started from a Rosetta-translated shell.
+The provider menu includes “Configure later,” OpenAI-compatible endpoints,
+Anthropic, Google, and Ollama. Model discovery queries the selected endpoint with
+a bounded timeout, displays up to 50 model IDs, and always offers manual entry.
+An unavailable endpoint does not prevent manual configuration. Existing model
+names remain valid choices; discovery does not prove model suitability or access.
 
-Interactive installs prompt for provider settings. `--yes` deliberately skips
-all prompts, preserves configured values, and accepts defaults.
+`--yes` suppresses every prompt, including the directory prompt. Missing mandatory
+settings fail before downloading toolchains/images. A fresh unattended install
+uses no assistant unless `--llm-provider` or provider configuration selects one.
+Set credentials and the matching model variable (`LLM_BACKEND_MODEL`,
+`ANTHROPIC_MODEL`, `GOOGLE_MODEL`, or `OLLAMA_MODEL`) in the environment or `.env`.
+Use `NEUROCADE_INSTALL_DIR` to choose the destination without a prompt.
+
+Setup checks runtime access, supported architecture, writable storage, and at
+least 8 GiB free for setup before downloading toolchains/images. This is a setup
+floor, not a guarantee that all workflows fit. Docker Desktop's VM disk capacity
+and additional workflow images may require more storage.
+
+## Errors and recovery
+
+Failures identify the installation stage and next action. Build/start diagnostics
+are streamed to the terminal and `.runtime/install.log` with configured secrets,
+authorization headers, and URL credentials redacted. Logs have owner-only access.
+Configuration is written atomically and its original copy is preserved in
+`.runtime/preinstall-env`.
+
+Failed or interrupted release downloads never become accepted archives. Rerun
+the same command after resolving connectivity, permissions, or disk issues.
+An interrupted first installation resumes its extracted version, preserving data;
+it does not enter the transactional upgrade path until setup has completed.
+A checksum mismatch stops installation; retry from the official release rather
+than bypassing verification. Missing stable assets require a valid stable release
+or an explicit `--version beta` choice.
+
+The installer manages uv and Python under `.runtime`, keeping them separate from
+other installations, and records release provenance after successful setup.
 
 ## Commands
 

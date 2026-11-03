@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from api_service.artifacts.service import artifact_download_path_for_output
+from api_service.artifacts.service import artifact_download_path, artifact_download_path_for_output, artifact_for_output
 from backend_common.auth import AuthContext
 
 
@@ -41,9 +41,16 @@ def resolve_load_layer_command(
         return command
     resolved = dict(command)
     output_path = _output_path_from_descriptor(resolved, "resource")
-    download_path = _artifact_path_for_output_resource(db, context, output_path)
-    if download_path:
-        resolved["download_path"] = download_path
+    artifact = artifact_for_output(db, context, output_path.removeprefix("outputs/")) if output_path else None
+    if artifact is not None:
+        resolved["download_path"] = artifact_download_path(artifact.id)
+        resolved["artifact_id"] = artifact.id
+        metadata = artifact.metadata_json or {}
+        role = metadata.get("volume_role") or metadata.get("layer_role")
+        if role in {"intensity", "segmentation", "surface"}:
+            resolved["type"] = role
+        if metadata.get("lut"):
+            resolved["lut"] = metadata["lut"]
 
     companion_fields = (
         ("curvature_resource", "curvature_download_path"),

@@ -14,8 +14,7 @@ function selectInitialIntensityOutputVolume(volumes: OutputVolume[]): OutputVolu
 }
 
 export function visibleOutputVolumes(volumes: OutputVolume[], closedFilenames: Set<string>): OutputVolume[] {
-  const restoredVolumes = volumes.filter((volume) => !closedFilenames.has(volume.filename));
-  return restoredVolumes.length > 0 ? restoredVolumes : volumes;
+  return volumes.filter((volume) => volume.visible === true && !closedFilenames.has(volume.filename));
 }
 
 function outputVolumeToLayer(

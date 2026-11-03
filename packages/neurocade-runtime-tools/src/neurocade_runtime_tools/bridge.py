@@ -10,11 +10,13 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from .apptainer_runtime import build_container_argv, nvidia_capability
-from .docker_runtime import build_docker_argv, configured_docker_platform
+from .bridge_paths import container_path as _container_path
+from .bridge_paths import resolve_relative as _resolve_relative
+from .docker_runtime import active_writer_run_ids, build_docker_argv, configured_docker_platform
 from .execution import (
     BridgeBind,
     ProcessObserver,
@@ -23,6 +25,7 @@ from .execution import (
     run_managed_command,
 )
 from .images import prepare_image
+from .linked_sources import MAX_SOURCE_READ_BYTES, LinkedSourceRegistry
 from .protocol import (
     ACTIVE_RUN_STATES,
     BUILD_VERSION,
@@ -47,30 +50,6 @@ def _bounded(value: str, limit: int = MAX_CAPTURE_BYTES) -> str:
     return (encoded[: budget // 2] + marker + encoded[-(budget - budget // 2) :]).decode("utf-8", errors="replace")
 
 
-def _resolve_relative(root: Path, value: str, *, label: str, must_exist: bool) -> Path:
-    relative = validate_relative_path(value, label=label, allow_dot=True)
-    candidate = (root / relative).resolve(strict=False)
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"{label} escapes the configured data root") from exc
-    if must_exist and not candidate.exists():
-        raise ValueError(f"{label} does not exist")
-    if candidate.exists() and not (candidate.is_file() or candidate.is_dir()):
-        raise ValueError(f"{label} cannot be a device or special file")
-    ancestor = candidate if candidate.exists() else next((path for path in candidate.parents if path.exists()), root)
-    try:
-        ancestor.resolve(strict=True).relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"{label} escapes the configured data root through a symlink") from exc
-    return candidate
-
-
-def _container_path(value: str, *, label: str) -> str:
-    path = PurePosixPath(str(value or ""))
-    if not path.is_absolute() or ".." in path.parts or "\x00" in str(value):
-        raise ValueError(f"{label} must be an absolute normalized path")
-    return path.as_posix()
 
 
 @dataclass
@@ -113,13 +92,23 @@ class RunRecord:
 class _CaptureBuffer:
     """Keep bounded head/tail text while continuously draining a pipe."""
 
-    def __init__(self, limit: int = MAX_CAPTURE_BYTES) -> None:
+    def __init__(self, limit: int = MAX_CAPTURE_BYTES, log: Any = None) -> None:
         self.limit = limit
+        self.log = log
+        self.log_chars = 0
         self.head = ""
         self.tail = ""
         self.total = 0
 
     def append(self, value: str) -> None:
+        if self.log is not None and self.log_chars < 10 * 1024 * 1024:
+            remaining = 10 * 1024 * 1024 - self.log_chars
+            encoded = value.encode("utf-8", errors="replace")
+            self.log.write(encoded[:remaining].decode("utf-8", errors="ignore"))
+            self.log_chars += min(len(encoded), remaining)
+            if len(encoded) >= remaining:
+                self.log.write("\n[log truncated at 10 MiB of text]\n")
+            self.log.flush()
         self.total += len(value)
         half = self.limit // 2
         if len(self.head) < half:
@@ -166,6 +155,8 @@ class BridgeRuntime:
         image_dir: Path,
         launch_id: str = "test-launch",
         terminal_ttl_s: int = TERMINAL_RESULT_TTL_SECONDS,
+        source_registry_path: Path | None = None,
+        max_source_files: int = 30_000,
     ) -> None:
         if backend not in {"docker", "apptainer"}:
             raise ValueError("NEUROCADE_RUNTIME must be docker or apptainer")
@@ -175,6 +166,10 @@ class BridgeRuntime:
         self.launch_id = launch_id
         self.data_root = data_root.expanduser().resolve(strict=True)
         self.image_dir = image_dir.expanduser().resolve()
+        self.linked_sources = LinkedSourceRegistry(
+            source_registry_path or self.image_dir.parent / "linked-sources.json",
+            max_files=max_source_files,
+        )
         self.terminal_ttl_s = terminal_ttl_s
         self._runs: dict[str, RunRecord] = {}
         self._capabilities: dict[str, dict[str, Any]] = {}
@@ -248,6 +243,26 @@ class BridgeRuntime:
             "active_runs": active,
         }
 
+    def active_writers(self) -> dict[str, Any]:
+        """Report which runs still have a live writer, and whether that is knowable.
+
+        Docker labels outlive this process, so a run started by an interrupted
+        launch session can still be answered authoritatively. Apptainer runs are
+        direct children with no daemon to interrogate, so only this session's
+        records are observable there; ``determined`` says which case applies so
+        the caller never mistakes an unanswerable question for a negative answer.
+        """
+        with self._lock:
+            self._prune()
+            tracked = {run_id for run_id, run in self._runs.items() if run.state in ACTIVE_RUN_STATES}
+        if self.backend != "docker":
+            return {"protocol_version": PROTOCOL_VERSION, "determined": False, "run_ids": sorted(tracked)}
+        try:
+            observed = active_writer_run_ids()
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return {"protocol_version": PROTOCOL_VERSION, "determined": False, "run_ids": sorted(tracked)}
+        return {"protocol_version": PROTOCOL_VERSION, "determined": True, "run_ids": sorted(tracked | observed)}
+
     def resolve_capability(self, image_value: Any) -> dict[str, Any]:
         spec = RuntimeImageSpec.from_dict(image_value) if isinstance(image_value, dict) else RuntimeImageSpec(str(image_value))
         key = json.dumps(spec.to_dict(), sort_keys=True)
@@ -315,6 +330,27 @@ class BridgeRuntime:
             self._capabilities[key] = result
         return result
 
+    def register_linked_source(self, host_path: str) -> dict[str, Any]:
+        result = self.linked_sources.register(host_path)
+        return {"protocol_version": PROTOCOL_VERSION, **result}
+
+    def linked_source_manifest(self, source_id: str) -> dict[str, Any]:
+        return self.linked_sources.manifest(source_id)
+
+    def revoke_linked_source(self, source_id: str) -> bool:
+        return self.linked_sources.revoke(source_id)
+
+    def read_linked_source(self, source_id: str, relative_path: str, *, offset: int = 0, length: int = MAX_SOURCE_READ_BYTES) -> tuple[bytes, int]:
+        if offset < 0:
+            raise ValueError("Linked source read offset must not be negative")
+        if length <= 0 or length > MAX_SOURCE_READ_BYTES:
+            raise ValueError(f"Linked source reads are limited to {MAX_SOURCE_READ_BYTES} bytes")
+        path = self.linked_sources.resolve_path(source_id, relative_path, file_only=True)
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            return handle.read(length), size
+
     def _validated_request(self, payload: dict[str, Any]) -> tuple[RuntimeContainerRunRequest, PreparedRunPaths]:
         require_protocol(payload)
         run_id = str(payload.get("run_id") or "")
@@ -329,16 +365,32 @@ class BridgeRuntime:
         if not isinstance(command, list) or not command or any("\x00" in str(part) for part in command):
             raise ValueError("Container command must be a non-empty argument array")
         isolated = bool(container.get("isolated", False))
+        synthetic_fixture = bool(container.get("synthetic_fixture", False))
+        workflow_test = bool(container.get("workflow_test", False))
         binds: list[BridgeBind] = []
         for value in container.get("binds", []):
             if not isinstance(value, dict) or value.get("mode") not in {"ro", "rw"}:
                 raise ValueError("Invalid runtime bind")
-            source_relative = validate_relative_path(str(value.get("source_relative") or ""), label="Bind source", allow_dot=True)
-            source = _resolve_relative(self.data_root, source_relative, label="Bind source", must_exist=True)
+            linked_source_id = value.get("linked_source_id")
+            if linked_source_id is not None:
+                if value.get("mode") != "ro":
+                    raise ValueError("Linked source binds must be read-only")
+                source_relative = validate_relative_path(
+                    str(value.get("linked_relative") or "."), label="Linked bind source", allow_dot=True
+                )
+                source = self.linked_sources.resolve_path(str(linked_source_id), source_relative)
+            else:
+                source_relative = validate_relative_path(str(value.get("source_relative") or ""), label="Bind source", allow_dot=True)
+                source = _resolve_relative(self.data_root, source_relative, label="Bind source", must_exist=True)
             if not source.is_dir() and not source.is_file():
                 raise ValueError("Bind source must be a regular file or directory")
             binds.append(
-                BridgeBind(source_relative, _container_path(str(value.get("container_path") or ""), label="Bind target"), value["mode"])
+                BridgeBind(
+                    source_relative,
+                    _container_path(str(value.get("container_path") or ""), label="Bind target"),
+                    value["mode"],
+                    source if linked_source_id is not None else None,
+                )
             )
         scratch_paths = tuple(
             _container_path(str(value), label="Scratch path")
@@ -346,7 +398,7 @@ class BridgeRuntime:
         )
         if len(set(scratch_paths)) != len(scratch_paths) or "/" in scratch_paths:
             raise ValueError("Scratch paths must be unique non-root container paths")
-        if isolated and (binds or container.get("gpu_enabled")):
+        if isolated and ((binds and not (synthetic_fixture or workflow_test)) or container.get("gpu_enabled")):
             raise ValueError("Isolated runs cannot use binds or GPUs")
         request = RuntimeContainerRunRequest(
             image=spec,
@@ -358,9 +410,32 @@ class BridgeRuntime:
             network_disabled=bool(container.get("network_disabled", True)),
             gpu_enabled=bool(container.get("gpu_enabled", False)),
             isolated=isolated,
+            synthetic_fixture=synthetic_fixture,
+            workflow_test=workflow_test,
             run_id=run_id,
         )
+        from .execution import validate_synthetic_fixture
+        validate_synthetic_fixture(request, self.data_root)
+        if synthetic_fixture and any(payload.get(key) is not None for key in ("stdout_relative", "stderr_relative", "workdir_relative")):
+            raise ValueError("Synthetic tests cannot select host log files or working directories")
+        if workflow_test:
+            if payload.get("workdir_relative") is not None:
+                raise ValueError("Workflow tests cannot select host working directories")
+            first_bind = request.binds[0]
+            assert isinstance(first_bind, BridgeBind)
+            test_root = Path(first_bind.source_relative).parent
+            for key, filename in (("stdout_relative", "stdout.log"), ("stderr_relative", "stderr.log")):
+                expected = test_root / "logs" / filename
+                if payload.get(key) != expected.as_posix():
+                    raise ValueError("Workflow-test logs must stay outside the mounted copied case")
+                lexical = self.data_root / expected
+                if lexical.resolve() != lexical:
+                    raise ValueError("Workflow-test logs cannot use symlinks")
         timeout = float(payload["timeout_s"]) if payload.get("timeout_s") is not None else None
+        if synthetic_fixture and (timeout is None or timeout > 30):
+            raise ValueError("Synthetic tests require a timeout of at most 30 seconds")
+        if workflow_test and (timeout is None or not 0 < timeout <= 86400):
+            raise ValueError("Workflow tests require a bounded timeout (1 second to 24 hours)")
         if timeout is not None and (timeout <= 0 or timeout > 7 * 24 * 3600):
             raise ValueError("Runtime timeout is outside the allowed range")
         paths = PreparedRunPaths(
@@ -464,8 +539,10 @@ class BridgeRuntime:
                 paths.stderr.parent.mkdir(parents=True, exist_ok=True)
                 stderr_handle = paths.stderr.open("w", encoding="utf-8")
                 stderr_target = stderr_handle
+            if request.workflow_test:
+                stdout_target = stderr_target = subprocess.PIPE
             process = subprocess.Popen(
-                argv, cwd=paths.cwd, text=True, stdin=subprocess.DEVNULL,
+                argv, cwd=paths.cwd, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
                 stdout=stdout_target, stderr=stderr_target, start_new_session=True,
             )
             if not self._register_running_process(record, process):
@@ -475,8 +552,8 @@ class BridgeRuntime:
                     record.state = RunState.canceled
                     record.finished_at = time.monotonic()
                 return
-            stdout_capture = _CaptureBuffer() if process.stdout is not None else None
-            stderr_capture = _CaptureBuffer() if process.stderr is not None else None
+            stdout_capture = _CaptureBuffer(log=stdout_handle if request.workflow_test else None) if process.stdout is not None else None
+            stderr_capture = _CaptureBuffer(log=stderr_handle if request.workflow_test else None) if process.stderr is not None else None
             capture_threads = []
             for stream, capture in ((process.stdout, stdout_capture), (process.stderr, stderr_capture)):
                 if stream is not None and capture is not None:

@@ -51,7 +51,10 @@ def test_assistant_mutation_confirmation_can_be_declined(page):
     """Render the exact pending action and keep it inert until approval."""
     approval = {
         "name": "tool_call",
-        "arguments": {"tool_id": "fastsurfer_segmentation", "inputs": ["/case/mri/001.mgz"]},
+        "arguments": {
+            "tool_id": "fastsurfer_segmentation",
+            "input_files": [{"source": "managed", "path": "mri/001.mgz"}],
+        },
         "digest": "a" * 64,
         "description": "run FastSurfer — Segmentation",
         "presentation": {

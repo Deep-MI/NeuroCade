@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useRequestScope } from './useRequestScope';
 
 import type { AssistantActivity, AssistantScope, AssistantTurnCancelResponse } from '../types';
 import { cancelAssistantTurn, fetchActiveAssistantTurn } from '../utils/api';
@@ -29,6 +30,7 @@ export function useAssistantTurnMonitor({
   isStreamConnected,
   onTurnComplete,
 }: AssistantTurnMonitorOptions): AssistantTurnMonitor {
+  const requestScope = useRequestScope(JSON.stringify([workspaceId, scope, caseId]));
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [activity, setActivity] = useState<AssistantActivity | null>(null);
   const [isCanceling, setIsCanceling] = useState(false);
@@ -50,10 +52,12 @@ export function useAssistantTurnMonitor({
 
   const discoverTurn = useCallback(async (): Promise<string | null> => {
     if (!workspaceId) return null;
+    const isCurrent = requestScope.capture();
     const active = await fetchActiveAssistantTurn(workspaceId, scope, caseId);
+    if (!isCurrent()) return null;
     setActivity(active.activity ?? null);
     return active.active ? active.turn_id : null;
-  }, [caseId, scope, workspaceId]);
+  }, [caseId, requestScope, scope, workspaceId]);
 
   useEffect(() => {
     setActiveTurnId(null);
@@ -78,11 +82,12 @@ export function useAssistantTurnMonitor({
     if (!workspaceId || !activeTurnId || isStreamConnected) return;
 
     let cancelled = false;
+    const isCurrent = requestScope.capture();
     let timeoutId: number | undefined;
     const poll = async () => {
       try {
         const active = await fetchActiveAssistantTurn(workspaceId, scope, caseId);
-        if (cancelled) return;
+        if (cancelled || !isCurrent()) return;
         if (active.active && active.turn_id) {
           setActiveTurnId(active.turn_id);
           setActivity(active.activity ?? null);
@@ -92,7 +97,7 @@ export function useAssistantTurnMonitor({
         markTurnFinished();
         await onTurnComplete();
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || !isCurrent()) return;
         console.error('Failed to monitor active assistant turn:', error);
         timeoutId = window.setTimeout(() => void poll(), 5000);
       }
@@ -102,26 +107,29 @@ export function useAssistantTurnMonitor({
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
-  }, [activeTurnId, caseId, isStreamConnected, markTurnFinished, onTurnComplete, scope, workspaceId]);
+  }, [activeTurnId, caseId, isStreamConnected, markTurnFinished, onTurnComplete, requestScope, scope, workspaceId]);
 
   const cancelTurn = useCallback(async (): Promise<AssistantTurnCancelResponse['status']> => {
     if (!workspaceId || isCanceling) return 'not_active';
+    const isCurrent = requestScope.capture();
     setIsCanceling(true);
     try {
       let turnId = activeTurnId;
       turnId ??= await discoverTurn();
+      if (!isCurrent()) return 'not_active';
       if (!turnId) {
         markTurnFinished();
         return 'not_active';
       }
       const result = await cancelAssistantTurn(turnId, workspaceId, scope, caseId);
+      if (!isCurrent()) return result.status;
       if (result.status === 'not_active') markTurnFinished();
       return result.status;
     } catch (error) {
-      setIsCanceling(false);
+      if (isCurrent()) setIsCanceling(false);
       throw error;
     }
-  }, [activeTurnId, caseId, discoverTurn, isCanceling, markTurnFinished, scope, workspaceId]);
+  }, [activeTurnId, caseId, discoverTurn, isCanceling, markTurnFinished, requestScope, scope, workspaceId]);
 
   return {
     activeTurnId,

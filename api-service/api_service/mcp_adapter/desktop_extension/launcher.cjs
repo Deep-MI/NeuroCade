@@ -25,7 +25,7 @@ async function main() {
     if (!response.ok) throw new Error('unavailable');
     health = await response.json();
   } catch {
-    throw new Error('NeuroCade is not reachable. Start NeuroCade on this Mac, then reconnect the extension.');
+    throw new Error('NeuroCade is not reachable. Start NeuroCade, then reconnect the extension.');
   }
   if (!health.mcp_enabled) throw new Error('Local agents are disabled. Restart NeuroCade with local agents enabled, then reconnect.');
   // The executable is pinned by the app that built this bundle.

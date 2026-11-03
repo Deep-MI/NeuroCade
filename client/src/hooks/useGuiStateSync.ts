@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import type { GuiStateSyncResponse, Volume } from '../types'
 import * as api from '../utils/api'
-
-const GUI_STATE_SYNC_INTERVAL_MS = 2000
+import { startGuiStateSync } from '../utils/guiStateSync'
+import { useRequestScope } from './useRequestScope'
 
 interface UseGuiStateSyncOptions {
   workspaceId: string | null
@@ -30,6 +30,7 @@ export function useGuiStateSync({
   onSyncResponse,
   onError,
 }: UseGuiStateSyncOptions): void {
+  const requestScope = useRequestScope(JSON.stringify([workspaceId, caseId, guiSessionId]))
   const volumeSnapshot = useMemo(() => {
     return volumes.map(volume => {
       const surfaceMatch = /^([lr]h)\.([^.]+)$/.exec(volume.filename.split('/').pop() ?? volume.filename)
@@ -77,42 +78,17 @@ export function useGuiStateSync({
   const payloadRef = useRef(payload)
   const onSyncResponseRef = useRef(onSyncResponse)
   const onErrorRef = useRef(onError)
-  const acknowledgedCommandIdsRef = useRef<string[]>([])
   payloadRef.current = payload
   onSyncResponseRef.current = onSyncResponse
   onErrorRef.current = onError
 
   useEffect(() => {
-    let disposed = false
-    let syncInFlight = false
-
-    const syncState = () => {
-      if (syncInFlight) return
-      syncInFlight = true
-      api.syncGuiState({
-        ...payloadRef.current,
-        acknowledged_command_ids: acknowledgedCommandIdsRef.current,
-      })
-        .then(response => {
-          if (!disposed) {
-            onSyncResponseRef.current(response)
-            acknowledgedCommandIdsRef.current = response.commands.map(command => command.id)
-          }
-        })
-        .catch(error => {
-          if (!disposed) onErrorRef.current?.(error)
-        })
-        .finally(() => {
-          syncInFlight = false
-        })
-    }
-
-    syncState()
-    const interval = window.setInterval(syncState, GUI_STATE_SYNC_INTERVAL_MS)
-
-    return () => {
-      disposed = true
-      window.clearInterval(interval)
-    }
-  }, [])
+    const isCurrent = requestScope.capture()
+    return startGuiStateSync({
+      payload: () => payloadRef.current,
+      sync: api.syncGuiState,
+      onResponse: response => { if (isCurrent()) onSyncResponseRef.current(response) },
+      onError: error => { if (isCurrent()) onErrorRef.current?.(error) },
+    })
+  }, [caseId, guiSessionId, requestScope, workspaceId])
 }

@@ -1,6 +1,7 @@
 """Regression probes for the PACS code/architecture review findings."""
 # ruff: noqa: F811
 import shutil
+from typing import Any
 
 import numpy as np
 import pytest
@@ -240,3 +241,62 @@ def test_attested_contrast_agent_rejected_before_conversion(context, monkeypatch
     assert row.state == "failed"
     assert row.series_json[0]["error_code"] == "incompatible_sequence"
     assert not conversions
+
+
+def test_workflow_test_validates_copied_image_using_source_provenance(context, monkeypatch):
+    import asyncio
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from api_service.assistant.tools import workflow_test_tools
+    from api_service.assistant.tools.definition import ToolExecutionContext
+
+    db, _, factory = context
+    monkeypatch.setattr(compatibility, "SessionLocal", factory)
+    root = case_storage_dir(service.settings, "workspace", "case")
+    source = root / "scan.nii"
+    Nifti1Image(np.zeros((3, 3, 3, 2)), np.eye(4)).to_filename(source)
+    original = source.read_bytes()
+    metadata = {"source": "pacs", "modality": "MR", "sequence": "T1", "sha256": fingerprint(source)}
+    db.add(Artifact(workspace_id="workspace", case_id="case", kind=ArtifactKind.volume,
+                    name=source.name, relative_path=source.name, metadata_json=metadata))
+    db.commit()
+    tools = workflow_test_tools.AssistantWorkflowTestTools(settings=service.settings)
+    monkeypatch.setattr(tools, "identity", lambda state: (root, {"user_id":"user", "case_id":"case", "workspace_id":"workspace"}))
+    calls = []
+
+    async def execute(request):
+        calls.append(request)
+        copied = Path(request.container_run.binds[0].host_path)
+        assert copied != root and (copied / 'scan.nii').read_bytes() == original
+        return SimpleNamespace(returncode=0, stdout='', stderr='', writer_stopped=True)
+
+    monkeypatch.setattr(workflow_test_tools, "execute_runtime_request_async", execute)
+    definition: dict[str, Any] = dict(id="copy_test", image="vnmd/fsl_6.0.7.23:20261013", description="test", details="test",
+                      inputs=[dict(name="image", description="4D MR", modalities=["MR"], dimensions=[4], sequences=["T1"])], script="true")
+    result = asyncio.run(tools.test({}, ToolExecutionContext("test"), {"definition":definition,"inputs":["scan.nii"]}))
+    assert result.details.get('status') == 'completed', result.content
+    assert len(calls) == 1 and source.read_bytes() == original
+    # A disposable copy must not bypass source metadata or actual image dimensions.
+    definition['inputs'][0]['dimensions'] = [3]
+    result = asyncio.run(tools.test({}, ToolExecutionContext("test"), {"definition":definition,"inputs":["scan.nii"]}))
+    assert result.is_error and 'dimensions' in result.details['error']
+    assert len(calls) == 1
+
+    definition['inputs'][0]['dimensions'] = [4]
+    definition['inputs'][0]['modalities'] = ['CT']
+    result = asyncio.run(tools.test({}, ToolExecutionContext("test"), {"definition":definition,"inputs":["scan.nii"]}))
+    assert result.is_error and 'modality' in result.details['error']
+    assert len(calls) == 1
+
+    definition['inputs'][0]['modalities'] = ['MR']
+    copy_inputs = workflow_test_tools.copy_inputs
+
+    def corrupt_copy(source_root, copied_root, selections):
+        copy_inputs(source_root, copied_root, selections)
+        (copied_root / 'scan.nii').write_bytes(b'changed copied bytes')
+
+    monkeypatch.setattr(workflow_test_tools, 'copy_inputs', corrupt_copy)
+    result = asyncio.run(tools.test({}, ToolExecutionContext("test"), {"definition":definition,"inputs":["scan.nii"]}))
+    assert result.is_error and 'provenance' in result.details['error']
+    assert len(calls) == 1 and source.read_bytes() == original

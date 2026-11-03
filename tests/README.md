@@ -188,3 +188,48 @@ choose **Codex** on Connect external agents, run its setup prompt in a local
 Codex task, then start a new task to check plugin skills and MCP tools. CLI install
 tests can use a temporary Codex configuration directory to avoid changing the
 user's installed plugins.
+
+### Isolated workflow setup benchmarks
+
+`pytest tests/test_workflow_setup_benchmark.py -q` checks benchmark fixtures and
+oracles offline. See [workflow setup benchmark](../benchmarks/workflow_setup/README.md)
+for separate opt-in container runs, prerequisites, and the agent scoring protocol.
+These do not use the running application or its database.
+
+`pytest tests/test_case_file_registration.py -q` verifies existing-file registration
+with temporary case storage and SQLite, including shared-agent access,
+automatic registration during GUI load, metadata repair, repeat loads, and viewer resource resolution. No live app
+or processing container is required.
+
+### Isolated authoring tools
+
+`pytest tests/test_isolated_authoring_tools.py tests/test_workflow_authoring_feedback.py`
+covers the two authoring tool schemas and isolated mount boundaries on Docker and
+Apptainer. `pytest tests/test_real_workflow_test.py` covers independent input copies,
+symlink rejection, timeout outcomes and private paginated logs. `tool_inspect` replaces the advertised shell
+probe and also retains configured-workflow inspection by `tool_id`.
+`tool_workflow_test` runs real commands against disposable copies of selected inputs.
+The default timeout is 10 seconds; over 60 seconds requires conversational user
+authorization, not an approval gate. Results include 15-line stdout/stderr tails.
+The same tool retrieves status and retained logs (10 MiB text per stream).
+Only disposable copies are mounted; outputs are never registered in the case.
+Schema validation remains available without execution.
+
+With the FSL and FreeSurfer benchmark images already cached, run
+`RUN_AUTHORING_SANDBOX=1 pytest tests/evaluations/eval_authoring_sandbox.py -q`.
+This starts its own temporary bridge and data directory, exercises real mount
+aliases and a host-write sentinel, and shuts down only that bridge. It never
+connects to the running app or its bridge. Apptainer execution itself is not
+covered by this Docker-only smoke test.
+
+### Installer reliability
+
+`pytest tests/test_installer_reliability.py tests/test_install_scripts.py tests/test_update_installer.py tests/test_release_publication.py` exercises generated version-bound installers against temporary release assets and fake Docker/download commands. It does not install software or touch a running application. Terminal-menu checks use a Unix pseudo-terminal (Linux/macOS); Python's standard library provides the rest. Release CI additionally downloads the uploaded installer and manifest while the release is a draft, verifies the checksum and embedded tag, and runs its syntax/help checks before publication.
+
+### Downloadable workflow benchmark fixtures
+
+`tests/test_workflow_benchmark_fixtures.py` uses tiny local archives and needs no
+network, Docker, or running app. For real benchmark data, follow
+[workflow benchmark preparation](../benchmarks/workflow_setup/README.md#reproducible-real-data-preparation).
+The separate preparation command downloads pinned public archives into a cache
+and creates disposable NIfTI/FreeSurfer fixtures; it never modifies app data.

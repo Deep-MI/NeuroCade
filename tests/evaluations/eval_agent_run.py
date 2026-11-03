@@ -209,7 +209,7 @@ class TestAgentRunFastSurfer:
             json={
                 "tool_id": "fastsurfer_fast",
                 "case_id": self.demo_case["id"],
-                "input_artifact_ids": [self.demo_case["gui_state"]["current_intensity_artifact_id"]],
+                "input_files": [{"source": "managed", "path": self.demo_case["upload_filename"]}],
             },
             timeout=30,
         )

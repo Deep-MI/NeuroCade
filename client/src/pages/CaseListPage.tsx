@@ -27,6 +27,7 @@ import { useWorkspaceCaseListData } from '../hooks/useWorkspaceCaseListData';
 import type { CaseSummary } from '../types';
 import {
   createCaseWithUpload,
+  createCaseWithLinkedDirectory,
   createWorkspace,
   deleteCase,
   deleteWorkspace,
@@ -113,16 +114,42 @@ export function CaseListPage() {
 
   const uploadModal = useCaseUploadModal({
     isBusy: uploading,
-    onCreateNewCaseUpload: async (files, caseName, metadata) => {
+    onCreateNewCaseUpload: async (files, caseName, metadata, importMode) => {
       if (!workspaceId) throw new Error('No file selected for upload.');
       setUploadError(null);
       setUploading(true);
       try {
-        const uploaded = await createCaseWithUpload(files, workspaceId, caseName, metadata);
-        void navigate(caseViewerPath(uploaded.workspace_id, uploaded.case_id));
+        const uploaded = await createCaseWithUpload(files, workspaceId, caseName, metadata, importMode);
+        const createdCount = uploaded.created_cases?.length ?? uploaded.import_summary?.created_case_count ?? 1;
+        const importNotice = createdCount > 1
+          ? `Created ${createdCount} cases. Opened ${uploaded.title}; the other imported subjects are available in the case list.`
+          : undefined;
+        void navigate(caseViewerPath(uploaded.workspace_id, uploaded.case_id), {
+          state: importNotice ? { importNotice } : undefined,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setUploadError(message);
+        throw err;
+      } finally {
+        setUploading(false);
+      }
+    },
+    onCreateNewCaseLink: async (source, caseName, metadata, importMode) => {
+      if (!workspaceId) throw new Error('No workspace selected.');
+      setUploadError(null);
+      setUploading(true);
+      try {
+        const linked = await createCaseWithLinkedDirectory(source, workspaceId, caseName, metadata, importMode);
+        const createdCount = linked.created_cases?.length ?? linked.import_summary?.created_case_count ?? 1;
+        const importNotice = createdCount > 1
+          ? `Linked ${createdCount} cases. Opened ${linked.title}; the other subjects are available in the case list.`
+          : undefined;
+        void navigate(caseViewerPath(linked.workspace_id, linked.case_id), {
+          state: importNotice ? { importNotice } : undefined,
+        });
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : String(err));
         throw err;
       } finally {
         setUploading(false);
@@ -430,15 +457,15 @@ export function CaseListPage() {
                 onClick={handleUploadCardClick}
                 disabled={!workspaceId || uploading || !uploadsEnabled}
                 className={`nc-card nc-upload-case-card ${viewMode === 'list' ? 'nc-upload-case-card-list' : 'nc-upload-case-card-grid'} disabled:opacity-60`}
-                title={uploadsEnabled ? 'Upload case' : 'Uploads disabled for this deployment'}
+                title={uploadsEnabled ? 'Add files, folders, or linked data' : 'Uploads disabled for this deployment'}
               >
                 <span className="nc-upload-case-icon">
                   {uploading ? <LoaderCircle className="animate-spin" size={18} /> : <Upload size={18} />}
                 </span>
                 <div className="min-w-0">
-                  <div className="nc-upload-case-title">{uploadsEnabled ? 'Upload Case' : 'Sample Data Only'}</div>
+                  <div className="nc-upload-case-title">{uploadsEnabled ? 'Add Data' : 'Sample Data Only'}</div>
                   <div className="nc-upload-case-description">
-                    {uploadsEnabled ? 'Supports NIfTI, MGZ, DICOM files, and DICOM ZIP archives.' : 'Uploads are disabled for this deployment.'}
+                    {uploadsEnabled ? 'Add any file or folder. Known imaging structures are recognized automatically.' : 'Uploads are disabled for this deployment.'}
                   </div>
                 </div>
               </button>
@@ -483,12 +510,13 @@ export function CaseListPage() {
       {uploadModal.showUploadModal && (
         <UploadCaseModal
           key={`${uploadModal.pendingUploadFiles[0]?.name ?? ''}:${uploadModal.pendingUploadFiles.length}:${uploadModal.pendingUploadDefaultName}`}
-          isOpen={uploadModal.showUploadModal}
-          filename={uploadModal.pendingUploadFiles[0]?.name ?? null}
-          fileCount={uploadModal.pendingUploadFiles.length}
+          selectedFiles={uploadModal.pendingUploadFiles}
+          linkedSource={uploadModal.pendingLinkedSource}
           defaultName={uploadModal.pendingUploadDefaultName}
           onClose={uploadModal.closeUploadModal}
           onSelectFiles={uploadModal.selectUploadFiles}
+          onClearSelection={uploadModal.clearPendingSelection}
+          onSelectLinkedDirectory={uploadModal.selectLinkedDirectory}
           onCreateNewCase={uploadModal.confirmCreateNewCaseUpload}
         />
       )}
