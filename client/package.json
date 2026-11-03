@@ -53,6 +53,7 @@
     "vite": "^6.4.5"
   },
   "overrides": {
-    "js-cookie": "3.0.7"
+    "js-cookie": "3.0.7",
+    "minimatch": "11.0.4"
   }
 }
