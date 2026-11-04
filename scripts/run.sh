@@ -16,6 +16,17 @@ configure_docker_cli_path
 RUNTIME="${NEUROCADE_RUNTIME:-}"
 HOST_DATA_DIR="${HOST_DATA_DIR:-$ROOT_DIR/neurocade-data}"
 [[ "$HOST_DATA_DIR" == /* ]] || HOST_DATA_DIR="$ROOT_DIR/$HOST_DATA_DIR"
+# The bridge reports its data root in pathlib-normalized form (no "." segments or
+# duplicate slashes), and bridge_health compares against this exact string.
+normalize_path() {
+  local path="$1"
+  while [[ "$path" == *"//"* ]]; do path="${path//\/\//\/}"; done
+  while [[ "$path" == *"/./"* ]]; do path="${path//\/.\//\/}"; done
+  path="${path%/.}"
+  while [[ "$path" == */ && "$path" != / ]]; do path="${path%/}"; done
+  printf '%s' "$path"
+}
+HOST_DATA_DIR="$(normalize_path "$HOST_DATA_DIR")"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
 INSTALL_ID_FILE="$RUNTIME_DIR/install-id"
 INSTALL_ID=""

@@ -254,15 +254,15 @@ export async function addNiivueSurfaceLayer(nv: Niivue, surface: SurfaceLayer, s
     color: surfaceRgba(surface).map((value) => value / 255) as [number, number, number, number],
     visible: surface.visible,
     shaderType: 'phong',
-    sliceShaderType: 'crosscut',
+    // crosscut2 outlines the mesh where it meets the displayed voxel plane, so
+    // outlines follow oblique slices. The 3D pane keeps the shaded phong mesh.
+    sliceShaderType: 'crosscut2',
   };
   await nv.addMesh(meshOptions);
   const nvInterop = asNiivueInterop(nv);
   const mesh = (nvInterop.meshes ?? []).find((item) => item.name === filename);
   if (mesh) {
     mesh.id = surface.id;
-    // Per-pane shader: 2D planes use 'Crosscut' (cross-section outline); the 3D
-    // pane is left on Niivue's default shader to show the full shaded mesh.
     await syncNiivueSurfaceDisplay(nv, mesh, surface, signal);
   }
 }

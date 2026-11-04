@@ -1,6 +1,8 @@
 import type Niivue from '@niivue/niivue';
 
+import type { Volume } from '../types.js';
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop.js';
+import { volumesInRenderOrder } from './layerDisplay.js';
 
 type NiivueOpacityUpdate = 'none' | 'updated';
 type WorldCoordinate = [number, number, number];
@@ -22,18 +24,38 @@ export function restoreCrosshairWorld(nv: Niivue, position: WorldCoordinate | nu
   nv.setCrosshairPos(position);
 }
 
+function loadedVolume(nv: Niivue, id: string): NiivueVolumeInterop | undefined {
+  return asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
+}
+
+// NiiVue's world space and crosshair are defined by its first loaded volume.
+// Voxel readouts and cursor commands use the layer that is bottom-most in the
+// pane's render order, which enforceVolumeRenderOrder keeps at that position.
 function coordinateVolume(nv: Niivue, sourceId?: string | null): NiivueVolumeInterop | undefined {
   const volumes = asNiivueInterop(nv).volumes;
   if (sourceId) {
     const source = volumes.find((volume) => volume.id === sourceId);
     if (source) return source;
   }
-  const fixedReference = volumes[0];
-  if (fixedReference?.__neurocadeFixedReference) {
-    const source = volumes.find((volume) => volume.id === fixedReference.__neurocadeCoordinateSourceId);
-    if (source) return source;
+  return volumes[0];
+}
+
+/** Id of the bottom-most loaded layer, which defines the pane's coordinate frame. */
+export function coordinateSourceFor(nv: Niivue, sources: Volume[]): string | null {
+  for (const source of volumesInRenderOrder(sources)) {
+    if (loadedVolume(nv, source.id)) return source.id;
   }
-  return fixedReference;
+  return null;
+}
+
+/** Reorders loaded NiiVue volumes to match the layer panel's render order. */
+export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]): boolean {
+  const ordered = volumesInRenderOrder(sources)
+    .map((source) => loadedVolume(nv, source.id))
+    .filter((volume): volume is NiivueVolumeInterop => Boolean(volume));
+  const desiredSet = new Set(ordered);
+  const desired = [...ordered, ...asNiivueInterop(nv).volumes.filter((volume) => !desiredSet.has(volume))];
+  return reorderLoadedVolumes(nv, desired);
 }
 
 // NiiVue's setCrosshairPos API accepts world millimetres, while assistant

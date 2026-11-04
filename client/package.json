@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.20.0",
-    "@niivue/niivue": "1.0.0-rc.12",
+    "@niivue/niivue": "1.0.0-rc.83",
     "lucide-react": "^0.562.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

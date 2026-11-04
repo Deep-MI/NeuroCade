@@ -29,7 +29,7 @@ import {
   type WindowSetting,
 } from './paneSyncKeys';
 import { useNiivuePaneLayers } from './useNiivuePaneLayers';
-import { removeFixedNiivueReference } from './fixedReferenceRuntime';
+import { clampMeshOutlineWidth } from './layerDisplay';
 import {
   inPlaneCrosshairDelta,
   niivueDragMode,
@@ -55,6 +55,8 @@ interface NiivuePaneProps {
   externalCoordinateSpace?: 'voxel' | 'world';
   reportLocation?: boolean;
   showOrientationLabels?: boolean;
+  /** Crosscut outline width in device pixels, applied to 2D slice mesh outlines. */
+  meshOutlineWidth?: number;
   className?: string;
   onReady: (nv: Niivue | null) => void;
   onLocationChange?: (location: LocationInfo, mm: number[]) => void;
@@ -107,6 +109,7 @@ export function NiivuePane({
   externalCoordinateSpace = 'voxel',
   reportLocation,
   showOrientationLabels = true,
+  meshOutlineWidth,
   className,
   onReady,
   onLocationChange,
@@ -179,6 +182,8 @@ export function NiivuePane({
       showRender,
       multiplanarType: MULTIPLANAR_TYPE.GRID,
       isEqualSize: sliceType === 3,
+      // NiiVue 1.0 defaults anti-aliasing off; keep the edges smooth as before.
+      isAntiAlias: true,
       // 3D pane only: let dark voxels become transparent so the mesh shows
       // through. 2D planes keep dark voxels opaque (the Niivue default).
       volumeIsAlphaClipDark: sliceType === 4,
@@ -286,9 +291,14 @@ export function NiivuePane({
   useEffect(() => {
     setNiivueLayerBufferCacheScope(cacheScope);
     coordinateSourceIdRef.current = null;
+  }, [cacheScope]);
+
+  // Outline width is a NiiVue instance setting; its setter redraws the scene.
+  useEffect(() => {
     const nv = nvRef.current;
-    if (nv && removeFixedNiivueReference(nv)) scheduleRefresh();
-  }, [cacheScope, scheduleRefresh]);
+    if (!nv) return;
+    nv.meshCrosscutWidth = clampMeshOutlineWidth(meshOutlineWidth);
+  }, [meshOutlineWidth]);
 
   useNiivuePaneLayers({
     manualWindowingIds,

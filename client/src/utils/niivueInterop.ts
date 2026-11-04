@@ -5,8 +5,6 @@ export type NiivueColorMap = ColorMap;
 export type NiivueVolumeInterop = NVImage & {
   id?: string;
   isDirty?: boolean;
-  __neurocadeFixedReference?: boolean;
-  __neurocadeCoordinateSourceId?: string;
 };
 
 export type NiivueMeshInterop = NVMesh & {

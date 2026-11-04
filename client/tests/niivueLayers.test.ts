@@ -5,15 +5,13 @@ import {
   referenceWorldToVoxel,
   referenceVoxelToWorld,
   externalCoordinateToWorld,
+  coordinateSourceFor,
+  enforceVolumeRenderOrder,
   reorderLoadedVolumes,
   setLoadedVolumeOpacity,
   syncLoadedVolumeOpacities,
 } from '../src/neurocadeViewer/loadedVolumeDisplay.js';
-import { FIXED_REFERENCE_ID } from '../src/neurocadeViewer/fixedReference.js';
-import {
-  ensureFixedNiivueReference,
-  removeFixedNiivueReference,
-} from '../src/neurocadeViewer/fixedReferenceRuntime.js';
+import { clampMeshOutlineWidth, MESH_OUTLINE_WIDTH } from '../src/neurocadeViewer/layerDisplay.js';
 import { applyLayerDisplay } from '../src/neurocadeViewer/viewerPaneAdapter.js';
 import type { Volume } from '../src/types.js';
 import type { NiivueVolumeInterop } from '../src/utils/niivueInterop.js';
@@ -195,18 +193,7 @@ void test('referenceVoxelToWorld applies the base volume RAS affine', () => {
   );
 });
 
-void test('coordinate conversion bypasses the fixed reference grid', () => {
-  const fixedReference = {
-    id: FIXED_REFERENCE_ID,
-    __neurocadeFixedReference: true,
-    __neurocadeCoordinateSourceId: 'input',
-    matRAS: [
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ],
-  };
+void test('voxel coordinates use the first loaded volume as the frame', () => {
   const input = {
     id: 'input',
     matRAS: [
@@ -216,170 +203,42 @@ void test('coordinate conversion bypasses the fixed reference grid', () => {
       0, 0, 0, 1,
     ],
   };
-  const nv = { volumes: [fixedReference, input] };
+  const nv = { volumes: [input] };
 
   assert.deepEqual(referenceVoxelToWorld(nv as never, [1, 2, 3]), [14, 17, 42]);
   assert.deepEqual(referenceWorldToVoxel(nv as never, [14, 17, 42])?.map(Math.round), [1, 2, 3]);
 });
 
-void test('a fixed transparent grid is always inserted at volume zero', async () => {
-  const hiddenOrig = source('orig.mgz', 'intensity', false);
-  const bottomOblique = source('input.mgz', 'intensity', true);
-  const loadedBottom = loadedVolume(bottomOblique.id, 3.5);
-  const loadedOrig = loadedVolume(hiddenOrig.id, 0);
-  const volumes = [loadedOrig, loadedBottom];
-  const nv = mockNiivue(volumes);
-
-  const coordinateSourceId = await ensureFixedNiivueReference(
-    nv as never,
-    [hiddenOrig, bottomOblique],
-  );
-
-  assert.deepEqual(
-    volumes.map((volume) => volume.id),
-    [FIXED_REFERENCE_ID, 'input.mgz', 'orig.mgz'],
-  );
-  assert.equal(volumes[0].opacity, 0);
-  assert.equal(volumes[0].__neurocadeFixedReference, true);
-  assert.equal(coordinateSourceId, 'input.mgz');
-});
-
-void test('visibility changes neither rebuild nor reorder the fixed reference', async () => {
-  const topOrig = source('orig.mgz', 'intensity', false);
-  const bottomOblique = source('input.mgz', 'intensity', true);
-  const loadedBottom = loadedVolume(bottomOblique.id, 3.5);
-  const loadedOrig = loadedVolume(topOrig.id, 0);
-  const volumes = [loadedOrig, loadedBottom];
-  const nv = mockNiivue(volumes);
-
-  await ensureFixedNiivueReference(nv as never, [topOrig, bottomOblique]);
-  const fixedReference = volumes[0];
-  const firstOrder = volumes.map((volume) => volume.id);
-
-  await ensureFixedNiivueReference(
-    nv as never,
-    [{ ...topOrig, visible: true }, bottomOblique],
-  );
-
-  assert.equal(volumes[0], fixedReference);
-  assert.deepEqual(volumes.map((volume) => volume.id), firstOrder);
-  assert.equal(volumes.filter((volume) => volume.__neurocadeFixedReference).length, 1);
-});
-
-void test('concurrent reconciliation installs only one fixed reference', async () => {
+void test('enforceVolumeRenderOrder puts the bottom intensity volume first', () => {
   const input = source('input.mgz', 'intensity', true);
-  const volumes = [loadedVolume(input.id, 0)];
-  let releaseCreation: (() => void) | undefined;
-  let addVolumeCalls = 0;
-  const creationGate = new Promise<void>((resolve) => {
-    releaseCreation = resolve;
-  });
-  const nv = {
-    ...mockNiivue(volumes),
-    model: {
-      ...mockNiivue(volumes).model,
-      addVolume: async () => {
-        addVolumeCalls += 1;
-        await creationGate;
-        volumes.push({
-          name: 'NeuroCade reference grid',
-        } as NiivueVolumeInterop);
-      },
-    },
-  };
-
-  const first = ensureFixedNiivueReference(nv as never, [input]);
-  const second = ensureFixedNiivueReference(nv as never, [input]);
-  releaseCreation?.();
-  await Promise.all([first, second]);
-
-  assert.equal(addVolumeCalls, 1);
-  assert.equal(volumes.filter((volume) => volume.__neurocadeFixedReference).length, 1);
-});
-
-void test('removal invalidates an in-flight fixed reference creation', async () => {
-  const input = source('input.mgz', 'intensity', true);
-  const volumes = [loadedVolume(input.id, 0)];
-  let releaseCreation: (() => void) | undefined;
-  let addVolumeCalls = 0;
-  const creationGate = new Promise<void>((resolve) => {
-    releaseCreation = resolve;
-  });
-  const base = mockNiivue(volumes);
-  const nv = {
-    ...base,
-    model: {
-      ...base.model,
-      addVolume: async () => {
-        addVolumeCalls += 1;
-        await creationGate;
-        volumes.push({
-          name: 'NeuroCade reference grid',
-        } as NiivueVolumeInterop);
-      },
-    },
-  };
-
-  const staleCreation = ensureFixedNiivueReference(nv as never, [input]);
-  removeFixedNiivueReference(nv as never);
-  releaseCreation?.();
-
-  assert.equal(await staleCreation, null);
-  assert.equal(volumes.filter((volume) => volume.__neurocadeFixedReference).length, 0);
-  assert.equal(await ensureFixedNiivueReference(nv as never, [input]), input.id);
-  assert.equal(addVolumeCalls, 2);
-  assert.equal(volumes.filter((volume) => volume.__neurocadeFixedReference).length, 1);
-});
-
-void test('reordering pane layers only reorders real NiiVue volumes', async () => {
-  const segmentation = source('aseg.mgz', 'segmentation', true);
   const orig = source('orig.mgz', 'intensity', true);
+  const segmentation = source('aseg.mgz', 'segmentation', true);
+  const volumes = [loadedVolume(input.id, 0), loadedVolume(orig.id, 0), loadedVolume(segmentation.id, 0)];
+  const nv = mockNiivue(volumes);
+
+  assert.equal(enforceVolumeRenderOrder(nv as never, [segmentation, input, orig]), true);
+  assert.deepEqual(volumes.map((volume) => volume.id), ['orig.mgz', 'input.mgz', 'aseg.mgz']);
+  assert.equal(enforceVolumeRenderOrder(nv as never, [segmentation, input, orig]), false);
+});
+
+void test('coordinateSourceFor reports the bottom layer that is actually loaded', () => {
   const input = source('input.mgz', 'intensity', true);
-  const loadedOrig = loadedVolume(orig.id, 0);
-  const loadedInput = loadedVolume(input.id, 3.5);
-  const loadedSegmentation = loadedVolume(segmentation.id, 0);
-  const volumes = [loadedOrig, loadedInput, loadedSegmentation];
-  const nv = mockNiivue(volumes);
+  const orig = source('orig.mgz', 'intensity', true);
+  const segmentation = source('aseg.mgz', 'segmentation', true);
+  const sources = [segmentation, input, orig];
 
-  await ensureFixedNiivueReference(nv as never, [segmentation, orig, input]);
-  const fixedReference = volumes[0];
-  const coordinateSourceId = await ensureFixedNiivueReference(
-    nv as never,
-    [segmentation, input, orig],
-  );
-
-  assert.deepEqual(
-    volumes.map((volume) => volume.id),
-    [FIXED_REFERENCE_ID, 'orig.mgz', 'input.mgz', 'aseg.mgz'],
-  );
-  assert.equal(volumes[0], fixedReference);
-  assert.equal(coordinateSourceId, 'orig.mgz');
+  // orig.mgz is the bottom layer in render order but has not been loaded yet.
+  assert.equal(coordinateSourceFor(mockNiivue([loadedVolume(input.id, 0)]) as never, sources), 'input.mgz');
+  assert.equal(coordinateSourceFor(mockNiivue([]) as never, sources), null);
 });
 
-
-void test('loading a larger input after a segmentation expands the reference only once', async () => {
-  const segmentation = source('brainstem', 'segmentation', true);
-  const input = source('input', 'intensity', true);
-  const volumes = [loadedVolume(segmentation.id, 0)];
-  const nv = mockNiivue(volumes);
-  await ensureFixedNiivueReference(nv as never, [segmentation]);
-  const croppedReference = volumes[0];
-  const fullInput = loadedVolume(input.id, 0);
-  fullInput.extentsMin = [-100, -120, -130];
-  fullInput.extentsMax = [100, 120, 130];
-  volumes.push(fullInput);
-  await Promise.all([
-    ensureFixedNiivueReference(nv as never, [segmentation, input]),
-    ensureFixedNiivueReference(nv as never, [segmentation, input]),
-  ]);
-  const expandedReference = volumes[0];
-  assert.notEqual(expandedReference, croppedReference);
-  assert.equal(volumes.filter(v => v.__neurocadeFixedReference).length, 1);
-  assert.equal(expandedReference.__neurocadeCoordinateSourceId, input.id);
-  await ensureFixedNiivueReference(nv as never, [segmentation, input]);
-  assert.equal(volumes[0], expandedReference);
+void test('mesh outline width is clamped to the slider range with a finite default', () => {
+  assert.equal(clampMeshOutlineWidth(0), MESH_OUTLINE_WIDTH.min);
+  assert.equal(clampMeshOutlineWidth(99), MESH_OUTLINE_WIDTH.max);
+  assert.equal(clampMeshOutlineWidth(2.5), 2.5);
+  assert.equal(clampMeshOutlineWidth(Number.NaN), MESH_OUTLINE_WIDTH.default);
+  assert.equal(clampMeshOutlineWidth(undefined), MESH_OUTLINE_WIDTH.default);
 });
-
 
 void test('external world cursor bypasses cropped/reference voxel transforms', () => {
   const nv = { volumes: [{ matRAS: [2, 0, 0, 100, 0, 3, 0, -50, 0, 0, 4, 20, 0, 0, 0, 1] }] };
