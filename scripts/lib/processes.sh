@@ -7,7 +7,9 @@ pid_start_time() {
   stat="${stat##*) }"
   set -- $stat
   [[ "${20:-}" =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "$20"
+  # Braces matter: "$20" is "$2" (the parent PID) followed by a literal 0,
+  # which changes when the process is reparented after its launcher exits.
+  printf '%s\n' "${20}"
 }
 
 write_pid_file() {
