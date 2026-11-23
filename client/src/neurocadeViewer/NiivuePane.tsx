@@ -33,6 +33,7 @@ import {
 import { useNiivuePaneLayers } from './useNiivuePaneLayers';
 import { clampMeshOutlineWidth } from './layerDisplay';
 import {
+  gridCustomLayout,
   inPlaneCrosshairDelta,
   niivueDragMode,
   planeAtCanvasPosition,
@@ -183,7 +184,6 @@ export function NiivuePane({
       sliceType,
       showRender,
       multiplanarType: MULTIPLANAR_TYPE.GRID,
-      isEqualSize: sliceType === 3,
       // NiiVue 1.0 defaults anti-aliasing off; keep the edges smooth as before.
       isAntiAlias: true,
       // 3D pane only: let dark voxels become transparent so the mesh shows
@@ -266,9 +266,7 @@ export function NiivuePane({
     nv.sliceType = sliceType;
     nv.showRender = showRender;
     nv.multiplanarType = MULTIPLANAR_TYPE.GRID;
-    // Equal-sized anatomical axes are useful in the four-up view, but forcing
-    // them in a single plane needlessly reduces non-cubic images to a square.
-    nv.isEqualSize = sliceType === 3;
+    nv.customLayout = gridCustomLayout(sliceType, showRender);
     nv.isOrientationTextVisible = showOrientationLabels && sliceType === 3;
     nv.volumeIsAlphaClipDark = sliceType === 4;
     nv.drawScene();

@@ -223,6 +223,9 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
       if (!nv) return null;
       const previousSliceType = nv.sliceType;
       const previousShowRender = nv.showRender;
+      // A Grid custom layout overrides sliceType, so drop it for single planes.
+      const previousCustomLayout = nv.customLayout;
+      nv.customLayout = null;
       const capture = (sliceType: 0 | 1 | 2): string | null => {
         nv.sliceType = sliceType;
         nv.showRender = SHOW_RENDER.NEVER;
@@ -238,6 +241,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
       } finally {
         nv.sliceType = previousSliceType;
         nv.showRender = previousShowRender;
+        nv.customLayout = previousCustomLayout;
         nv.drawScene();
       }
     },

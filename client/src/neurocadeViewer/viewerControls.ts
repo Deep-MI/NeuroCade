@@ -1,4 +1,4 @@
-import { DRAG_MODE, SHOW_RENDER } from '@niivue/niivue';
+import { DRAG_MODE, SHOW_RENDER, type CustomLayoutTile } from '@niivue/niivue';
 
 export type NeuroCadeViewMode = 'axial' | 'coronal' | 'sagittal' | 'multi' | 'render';
 export type ViewerSliceType = 0 | 1 | 2 | 3 | 4;
@@ -66,3 +66,23 @@ export const VIEW_MODES: { id: NeuroCadeViewMode; label: string; sliceType: View
   { id: 'sagittal', label: 'Sag', sliceType: 2, showRender: SHOW_RENDER.NEVER },
   { id: 'render', label: '3D', sliceType: 4, showRender: SHOW_RENDER.ALWAYS },
 ];
+
+const GRID_SLICE_TILES: CustomLayoutTile[] = [
+  { sliceType: 1, position: [0, 0, 0.5, 0.5], fill: true },
+  { sliceType: 2, position: [0.5, 0, 0.5, 0.5], fill: true },
+  { sliceType: 0, position: [0, 0.5, 0.5, 0.5], fill: true },
+];
+const GRID_RENDER_TILE: CustomLayoutTile = { sliceType: 4, position: [0.5, 0.5, 0.5, 0.5] };
+
+/**
+ * NiiVue's built-in Grid letterboxes every tile to an equal square, leaving
+ * dead canvas beside the slices that neither draws nor accepts clicks. In Grid
+ * mode, lay out the same four-up arrangement explicitly and let each 2D slice
+ * fill its quarter (NiiVue pads the mm window, so anatomy stays undistorted).
+ * Other modes use NiiVue's own layout, which already fills a single view.
+ */
+export function gridCustomLayout(sliceType: ViewerSliceType, showRender: number): CustomLayoutTile[] | null {
+  if (sliceType !== 3) return null;
+  const tiles = GRID_SLICE_TILES.map((tile) => ({ ...tile, position: [...tile.position] as CustomLayoutTile['position'] }));
+  return showRender === Number(SHOW_RENDER.NEVER) ? tiles : [...tiles, { ...GRID_RENDER_TILE }];
+}
