@@ -59,6 +59,13 @@ a bounded timeout, displays up to 50 model IDs, and always offers manual entry.
 An unavailable endpoint does not prevent manual configuration. Existing model
 names remain valid choices; discovery does not prove model suitability or access.
 
+The `local` profile does not require authentication settings. `internal` and
+`demo` installs also require `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`,
+`CLERK_JWKS_URL`, and `CLERK_ISSUER` in the environment or `.env`. These
+mandatory settings are validated before managed Python, images, or other
+toolchains are downloaded; `--yes` suppresses prompts but does not bypass the
+validation.
+
 `--yes` suppresses every prompt, including the directory prompt. Missing mandatory
 settings fail before downloading toolchains/images. A fresh unattended install
 uses no assistant unless `--llm-provider` or provider configuration selects one.
