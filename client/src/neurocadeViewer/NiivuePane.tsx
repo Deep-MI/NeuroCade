@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   DRAG_MODE,
   MULTIPLANAR_TYPE,
+  OVERLAY_ALPHA_BLEND,
+  OVERLAY_COLOR_BLEND,
   SHOW_RENDER,
   type NiiVueLocation,
   type VolumeUpdatedDetail,
@@ -177,7 +179,7 @@ export function NiivuePane({
       // slice and look as if part of the line is behind bright anatomy.
       crosshairColor: [0.47, 0.66, 1, 1],
       crosshairGap: 3,
-      crosshairWidth: 0.75,
+      crosshairWidth: 2.5,
       sliceType,
       showRender,
       multiplanarType: MULTIPLANAR_TYPE.GRID,
@@ -187,6 +189,13 @@ export function NiivuePane({
       // 3D pane only: let dark voxels become transparent so the mesh shows
       // through. 2D planes keep dark voxels opaque (the Niivue default).
       volumeIsAlphaClipDark: sliceType === 4,
+      // NiiVue treats volumes[0] as the base and everything above it as
+      // overlays. Its default ADDITIVE/MAX overlay blend sums colours, so a
+      // label map over a visible intensity overlay (e.g. orig.mgz above a
+      // hidden input image) washes out to pastel. Composite overlays
+      // source-over in volume order instead.
+      volumeOverlayColorBlend: OVERLAY_COLOR_BLEND.OVER,
+      volumeOverlayAlphaBlend: OVERLAY_ALPHA_BLEND.UNION,
       isColorbarVisible: false,
       isLegendVisible: false,
       volumeIsNearestInterpolation: true,

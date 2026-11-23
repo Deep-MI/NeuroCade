@@ -33,19 +33,9 @@ function applyPinnedPatch(name, original, replacement) {
   source = source.replace(original, replacement);
 }
 
-// NiiVue 1.0.0-rc.12 adds premultiplied colors for every overlay but retains
-// only max(alpha). Overlapping half-opacity labels are consequently unpremultiplied
-// to roughly twice their intended brightness. Composite each layer source-over.
-applyPinnedPatch(
-  'overlay source-over compositing',
-  `      l <= 0 || (i[a] += s[a] / 255 * l, i[a + 1] += s[a + 1] / 255 * l, i[a + 2] += s[a + 2] / 255 * l, i[a + 3] = Math.max(i[a + 3], l));`,
-  `      l <= 0 || (i[a] = s[a] / 255 * l + i[a] * (1 - l), i[a + 1] = s[a + 1] / 255 * l + i[a + 1] * (1 - l), i[a + 2] = s[a + 2] / 255 * l + i[a + 2] * (1 - l), i[a + 3] = l + i[a + 3] * (1 - l));`,
-);
-applyPinnedPatch(
-  'WebGPU overlay source-over compositing',
-  `    accum[idx] = vec4f(cur.x + rgba.x * a, cur.y + rgba.y * a, cur.z + rgba.z * a, max(cur.w, a));`,
-  `    accum[idx] = vec4f(rgba.x * a + cur.x * (1.0 - a), rgba.y * a + cur.y * (1.0 - a), rgba.z * a + cur.z * (1.0 - a), a + cur.w * (1.0 - a));`,
-);
+// Overlay source-over compositing is no longer patched: NiiVue rc.83 exposes it
+// as volumeOverlayColorBlend OVER + volumeOverlayAlphaBlend UNION, which
+// NiivuePane sets.
 
 // Pointer-to-world mapping only needs a retained texture transform. NeuroCade
 // keeps that small geometry after releasing the final volume and its GPU data.
