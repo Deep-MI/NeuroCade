@@ -117,6 +117,29 @@ default. The Docker profile maps `host.docker.internal` through Linux's
 host-gateway; the Apptainer profile uses host networking and binds the bridge to
 loopback only.
 
+### Status icon
+
+When `start -d` runs in a desktop session, NeuroCade shows a status icon in the
+macOS menu bar or the Ubuntu top bar while it runs in the background. Its menu
+shows whether the application is responding and how many workflows are in
+progress, opens NeuroCade in the browser, and stops NeuroCade (asking first while
+workflows are running). "Hide This Icon" removes only the icon; the next
+`start -d` shows it again. `./scripts/run.sh stop` removes it as well.
+
+The icon uses the client's Electron binary, the same one the desktop launcher
+uses. If it has not been downloaded yet, the icon is skipped; running
+`./scripts/desktop/run.sh` once downloads it, as does
+`npm --prefix client ci && npm --prefix client exec install-electron`.
+
+Set `NEUROCADE_TRAY=false` in `.env`, or pass `--no-tray`, to turn the icon off;
+`NEUROCADE_TRAY=true` reports why it could not be shown. It is never shown over
+SSH, without a display, or for foreground launches such as the desktop window,
+which owns its own window.
+
+Ubuntu's default desktop shows the icon through its built-in AppIndicator
+extension. Desktops without StatusNotifierItem support, such as GNOME without
+that extension, do not display it.
+
 ## Updates
 
 Installer-owned archive installations can check or apply published releases:

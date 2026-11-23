@@ -65,13 +65,17 @@ SAMPLE_CASE_DIR="$ROOT_DIR/sample_case"
 SAMPLE_CASE_NAME="${NEUROCADE_SAMPLE_CASE_NAME:-FastSurfer_Rhineland_0000}"
 SAMPLE_CASE_URL="${NEUROCADE_SAMPLE_CASE_URL:-https://github.com/Deep-MI/NeuroCade/releases/download/v2026.6.7/neurocade-sample-case-FastSurfer_Rhineland_0000.tar.gz}"
 SAMPLE_CASE_SHA256="${NEUROCADE_SAMPLE_CASE_SHA256:-71814b4687180e10543523bb07292725f4b165acce7d0f9d34148028daa061b7}"
+source "$ROOT_DIR/scripts/lib/tray.sh"
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/run.sh [start|stop|status|logs|pull|build|prepare-tools|doctor|repair] [options]
 
 NEUROCADE_RUNTIME=docker|apptainer is required and selects both the application
-artifact and the host tool runtime. Start options: -d, --detach, --build, --port PORT, --mcp, --mcp-access read|standard.
+artifact and the host tool runtime. Start options: -d, --detach, --build, --port PORT, --mcp, --mcp-access read|standard, --no-tray.
+
+A detached start in a desktop session shows a NeuroCade status icon in the
+macOS menu bar or Linux top bar (NEUROCADE_TRAY=auto|true|false, default auto).
 EOF
 }
 
@@ -368,6 +372,7 @@ while [[ $# -gt 0 ]]; do
     --mcp-access) [[ $# -ge 2 ]] || fail "--mcp-access requires read or standard"; MCP_ACCESS="$2"; MCP_EXPLICIT=1; shift 2 ;;
     --port) [[ $# -ge 2 ]] || fail "--port requires a value"; HTTP_PORT="$2"; shift 2 ;;
     --port=*) HTTP_PORT="${1#*=}"; shift ;;
+    --no-tray) TRAY_MODE=false; shift ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown argument: $1" ;;
   esac
@@ -422,6 +427,10 @@ case "$COMMAND" in
     stop_application || fail "NeuroCade could not be stopped; the launch session was kept so it can be stopped again"
     stop_bridge || fail "The runtime bridge could not be stopped; the launch session was kept so it can be stopped again"
     rm -f "$LAUNCH_ID_FILE" "$RUNTIME_DIR/mcp.json"
+    # Last, because the icon's own "Stop NeuroCade" runs this command: on a
+    # failure above it stays up to report it. It also exits by itself once the
+    # launch session is gone.
+    stop_tray || echo "WARN: the NeuroCade status icon could not be stopped" >&2
     ;;
   status)
     installed_version="$(provenance_value "$ROOT_DIR" version)"
@@ -437,6 +446,7 @@ case "$COMMAND" in
     else
       echo "NeuroCade: stopped"
     fi
+    if tray_running; then echo "Status icon: shown"; fi
     ;;
   logs)
     runtime_follow_logs
@@ -452,6 +462,7 @@ case "$COMMAND" in
     if runtime_application_running && application_health; then
       mcp_check_existing || exit 1
       start_bridge
+      [[ "$DETACH" -eq 0 ]] || start_tray
       print_browser_url "$(application_url)"
       exit 0
     fi
@@ -485,6 +496,7 @@ case "$COMMAND" in
     if [[ "$DETACH" -eq 1 ]]; then
       wait_for_application
       wait "$MCP_DISCOVERY_PID"
+      start_tray
       print_browser_url "$(sed -n '1p' "$APP_URL_FILE")"
     else
       kill "$MCP_DISCOVERY_PID" >/dev/null 2>&1 || true
