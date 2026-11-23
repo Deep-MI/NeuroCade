@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from 'react';
+import { useEffect, useState, type MutableRefObject } from 'react';
 import type Niivue from '@niivue/niivue';
 
 import type { Volume } from '../types';
@@ -84,6 +84,12 @@ export function useNiivuePaneLayers({
   onError,
   onCoordinateSourceChange,
 }: UseNiivuePaneLayersOptions): void {
+  // Bumped when a volume that was never loaded becomes visible. Volume
+  // visibility is deliberately not part of layerReconcileKey (showing or hiding
+  // a loaded volume must not restart in-flight loads), so this is what lets an
+  // initially hidden, lazily skipped volume load once the user enables it.
+  const [lazyLoadRequest, setLazyLoadRequest] = useState(0);
+
   // Incremental layer reconcile. Hidden volumes that have already been opened
   // remain loaded, while initially-hidden imported artifacts stay lazy until
   // the user enables them. This keeps large subject directories responsive.
@@ -214,6 +220,7 @@ export function useNiivuePaneLayers({
     onLoadingChange,
     onCoordinateSourceChange,
     layerReconcileKey,
+    lazyLoadRequest,
     scheduleRefresh,
     surfaceDisplayControllersRef,
   ]);
@@ -243,8 +250,17 @@ export function useNiivuePaneLayers({
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
-    if (syncNiivueVolumeOpacities(nv, latestVolumesRef.current)) scheduleRefresh();
-  }, [latestVolumesRef, nvRef, scheduleRefresh, volumeDisplayKey]);
+    const sources = latestVolumesRef.current;
+    if (syncNiivueVolumeOpacities(nv, sources)) scheduleRefresh();
+    const loadingLayerIds = loadingLayerIdsRef.current;
+    const needsLoad = sources.some((layer) => (
+      !isSurfaceLayer(layer)
+      && layer.visible
+      && !isLayerLoaded(nv, layer)
+      && !loadingLayerIds.has(layer.id)
+    ));
+    if (needsLoad) setLazyLoadRequest((request) => request + 1);
+  }, [latestVolumesRef, loadingLayerIdsRef, nvRef, scheduleRefresh, volumeDisplayKey]);
 
   useEffect(() => {
     const nv = nvRef.current;

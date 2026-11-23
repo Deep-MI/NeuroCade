@@ -7,12 +7,17 @@ import {
   externalCoordinateToWorld,
   coordinateSourceFor,
   enforceVolumeRenderOrder,
+  findAddedVolume,
+  removeLoadedVolume,
+  uniqueLoadName,
   reorderLoadedVolumes,
   setLoadedVolumeOpacity,
   syncLoadedVolumeOpacities,
 } from '../src/neurocadeViewer/loadedVolumeDisplay.js';
 import { clampMeshOutlineWidth, MESH_OUTLINE_WIDTH } from '../src/neurocadeViewer/layerDisplay.js';
 import { applyLayerDisplay } from '../src/neurocadeViewer/viewerPaneAdapter.js';
+import type Niivue from '@niivue/niivue';
+
 import type { Volume } from '../src/types.js';
 import type { NiivueVolumeInterop } from '../src/utils/niivueInterop.js';
 
@@ -245,4 +250,51 @@ void test('external world cursor bypasses cropped/reference voxel transforms', (
   assert.deepEqual(externalCoordinateToWorld(nv as never, [12.5, -20, 7], 'world'), [12.5, -20, 7]);
   assert.deepEqual(externalCoordinateToWorld(nv as never, [1, 2, 3]), [102, -44, 32]);
   assert.equal(externalCoordinateToWorld(nv as never, [NaN, 0, 0], 'world'), null);
+});
+
+void test('findAddedVolume picks this load even when another sync added a volume meanwhile', () => {
+  const volumes: NiivueVolumeInterop[] = [];
+  const nv = mockNiivue(volumes);
+  // An aborted sync's T1 and this sync's segmentation land in either order.
+  const before = new Set(volumes);
+  volumes.push({ name: '001.mgz#neurocade-load-1' } as NiivueVolumeInterop);
+  volumes.push({ name: 'aparc+aseg.mgz#neurocade-load-2' } as NiivueVolumeInterop);
+
+  const added = findAddedVolume(nv as unknown as Niivue, before, 'aparc+aseg.mgz#neurocade-load-2');
+  assert.equal(added, volumes[1]);
+  // The volume at the pre-call length is the other load, not this one.
+  assert.notEqual(added, volumes[before.size]);
+});
+
+void test('findAddedVolume ignores volumes that were loaded before the call', () => {
+  const earlier = { name: 'seg.mgz#neurocade-load-1' } as NiivueVolumeInterop;
+  const volumes = [earlier];
+  const nv = mockNiivue(volumes);
+  const before = new Set(volumes);
+  assert.equal(findAddedVolume(nv as unknown as Niivue, before, earlier.name), undefined);
+
+  const fresh = { name: 'seg.mgz#neurocade-load-2' } as NiivueVolumeInterop;
+  volumes.push(fresh);
+  assert.equal(findAddedVolume(nv as unknown as Niivue, before, fresh.name), fresh);
+});
+
+void test('load names never collide with file-name layer ids', () => {
+  // NiiVue copies a new volume's name into its id; case layers use their file
+  // name as id. An unconfigured volume must not pass for the loaded layer.
+  const first = uniqueLoadName('aparc+aseg.mgz');
+  const second = uniqueLoadName('aparc+aseg.mgz');
+  assert.notEqual(first, 'aparc+aseg.mgz');
+  assert.notEqual(first, second);
+  assert.ok(first.startsWith('aparc+aseg.mgz#'));
+});
+
+void test('removeLoadedVolume removes exactly that volume', () => {
+  const keep = loadedVolume('keep', 0);
+  const drop = { name: 'aborted.mgz' } as NiivueVolumeInterop;
+  const volumes = [keep, drop];
+  const nv = mockNiivue(volumes);
+  removeLoadedVolume(nv as unknown as Niivue, drop);
+  assert.deepEqual(volumes, [keep]);
+  removeLoadedVolume(nv as unknown as Niivue, drop);
+  assert.deepEqual(volumes, [keep]);
 });
