@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DRAG_MODE } from '@niivue/niivue';
+import { DRAG_MODE, SHOW_RENDER } from '@niivue/niivue';
 
 import {
+  gridCustomLayout,
   inPlaneCrosshairDelta,
   niivueDragMode,
   planeAtCanvasPosition,
@@ -54,4 +55,21 @@ void test('canvas hit testing selects only 2D grid tiles', () => {
   assert.equal(planeAtCanvasPosition(slices, 50, 150), 2);
   assert.equal(planeAtCanvasPosition(slices, 150, 150), null);
   assert.equal(planeAtCanvasPosition(slices, 250, 250), null);
+});
+
+void test('Grid lays out four filled quarter tiles; other modes use NiiVue layout', () => {
+  const grid = gridCustomLayout(3, SHOW_RENDER.ALWAYS);
+  assert.deepEqual(grid, [
+    { sliceType: 1, position: [0, 0, 0.5, 0.5], fill: true },
+    { sliceType: 2, position: [0.5, 0, 0.5, 0.5], fill: true },
+    { sliceType: 0, position: [0, 0.5, 0.5, 0.5], fill: true },
+    { sliceType: 4, position: [0.5, 0.5, 0.5, 0.5] },
+  ]);
+  assert.equal(gridCustomLayout(3, SHOW_RENDER.NEVER)?.length, 3);
+  for (const sliceType of [0, 1, 2, 4] as const) {
+    assert.equal(gridCustomLayout(sliceType, SHOW_RENDER.ALWAYS), null);
+  }
+  // Callers may hand the array to NiiVue; it must not alias shared state.
+  grid[0].position[0] = 0.25;
+  assert.equal(gridCustomLayout(3, SHOW_RENDER.ALWAYS)![0].position[0], 0);
 });

@@ -111,6 +111,7 @@ if [[ "$RUNTIME" == apptainer ]]; then
   stop_pid_file "$RUNTIME_DIR/app.pid" "neurocade-app-amd64.sif"
 fi
 stop_pid_file "$RUNTIME_DIR/bridge.pid" "$RUNTIME_DIR/bridge-venv/bin/neurocade-runtime-bridge"
+stop_pid_file "$RUNTIME_DIR/tray.pid" "electron/tray.mjs" || true
 
 if [[ "$RUNTIME" == docker ]]; then
   volume_owner="$(docker volume inspect --format '{{index .Labels "org.neurocade.install-id"}}' "$DATABASE_VOLUME" 2>/dev/null || true)"

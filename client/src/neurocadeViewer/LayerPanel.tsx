@@ -1,6 +1,7 @@
 import type React from 'react';
 import { ChevronDown, ChevronRight, Eye, EyeOff, Layers, Plus, X } from 'lucide-react';
 
+import { MESH_OUTLINE_WIDTH } from './layerDisplay';
 import { isSurfaceLayer, type LayerType, type SegmentationVolumeLayer, type SurfaceColorMode, type Volume } from '../types';
 import { DrawingToolsPanel } from './DrawingToolsPanel';
 import { layerDefaultOpacity } from './layerDisplay';
@@ -62,6 +63,8 @@ interface LayerPanelProps {
   onUpdateVolume: (id: string, updates: Partial<Volume>) => void;
   onPreviewVolumeOpacity: (id: string, opacity: number) => void;
   onCommitVolumeOpacity: (id: string, opacity: number) => void;
+  meshOutlineWidth: number;
+  onMeshOutlineWidthChange: (width: number) => void;
   onUpdateWindowing: (id: string, field: 'calMin' | 'calMax', value: number) => void;
   onLayerDragOver: (event: React.DragEvent<HTMLDivElement>, target: Volume) => void;
   onLayerDrop: (event: React.DragEvent<HTMLDivElement>, target: Volume) => void;
@@ -96,6 +99,8 @@ export function LayerPanel({
   onUpdateVolume,
   onPreviewVolumeOpacity,
   onCommitVolumeOpacity,
+  meshOutlineWidth,
+  onMeshOutlineWidthChange,
   onUpdateWindowing,
   onLayerDragOver,
   onLayerDrop,
@@ -305,6 +310,23 @@ export function LayerPanel({
                                 <option key={mode} value={mode}>{SURFACE_COLOR_MODE_LABELS[mode]}</option>
                               ))}
                           </select>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="nc-mono w-12 shrink-0 text-[11px] text-[var(--nc-tx-dim)]">Outline</span>
+                          <input
+                            type="range"
+                            min={MESH_OUTLINE_WIDTH.min}
+                            max={MESH_OUTLINE_WIDTH.max}
+                            step={MESH_OUTLINE_WIDTH.step}
+                            value={meshOutlineWidth}
+                            onInput={(event) => onMeshOutlineWidthChange(Number(event.currentTarget.value))}
+                            onChange={(event) => onMeshOutlineWidthChange(Number(event.currentTarget.value))}
+                            className="nc-viewer-layer-slider"
+                            aria-label="Mesh outline thickness"
+                            title="Thickness of the mesh outline on 2D slices (device pixels)"
+                            data-testid="viewer-mesh-outline-width"
+                          />
+                          <span className="nc-mono w-10 shrink-0 text-right text-[11px] text-[var(--nc-tx-dim)]">{meshOutlineWidth} px</span>
                         </div>
                         {surfaceColorMode === 'curvature' && (
                           <>

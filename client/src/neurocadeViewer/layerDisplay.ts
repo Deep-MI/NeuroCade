@@ -18,6 +18,14 @@ export function effectiveLayerOpacity(volume: Volume): number {
   return volume.visible ? clampOpacity(volume.opacity, layerDefaultOpacity(volume)) : 0;
 }
 
+/** Mesh outline width, in device pixels, for the crosscut2 slice shader. */
+export const MESH_OUTLINE_WIDTH = { min: 1, max: 12, step: 0.5, default: 4 } as const;
+
+export function clampMeshOutlineWidth(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return MESH_OUTLINE_WIDTH.default;
+  return Math.max(MESH_OUTLINE_WIDTH.min, Math.min(MESH_OUTLINE_WIDTH.max, value));
+}
+
 export function parseEditableSliderValue(
   text: string,
   min: number,
@@ -45,7 +53,7 @@ export function volumesInRenderOrder(sources: Volume[]): Volume[] {
 
 /**
  * Return the pane's bottom intensity/volume for voxel coordinate readouts.
- * NiiVue volume zero is the separate fixed reference grid.
+ * Only loaded layers can define the coordinate frame; see coordinateSourceFor.
  */
 export function orderedReferenceCandidate(sources: Volume[]): Volume | null {
   return volumesInRenderOrder(sources)[0] ?? null;

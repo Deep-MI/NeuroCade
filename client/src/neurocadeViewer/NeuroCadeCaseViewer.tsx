@@ -15,6 +15,7 @@ import { useViewerWindowing } from './useViewerWindowing';
 import { applyLayerDisplay, capturePaneSnapshot, previewLayerOpacity } from './viewerPaneAdapter';
 import type { PaneRenderAction } from './viewerPaneAdapter';
 import { VIEW_MODES, type NeuroCadeViewMode, type ViewerDragMode } from './viewerControls';
+import { MESH_OUTLINE_WIDTH } from './layerDisplay';
 
 interface NeuroCadeCaseViewerProps {
   caseId: string;
@@ -100,6 +101,8 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
   const [viewMode, setViewMode] = useState<NeuroCadeViewMode>('multi');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dragMode, setDragMode] = useState<ViewerDragMode>('pan');
+  // Shared by every pane: NiiVue's crosscut outline width is an instance-wide setting.
+  const [meshOutlineWidth, setMeshOutlineWidth] = useState<number>(MESH_OUTLINE_WIDTH.default);
   const [showOrientationLabels, setShowOrientationLabels] = useState(true);
   const [helpOpen, setHelpOpen] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<LocationInfo | null>(null);
@@ -220,6 +223,9 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
       if (!nv) return null;
       const previousSliceType = nv.sliceType;
       const previousShowRender = nv.showRender;
+      // A Grid custom layout overrides sliceType, so drop it for single planes.
+      const previousCustomLayout = nv.customLayout;
+      nv.customLayout = null;
       const capture = (sliceType: 0 | 1 | 2): string | null => {
         nv.sliceType = sliceType;
         nv.showRender = SHOW_RENDER.NEVER;
@@ -235,6 +241,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
       } finally {
         nv.sliceType = previousSliceType;
         nv.showRender = previousShowRender;
+        nv.customLayout = previousCustomLayout;
         nv.drawScene();
       }
     },
@@ -412,6 +419,8 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
           onUpdateVolume={handleUpdateVolume}
           onPreviewVolumeOpacity={previewVolumeOpacity}
           onCommitVolumeOpacity={commitVolumeOpacity}
+          meshOutlineWidth={meshOutlineWidth}
+          onMeshOutlineWidthChange={setMeshOutlineWidth}
           onUpdateWindowing={updateWindowing}
           onLayerDragOver={handleLayerDragOver}
           onLayerDrop={handleLayerDrop}
@@ -442,6 +451,7 @@ export const NeuroCadeCaseViewer = forwardRef<MriViewerRef, NeuroCadeCaseViewerP
             externalCoordinateSpace={externalCoordinateSpace}
             reportLocation
             showOrientationLabels={showOrientationLabels}
+            meshOutlineWidth={meshOutlineWidth}
             onReady={handlePaneReady}
             onLocationChange={handlePaneLocation}
             onIntensityWindowChange={syncIntensityWindow}

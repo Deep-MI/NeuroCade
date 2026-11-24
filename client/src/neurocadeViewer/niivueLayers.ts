@@ -27,6 +27,9 @@ import {
 } from '../utils/surfaceColors.js';
 import { effectiveLayerOpacity, surfaceDisplayKey } from './layerDisplay.js';
 import {
+  findAddedVolume,
+  removeLoadedVolume,
+  uniqueLoadName,
   referenceWorldToVoxel,
 } from './loadedVolumeDisplay.js';
 
@@ -224,20 +227,28 @@ export async function addNiivueVolumeLayers(
   if (signal.aborted) throw new DOMException('Volume loading aborted', 'AbortError');
 
   for (const prepared of preparedLayers) {
-    const volumeCount = nv.volumes.length;
+    // The File keeps the real file name, which NiiVue uses to detect the format.
+    const name = uniqueLoadName(prepared.source.filename || prepared.source.name);
+    const before = new Set<NiivueVolumeInterop>(asNiivueInterop(nv).volumes);
     await nv.model.addVolume({
       url: prepared.file,
-      name: prepared.source.filename || prepared.source.name,
+      name,
       colormap: resolveVolumeColormap(prepared.source),
       isColorbarVisible: false,
       opacity: effectiveLayerOpacity(prepared.source),
       isTransparentBelowCalMin: prepared.source.type === 'segmentation',
     });
-    if (signal.aborted) throw new DOMException('Volume loading aborted', 'AbortError');
-    const loaded = nv.volumes[volumeCount] as NiivueVolumeInterop | undefined;
-    if (loaded) {
-      configureLoadedVolume(loaded, prepared);
+    // Identify the volume this call added; other (aborted) syncs may have
+    // added theirs concurrently, so its index is not known in advance.
+    const loaded = findAddedVolume(nv, before, name);
+    if (signal.aborted) {
+      // The replacing sync loads what it still needs; leaving this volume
+      // behind unconfigured would only render as an anonymous extra layer.
+      if (loaded) removeLoadedVolume(nv, loaded);
+      throw new DOMException('Volume loading aborted', 'AbortError');
     }
+    if (!loaded) throw new Error(`NiiVue did not report the loaded volume ${name}`);
+    configureLoadedVolume(loaded, prepared);
   }
   if (preparedLayers.length > 0) {
     await nv.updateGLVolume();
@@ -254,15 +265,15 @@ export async function addNiivueSurfaceLayer(nv: Niivue, surface: SurfaceLayer, s
     color: surfaceRgba(surface).map((value) => value / 255) as [number, number, number, number],
     visible: surface.visible,
     shaderType: 'phong',
-    sliceShaderType: 'crosscut',
+    // crosscut2 outlines the mesh where it meets the displayed voxel plane, so
+    // outlines follow oblique slices. The 3D pane keeps the shaded phong mesh.
+    sliceShaderType: 'crosscut2',
   };
   await nv.addMesh(meshOptions);
   const nvInterop = asNiivueInterop(nv);
   const mesh = (nvInterop.meshes ?? []).find((item) => item.name === filename);
   if (mesh) {
     mesh.id = surface.id;
-    // Per-pane shader: 2D planes use 'Crosscut' (cross-section outline); the 3D
-    // pane is left on Niivue's default shader to show the full shaded mesh.
     await syncNiivueSurfaceDisplay(nv, mesh, surface, signal);
   }
 }

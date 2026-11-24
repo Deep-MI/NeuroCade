@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from 'react';
+import { useEffect, useState, type MutableRefObject } from 'react';
 import type Niivue from '@niivue/niivue';
 
 import type { Volume } from '../types';
@@ -17,20 +17,17 @@ import {
 } from './niivueLayers';
 import {
   effectiveLayerOpacity,
-  orderedReferenceCandidate,
   surfaceDisplayKey,
   volumesInRenderOrder,
 } from './layerDisplay';
 import {
+  coordinateSourceFor,
+  enforceVolumeRenderOrder,
   getCrosshairWorld,
   restoreCrosshairWorld,
   syncLoadedVolumeOpacities,
 } from './loadedVolumeDisplay';
 import type { WindowSetting } from './paneSyncKeys';
-import {
-  enforceVolumeRenderOrder,
-  ensureFixedNiivueReference,
-} from './fixedReferenceRuntime.js';
 
 interface UseNiivuePaneLayersOptions {
   manualWindowingIds: MutableRefObject<Set<string>>;
@@ -87,6 +84,12 @@ export function useNiivuePaneLayers({
   onError,
   onCoordinateSourceChange,
 }: UseNiivuePaneLayersOptions): void {
+  // Bumped when a volume that was never loaded becomes visible. Volume
+  // visibility is deliberately not part of layerReconcileKey (showing or hiding
+  // a loaded volume must not restart in-flight loads), so this is what lets an
+  // initially hidden, lazily skipped volume load once the user enables it.
+  const [lazyLoadRequest, setLazyLoadRequest] = useState(0);
+
   // Incremental layer reconcile. Hidden volumes that have already been opened
   // remain loaded, while initially-hidden imported artifacts stay lazy until
   // the user enables them. This keeps large subject directories responsive.
@@ -100,18 +103,12 @@ export function useNiivuePaneLayers({
 
     const claim = (id: string) => { loadingLayerIds.add(id); claimedIds.push(id); };
     const release = (id: string) => loadingLayerIds.delete(id);
-    const syncFixedReference = async () => {
-      try {
-        const referenceSources = latestVolumesRef.current.filter((layer) => (
-          isSurfaceLayer(layer) || layer.visible || isLayerLoaded(nv, layer)
-        ));
-        const coordinateSourceId = await ensureFixedNiivueReference(nv, referenceSources);
-        if (!cancelled) onCoordinateSourceChange?.(coordinateSourceId);
-      } catch (error) {
-        if (!cancelled) {
-          onError?.(`Could not establish the viewer reference grid: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
+    // NiiVue's first volume defines the frame, so keep loaded volumes in the
+    // layer panel's render order and report the bottom layer as the coordinate source.
+    const syncVolumeOrderAndCoordinates = async () => {
+      const sources = latestVolumesRef.current;
+      if (enforceVolumeRenderOrder(nv, sources)) await nv.updateGLVolume();
+      if (!cancelled) onCoordinateSourceChange?.(coordinateSourceFor(nv, sources));
     };
 
     const reconcile = async () => {
@@ -127,7 +124,6 @@ export function useNiivuePaneLayers({
 
         let removedVolume = false;
         for (const loaded of [...asNiivueInterop(nv).volumes]) {
-          if (loaded.__neurocadeFixedReference) continue;
           if (!loaded.id || !sourceVolumeIds.has(loaded.id)) {
             const index = nv.volumes.indexOf(loaded);
             if (index >= 0) {
@@ -157,7 +153,7 @@ export function useNiivuePaneLayers({
           && !loadingLayerIds.has(layer.id)
         ));
         if (pending.length === 0) {
-          await syncFixedReference();
+          await syncVolumeOrderAndCoordinates();
           if (!cancelled) onLoadingChange?.(false);
           return;
         }
@@ -189,7 +185,7 @@ export function useNiivuePaneLayers({
           if (syncNiivueVolumeOpacities(nv, latestVolumesRef.current)) {
             scheduleRefresh();
           }
-          await syncFixedReference();
+          await syncVolumeOrderAndCoordinates();
 
           await Promise.all(visibleSurfaces.map(async (surface) => {
             if (cancelled || controller.signal.aborted) return;
@@ -224,6 +220,7 @@ export function useNiivuePaneLayers({
     onLoadingChange,
     onCoordinateSourceChange,
     layerReconcileKey,
+    lazyLoadRequest,
     scheduleRefresh,
     surfaceDisplayControllersRef,
   ]);
@@ -253,8 +250,17 @@ export function useNiivuePaneLayers({
   useEffect(() => {
     const nv = nvRef.current;
     if (!nv) return;
-    if (syncNiivueVolumeOpacities(nv, latestVolumesRef.current)) scheduleRefresh();
-  }, [latestVolumesRef, nvRef, scheduleRefresh, volumeDisplayKey]);
+    const sources = latestVolumesRef.current;
+    if (syncNiivueVolumeOpacities(nv, sources)) scheduleRefresh();
+    const loadingLayerIds = loadingLayerIdsRef.current;
+    const needsLoad = sources.some((layer) => (
+      !isSurfaceLayer(layer)
+      && layer.visible
+      && !isLayerLoaded(nv, layer)
+      && !loadingLayerIds.has(layer.id)
+    ));
+    if (needsLoad) setLazyLoadRequest((request) => request + 1);
+  }, [latestVolumesRef, loadingLayerIdsRef, nvRef, scheduleRefresh, volumeDisplayKey]);
 
   useEffect(() => {
     const nv = nvRef.current;
@@ -320,10 +326,9 @@ export function useNiivuePaneLayers({
     const nv = nvRef.current;
     if (!nv) return;
     const sources = latestVolumesRef.current;
-    const coordinateSourceId = orderedReferenceCandidate(sources)?.id ?? null;
     const orderChanged = enforceVolumeRenderOrder(nv, sources);
     const opacityChanged = syncNiivueVolumeOpacities(nv, sources);
-    onCoordinateSourceChange?.(coordinateSourceId);
+    onCoordinateSourceChange?.(coordinateSourceFor(nv, sources));
     if (orderChanged || opacityChanged) scheduleRefresh();
   }, [latestVolumesRef, nvRef, onCoordinateSourceChange, scheduleRefresh, volumeStackKey]);
 

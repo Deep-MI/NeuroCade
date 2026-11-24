@@ -59,6 +59,13 @@ a bounded timeout, displays up to 50 model IDs, and always offers manual entry.
 An unavailable endpoint does not prevent manual configuration. Existing model
 names remain valid choices; discovery does not prove model suitability or access.
 
+The `local` profile does not require authentication settings. `internal` and
+`demo` installs also require `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`,
+`CLERK_JWKS_URL`, and `CLERK_ISSUER` in the environment or `.env`. These
+mandatory settings are validated before managed Python, images, or other
+toolchains are downloaded; `--yes` suppresses prompts but does not bypass the
+validation.
+
 `--yes` suppresses every prompt, including the directory prompt. Missing mandatory
 settings fail before downloading toolchains/images. A fresh unattended install
 uses no assistant unless `--llm-provider` or provider configuration selects one.
@@ -109,6 +116,29 @@ then starts the application. The app is available at `http://localhost:8000` by
 default. The Docker profile maps `host.docker.internal` through Linux's
 host-gateway; the Apptainer profile uses host networking and binds the bridge to
 loopback only.
+
+### Status icon
+
+When `start -d` runs in a desktop session, NeuroCade shows a status icon in the
+macOS menu bar or the Ubuntu top bar while it runs in the background. Its menu
+shows whether the application is responding and how many workflows are in
+progress, opens NeuroCade in the browser, and stops NeuroCade (asking first while
+workflows are running). "Hide This Icon" removes only the icon; the next
+`start -d` shows it again. `./scripts/run.sh stop` removes it as well.
+
+The icon uses the client's Electron binary, the same one the desktop launcher
+uses. If it has not been downloaded yet, the icon is skipped; running
+`./scripts/desktop/run.sh` once downloads it, as does
+`npm --prefix client ci && npm --prefix client exec install-electron`.
+
+Set `NEUROCADE_TRAY=false` in `.env`, or pass `--no-tray`, to turn the icon off;
+`NEUROCADE_TRAY=true` reports why it could not be shown. It is never shown over
+SSH, without a display, or for foreground launches such as the desktop window,
+which owns its own window.
+
+Ubuntu's default desktop shows the icon through its built-in AppIndicator
+extension. Desktops without StatusNotifierItem support, such as GNOME without
+that extension, do not display it.
 
 ## Updates
 

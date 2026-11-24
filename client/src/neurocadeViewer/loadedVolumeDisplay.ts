@@ -1,6 +1,8 @@
 import type Niivue from '@niivue/niivue';
 
+import type { Volume } from '../types.js';
 import { asNiivueInterop, type NiivueVolumeInterop } from '../utils/niivueInterop.js';
+import { volumesInRenderOrder } from './layerDisplay.js';
 
 type NiivueOpacityUpdate = 'none' | 'updated';
 type WorldCoordinate = [number, number, number];
@@ -22,18 +24,73 @@ export function restoreCrosshairWorld(nv: Niivue, position: WorldCoordinate | nu
   nv.setCrosshairPos(position);
 }
 
+function loadedVolume(nv: Niivue, id: string): NiivueVolumeInterop | undefined {
+  return asNiivueInterop(nv).volumes.find((volume) => volume.id === id);
+}
+
+/**
+ * The volume one `addVolume({ name })` call just loaded. An aborted layer sync
+ * can still have an add in flight when its replacement starts, so the volume
+ * list may grow by other loads meanwhile; the new volume is therefore neither
+ * "the one at the old length" nor "the last one". Callers pass a load-unique
+ * name (see `uniqueLoadName`), and only volumes added since `before` count.
+ */
+export function findAddedVolume(
+  nv: Niivue,
+  before: ReadonlySet<NiivueVolumeInterop>,
+  name: string,
+): NiivueVolumeInterop | undefined {
+  return asNiivueInterop(nv).volumes.find((volume) => !before.has(volume) && volume.name === name);
+}
+
+let loadSequence = 0;
+
+/**
+ * NiiVue sets a new volume's `id` to its `name`, and case layers use their file
+ * name as id. Loading under the plain file name would make a volume that is
+ * not configured yet (or abandoned by an aborted sync) look like a loaded
+ * layer, so it would neither be reloaded nor cleaned up. A load-unique name
+ * keeps such volumes distinguishable until `configureLoadedVolume` assigns the
+ * layer's id and display name.
+ */
+export function uniqueLoadName(filename: string): string {
+  loadSequence += 1;
+  return `${filename}#neurocade-load-${loadSequence}`;
+}
+
+export function removeLoadedVolume(nv: Niivue, volume: NiivueVolumeInterop): void {
+  const index = asNiivueInterop(nv).volumes.indexOf(volume);
+  if (index >= 0) nv.model.removeVolume(index);
+}
+
+// NiiVue's world space and crosshair are defined by its first loaded volume.
+// Voxel readouts and cursor commands use the layer that is bottom-most in the
+// pane's render order, which enforceVolumeRenderOrder keeps at that position.
 function coordinateVolume(nv: Niivue, sourceId?: string | null): NiivueVolumeInterop | undefined {
   const volumes = asNiivueInterop(nv).volumes;
   if (sourceId) {
     const source = volumes.find((volume) => volume.id === sourceId);
     if (source) return source;
   }
-  const fixedReference = volumes[0];
-  if (fixedReference?.__neurocadeFixedReference) {
-    const source = volumes.find((volume) => volume.id === fixedReference.__neurocadeCoordinateSourceId);
-    if (source) return source;
+  return volumes[0];
+}
+
+/** Id of the bottom-most loaded layer, which defines the pane's coordinate frame. */
+export function coordinateSourceFor(nv: Niivue, sources: Volume[]): string | null {
+  for (const source of volumesInRenderOrder(sources)) {
+    if (loadedVolume(nv, source.id)) return source.id;
   }
-  return fixedReference;
+  return null;
+}
+
+/** Reorders loaded NiiVue volumes to match the layer panel's render order. */
+export function enforceVolumeRenderOrder(nv: Niivue, sources: Volume[]): boolean {
+  const ordered = volumesInRenderOrder(sources)
+    .map((source) => loadedVolume(nv, source.id))
+    .filter((volume): volume is NiivueVolumeInterop => Boolean(volume));
+  const desiredSet = new Set(ordered);
+  const desired = [...ordered, ...asNiivueInterop(nv).volumes.filter((volume) => !desiredSet.has(volume))];
+  return reorderLoadedVolumes(nv, desired);
 }
 
 // NiiVue's setCrosshairPos API accepts world millimetres, while assistant
